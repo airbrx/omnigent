@@ -1,0 +1,20 @@
+# Intern server config (accounts mode) — copy to the box's volume as
+# /data/config.yaml, then restart the omnigent container.
+#
+#   docker compose cp config.yaml omnigent:/data/config.yaml   # or scp to the volume
+#   docker compose -f docker-compose.yaml -f docker-compose.https.yaml up -d
+#
+# Non-secret settings only. DATABASE_URL, the cookie secret, and
+# OMNIGENT_DOMAIN / OMNIGENT_ACCOUNTS_BASE_URL stay in deploy/docker/.env.
+# See deploy/docker/config.yaml.example for the full set of keys.
+
+# Admin roster. In accounts mode these are USERNAMES (not emails). A listed
+# username is promoted to admin on login. Additive — removing an entry here
+# does not demote (demote from the Members page). The first-boot bootstrap
+# admin already exists; add the staff usernames who should also be admins.
+admins:
+  - ben
+
+# Keep the bundled artifact location; the compose stack supplies DATABASE_URL
+# via env (it carries the password), so leave database_uri unset here.
+# artifact_location: /data/artifacts
