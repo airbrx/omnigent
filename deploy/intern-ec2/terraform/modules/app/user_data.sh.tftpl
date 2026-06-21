@@ -1,7 +1,8 @@
 #!/bin/bash
 # EC2 first-boot bootstrap for the intern omnigent coordinator.
-# Rendered by Terraform (templatefile) — ${...} tokens are substituted at
-# apply time; this script itself uses no shell ${} variables.
+# Rendered by Terraform's templatefile(): the percent-brace tokens below are
+# substituted at apply time. This script intentionally uses no shell variable
+# expansion, so every brace token is a Terraform value, not a bash one.
 set -euxo pipefail
 exec > >(tee /var/log/omnigent-bootstrap.log) 2>&1
 
