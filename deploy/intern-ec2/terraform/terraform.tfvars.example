@@ -10,9 +10,9 @@ db_subnet_ids      = ["subnet-cccc", "subnet-dddd"] # ≥2 AZs, for RDS
 db_ingress_cidrs   = ["10.0.0.0/16"]                # your VPC CIDR (or the instance subnet CIDR)
 
 # ── App source ────────────────────────────────────────────────────────
-# Must be reachable from the instance. For a private repo, use an HTTPS URL
-# embedding a read-only deploy token, e.g.
-#   https://x-access-token:<TOKEN>@github.com/airbrx/omnigent.git
+# The fork is public, so the instance clones over plain HTTPS with no
+# credential. (If it were ever made private, switch to a read-only deploy key
+# in SSM — do NOT embed a token here or in user_data; it would land in state.)
 repo_url = "https://github.com/airbrx/omnigent.git"
 branch   = "2026-summer-internship"
 

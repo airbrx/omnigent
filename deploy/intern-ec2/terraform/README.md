@@ -29,7 +29,7 @@ between internship sessions without losing accounts or session history.
 - The `*.airbrx.ai` cert **Issued** in ACM **in `var.region`**.
 - An existing VPC with ≥2 public subnets (ALB) and ≥2 private subnets (RDS).
 - The `airbrx.ai` public hosted zone in Route 53.
-- A repo URL the instance can clone (deploy token for a private repo).
+- The public fork URL the instance clones (no credential — the repo is public).
 
 ## Use
 

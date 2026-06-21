@@ -88,7 +88,7 @@ variable "web_ingress_cidrs" {
 
 # ── App source ─────────────────────────────────────────────────────────
 variable "repo_url" {
-  description = "Git URL the instance clones and builds from (must be reachable from the box — use an HTTPS URL with a deploy token for a private repo, or bake credentials another way)."
+  description = "Public Git URL the instance clones and builds from over HTTPS (the fork is public, so no credential is needed)."
   type        = string
 }
 
