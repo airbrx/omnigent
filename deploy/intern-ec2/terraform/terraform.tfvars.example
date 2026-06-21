@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+
+region = "us-east-1" # MUST match the region the *.airbrx.ai ACM cert is in
+
+# ── Network (look these up in the AWS console / `aws ec2 describe-*`) ──
+vpc_id             = "vpc-xxxxxxxx"
+public_subnet_ids  = ["subnet-aaaa", "subnet-bbbb"] # ≥2 AZs, for the ALB
+instance_subnet_id = "subnet-aaaa"                  # where the EC2 box runs
+db_subnet_ids      = ["subnet-cccc", "subnet-dddd"] # ≥2 AZs, for RDS
+db_ingress_cidrs   = ["10.0.0.0/16"]                # your VPC CIDR (or the instance subnet CIDR)
+
+# ── App source ────────────────────────────────────────────────────────
+# Must be reachable from the instance. For a private repo, use an HTTPS URL
+# embedding a read-only deploy token, e.g.
+#   https://x-access-token:<TOKEN>@github.com/airbrx/omnigent.git
+repo_url = "https://github.com/airbrx/omnigent.git"
+branch   = "2026-summer-internship"
+
+# ── Optional ──────────────────────────────────────────────────────────
+# key_name          = "intern-omnigent"        # omit to use SSM Session Manager only
+# ssh_ingress_cidrs = ["203.0.113.10/32"]       # office/VPN, only if key_name set
+# web_ingress_cidrs = ["0.0.0.0/0"]             # restrict to office/student ranges if you can
+# instance_type     = "t3.small"
+# deploy_app        = true                       # set false to tear down compute, keep RDS+data

@@ -1,0 +1,8 @@
+# Never commit state (holds the DB password + cookie secret in plaintext) or vars.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+*.auto.tfvars
+crash.log

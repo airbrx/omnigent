@@ -3,7 +3,13 @@
 A self-contained Omnigent **coordination server** for the summer internship,
 built from the `2026-summer-internship` branch and run on a small AWS EC2
 instance, fronted by an **Application Load Balancer (ALB)** that terminates TLS
-with the existing ACM wildcard cert `*.airbrx.ai`.
+with the existing ACM wildcard cert `*.airbrx.ai`, with state in an external
+**RDS Postgres** so the instance can be torn down and rebuilt without losing
+data.
+
+The whole stack is codified in Terraform (`terraform/`) — that's the
+recommended path. The manual steps below explain what Terraform builds and
+serve as a fallback.
 
 > **Hostname:** this uses **`interns.airbrx.ai`** to match the `*.airbrx.ai`
 > ACM cert. (An earlier draft said `interns.airbrx.com`; a `*.airbrx.ai`
@@ -16,16 +22,22 @@ history and brokers WebSocket connections. It holds **no model keys** and
 **runs no agents**. Each student registers their own laptop as a *host* and
 signs in with their **own Claude subscription** — so their sessions execute on
 their laptop and model usage bills to their own account. Server-side LLM spend
-is therefore **$0**; the only cost is the EC2 instance + ALB.
+is therefore **$0**; the only cost is the EC2 instance + ALB + RDS.
 
 ```
   Student laptop (host)        ALB (TLS @ *.airbrx.ai)     EC2 t3.small (private)
  ┌─────────────────────┐      ┌──────────────────────┐    ┌────────────────────┐
  │ omnigent + claude   │ 443  │ HTTPS listener        │8000│ omnigent server    │
  │ CLIs, own Claude sub │─────▶│ ACM cert, WS upgrade  │───▶│ (this branch)      │
- │ AGENTS RUN HERE      │◀─────│ → HTTP target group   │◀───│ postgres (accounts │
- └─────────────────────┘      └──────────────────────┘    │  + sessions)       │
-                                                            └────────────────────┘
+ │ AGENTS RUN HERE      │◀─────│ → HTTP target group   │◀───│        │           │
+ └─────────────────────┘      └──────────────────────┘    └────────┼───────────┘
+                                                            5432 (VPC, SG-locked)
+                                                          ┌─────────▼───────────┐
+                                                          │ RDS Postgres        │
+                                                          │ accounts + sessions │
+                                                          │ (durable, outlives  │
+                                                          │  the instance)      │
+                                                          └─────────────────────┘
 ```
 
 ## TLS architecture: why an ALB
@@ -47,7 +59,32 @@ VPC. **The Caddy HTTPS overlay (`docker-compose.https.yaml`) is not used.**
 
 ---
 
-## One-time setup
+## Provisioning with Terraform (recommended)
+
+`terraform/` builds everything below — RDS, EC2 (with first-boot bootstrap that
+clones the branch and runs the compose), ALB + listeners + target group, Route
+53 alias, and all security groups. RDS lives in a durable root stack; the
+compute lives in a `module.app` gated by `var.deploy_app`, so you can tear the
+instance + ALB down between sessions and keep the data.
+
+```bash
+cd deploy/intern-ec2/terraform
+cp terraform.tfvars.example terraform.tfvars   # fill in vpc/subnets/repo_url
+terraform init && terraform plan               # review first — not machine-validated
+terraform apply
+terraform output url                           # https://interns.airbrx.ai
+```
+
+Tear the instance down (keep RDS + data): `terraform apply -var deploy_app=false`.
+Bring it back: `terraform apply -var deploy_app=true`. Full details and the
+end-of-internship teardown are in [`terraform/README.md`](terraform/README.md).
+
+The rest of this document is the **manual equivalent** — read it to understand
+what Terraform does, or to operate the box by hand.
+
+---
+
+## One-time setup (manual)
 
 ### 1. EC2 instance (private app server)
 
@@ -67,43 +104,46 @@ sudo apt-get install -y docker.io docker-compose-v2 git
 sudo usermod -aG docker "$USER"   # log out/in so docker works without sudo
 ```
 
-### 2. Build & launch (base compose — NO https overlay)
+### 2. RDS Postgres (external, durable)
+
+Create an RDS Postgres instance (`db.t4g.micro`, 20 GB, encrypted, **not**
+publicly accessible) in a DB subnet group spanning ≥2 AZs. Its security group
+allows `5432` only from the EC2 instance's subnet/SG. Note the endpoint and the
+master password — they form the `DATABASE_URL` below. Because the database is
+external, destroying and rebuilding the EC2 box never touches the data.
+
+### 3. Build & launch (standalone compose — RDS, no postgres, no https overlay)
 
 ```bash
 git clone <your-repo-url> omnigent
 cd omnigent
 git checkout 2026-summer-internship
-
-cd deploy/docker
-./bootstrap.sh                    # mints POSTGRES_PASSWORD + cookie secret into .env
+cd deploy/intern-ec2
 ```
 
-Add the public-URL setting to `deploy/docker/.env` (bootstrap already wrote the
-secrets). The ALB terminates TLS and forwards plain HTTP, and uvicorn does not
-trust `X-Forwarded-Proto` — so this explicit `https://` base URL is what makes
-login cookies use the secure `__Host-` prefix and redirects resolve correctly:
+Write `deploy/intern-ec2/.env`. The cookie secret **must be stable** across
+instance rebuilds (or sessions invalidate on every redeploy); the explicit
+`https://` base URL is what makes login cookies use the secure `__Host-` prefix,
+since the ALB terminates TLS and uvicorn doesn't trust `X-Forwarded-Proto`:
 
 ```bash
+DATABASE_URL=postgresql://omnigent:<password>@<rds-endpoint>:5432/omnigent?sslmode=require
+OMNIGENT_ACCOUNTS_COOKIE_SECRET=$(openssl rand -hex 32)   # generate ONCE, reuse forever
 OMNIGENT_ACCOUNTS_BASE_URL=https://interns.airbrx.ai
-# OMNIGENT_DOMAIN is only consumed by the Caddy overlay — leave it unset here.
 ```
 
-Bring it up with the **base compose only** (the `--build` is what builds from
-this branch instead of pulling the official image):
+Bring it up (the `--build` builds from this branch instead of pulling the
+official image):
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build         # uses deploy/intern-ec2/docker-compose.yaml
 docker compose logs -f omnigent      # watch for a clean boot; Ctrl-C when steady
-```
-
-The container publishes `8000` on the host; the ALB target group points here.
-Confirm liveness locally before wiring the ALB:
-
-```bash
 curl -s localhost:8000/health        # → {"status":"ok"}
 ```
 
-### 3. ACM + ALB
+The container publishes `8000` on the host; the ALB target group points here.
+
+### 4. ACM + ALB
 
 1. **Cert:** confirm the `*.airbrx.ai` certificate is **Issued** in ACM **in
    the same region** as the ALB (ALB certs must be regional, not us-east-1
@@ -121,18 +161,19 @@ curl -s localhost:8000/health        # → {"status":"ok"}
 5. **Idle timeout:** raise the ALB attribute **idle timeout to 3600s** (default
    60s). Agent sessions hold long-lived WebSockets; 60s would drop them.
 
-### 4. Security groups
+### 5. Security groups
 
 | SG | Inbound rule | Source |
 |---|---|---|
 | `intern-alb-sg` | 443, 80 | `0.0.0.0/0` (or restrict to office/student CIDRs) |
 | EC2 instance SG | **8000** | **`intern-alb-sg`** (the SG, not a CIDR) — ALB-only |
-| EC2 instance SG | 22 (SSH) | your office/VPN IP only |
+| EC2 instance SG | 22 (SSH) | your office/VPN IP only — or skip SSH entirely and use SSM Session Manager |
+| RDS SG | **5432** | the EC2 instance subnet/SG only |
 
 The instance must **not** expose 8000, 80, or 443 to the internet — only the
-ALB reaches 8000, over the VPC.
+ALB reaches 8000, over the VPC. RDS is never publicly accessible.
 
-### 5. DNS (Route 53, `airbrx.ai` hosted zone)
+### 6. DNS (Route 53, `airbrx.ai` hosted zone)
 
 Create an **Alias** record (not a plain A → IP) pointing at the ALB:
 
@@ -144,7 +185,7 @@ Create an **Alias** record (not a plain A → IP) pointing at the ALB:
 rotating IPs automatically — no Elastic IP needed for inbound. An EIP is still
 handy for stable SSH/egress, but it is no longer the front door.
 
-### 6. First admin login
+### 7. First admin login
 
 ```bash
 docker compose logs omnigent | grep -A4 "Created initial admin"
@@ -190,16 +231,24 @@ their machine.
 git checkout 2026-summer-internship
 git merge main            # bring in vetted customizations/fixes
 git push
-
-# on the EC2 box
-cd ~/omnigent && git pull
-cd deploy/docker
-docker compose up -d --build
 ```
 
-Account/session data live on the `postgres-data` / `artifact-data` Docker
-volumes and survive a rebuild. The ALB health check flips the target healthy
-again once `/health` responds.
+Then roll the box. Under Terraform, bump the instance:
+
+```bash
+cd deploy/intern-ec2/terraform && terraform apply   # user_data rebuilds from the branch
+```
+
+Or by hand on the box:
+
+```bash
+cd /opt/omnigent && git pull
+cd deploy/intern-ec2 && docker compose up -d --build
+```
+
+Accounts and session history live in **RDS** and are untouched by a rebuild —
+the box is stateless except for its local artifact volume. The ALB health check
+flips the target healthy again once `/health` responds.
 
 ## Rotating / offboarding students
 
@@ -207,16 +256,24 @@ No server-side credentials to clean up (students bring their own laptops +
 subscriptions). Offboard: **Members** page → deactivate the account. Onboard
 the next student: mint a fresh invite.
 
-## Teardown (end of internship)
+## Teardown
+
+**Between sessions (keep the data).** Tear the instance + ALB down, keep RDS:
 
 ```bash
-cd ~/omnigent/deploy/docker
-docker compose down -v          # drops the DB + artifacts
+cd deploy/intern-ec2/terraform && terraform apply -var deploy_app=false
 ```
 
-Then in AWS: delete the ALB, the target group, and the `interns.airbrx.ai`
-alias record; terminate the instance. Leave the `*.airbrx.ai` ACM cert (it's
-shared/wildcard).
+**End of internship (destroy everything).**
+
+```bash
+terraform apply  -var deploy_app=false               # compute first
+terraform destroy -var db_deletion_protection=false  # then RDS (takes a final snapshot)
+```
+
+Leave the `*.airbrx.ai` ACM cert (it's shared/wildcard). Doing it by hand
+instead: delete the ALB, target group, and `interns.airbrx.ai` alias record,
+terminate the instance, then delete the RDS instance.
 
 ---
 

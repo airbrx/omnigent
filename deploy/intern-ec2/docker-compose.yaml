@@ -1,0 +1,57 @@
+# Intern coordination server — standalone compose for the EC2 + RDS deploy.
+#
+# Differs from deploy/docker/docker-compose.yaml in two ways:
+#   1. No bundled postgres — the database is an external RDS instance,
+#      supplied via DATABASE_URL (so the EC2 box can be town down and
+#      rebuilt without touching the data).
+#   2. No Caddy/HTTPS overlay — TLS terminates at the ALB with the
+#      *.airbrx.ai ACM cert; this container speaks plain HTTP on :8000,
+#      reachable only from the ALB security group.
+#
+# Brought up by the Terraform user-data (see terraform/), which writes
+# the .env below. To run by hand: create .env with DATABASE_URL,
+# OMNIGENT_ACCOUNTS_COOKIE_SECRET, and OMNIGENT_ACCOUNTS_BASE_URL, then
+# `docker compose up -d --build` from this directory.
+
+name: omnigent-interns
+
+services:
+  omnigent:
+    build:
+      # repo root, reached from deploy/intern-ec2/ → ../..
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.org/simple}
+    image: omnigent-interns:local
+    restart: unless-stopped
+    environment:
+      # RDS endpoint (postgresql://user:pw@host:5432/omnigent?sslmode=require).
+      # The entrypoint normalizes this to the psycopg3 dialect SQLAlchemy needs.
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL to the RDS endpoint}
+      ARTIFACT_DIR: /data/artifacts
+      HOST: 0.0.0.0
+      PORT: "8000"
+      OMNIGENT_ADMIN_CREDENTIALS_PATH: /data/admin-credentials
+      # Multi-user accounts auth (invite-only). No OIDC issuer set → accounts mode.
+      OMNIGENT_AUTH_ENABLED: "1"
+      # Pinned cookie secret — MUST be stable across instance replacement, or
+      # every redeploy invalidates all logged-in sessions. Terraform generates
+      # it once (in the durable root stack) and injects it here.
+      OMNIGENT_ACCOUNTS_COOKIE_SECRET: ${OMNIGENT_ACCOUNTS_COOKIE_SECRET:?set a 64-hex cookie secret}
+      # Public URL the browser sees. Drives the secure __Host- cookie and
+      # redirect URLs — mandatory because the ALB terminates TLS and uvicorn
+      # does not trust X-Forwarded-Proto.
+      OMNIGENT_ACCOUNTS_BASE_URL: ${OMNIGENT_ACCOUNTS_BASE_URL:?set https://interns.airbrx.ai}
+      OMNIGENT_ACCOUNTS_AUTO_OPEN: "0"
+      # Optional: durable artifacts across instance teardown. Without this the
+      # artifact volume is local to the box and lost when the instance is
+      # destroyed (accounts/sessions live in RDS and survive regardless).
+      # OMNIGENT_ARTIFACT_URI: ${OMNIGENT_ARTIFACT_URI:-}
+    volumes:
+      - artifact-data:/data
+    ports:
+      - "8000:8000"   # reached only by the ALB target group (SG-restricted)
+
+volumes:
+  artifact-data:
