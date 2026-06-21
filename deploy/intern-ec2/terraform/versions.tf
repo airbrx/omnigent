@@ -12,17 +12,17 @@ terraform {
     }
   }
 
-  # Recommended: an encrypted S3 backend with DynamoDB locking. Terraform
-  # state holds the generated DB password and cookie secret in plaintext, so
-  # do NOT keep it in git or on a laptop long-term. Uncomment and fill in:
-  #
-  # backend "s3" {
-  #   bucket         = "airbrx-tfstate"
-  #   key            = "intern-omnigent/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   dynamodb_table = "terraform-locks"
-  #   encrypt        = true
-  # }
+  # State lives in S3 (encrypted, versioned, public-access-blocked). It holds
+  # the generated DB password + cookie secret, so it must never live in git or
+  # solely on a laptop. No DynamoDB lock table (single operator, matching the
+  # account's other state buckets) — add `dynamodb_table = "..."` here and the
+  # table if multiple people will run apply concurrently.
+  backend "s3" {
+    bucket  = "airbrx-deploy-state-interns-724412576111"
+    key     = "intern-omnigent/terraform.tfstate"
+    region  = "us-east-1"
+    encrypt = true
+  }
 }
 
 provider "aws" {
