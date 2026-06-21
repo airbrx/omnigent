@@ -1,8 +1,13 @@
-# Intern server — EC2 runbook (`interns.airbrx.com`)
+# Intern server — EC2 runbook (`interns.airbrx.ai`)
 
 A self-contained Omnigent **coordination server** for the summer internship,
 built from the `2026-summer-internship` branch and run on a small AWS EC2
-instance behind `interns.airbrx.com`.
+instance, fronted by an **Application Load Balancer (ALB)** that terminates TLS
+with the existing ACM wildcard cert `*.airbrx.ai`.
+
+> **Hostname:** this uses **`interns.airbrx.ai`** to match the `*.airbrx.ai`
+> ACM cert. (An earlier draft said `interns.airbrx.com`; a `*.airbrx.ai`
+> wildcard does not validate a `.com` name, so the host follows the cert.)
 
 ## What this is (and isn't)
 
@@ -11,62 +16,50 @@ history and brokers WebSocket connections. It holds **no model keys** and
 **runs no agents**. Each student registers their own laptop as a *host* and
 signs in with their **own Claude subscription** — so their sessions execute on
 their laptop and model usage bills to their own account. Server-side LLM spend
-is therefore **$0**; the only cost is the EC2 instance.
+is therefore **$0**; the only cost is the EC2 instance + ALB.
 
 ```
-  Student laptop (host)                 EC2 t3.small (coordinator)
- ┌─────────────────────┐              ┌────────────────────────────────┐
- │ omnigent + claude   │  register    │ Caddy  → HTTPS (Let's Encrypt) │
- │ CLIs, own Claude sub │ ──host──────▶│ omnigent server (this branch)  │
- │ AGENTS RUN HERE      │◀─coordinate──│ postgres (accounts + sessions) │
- └─────────────────────┘              └────────────────────────────────┘
+  Student laptop (host)        ALB (TLS @ *.airbrx.ai)     EC2 t3.small (private)
+ ┌─────────────────────┐      ┌──────────────────────┐    ┌────────────────────┐
+ │ omnigent + claude   │ 443  │ HTTPS listener        │8000│ omnigent server    │
+ │ CLIs, own Claude sub │─────▶│ ACM cert, WS upgrade  │───▶│ (this branch)      │
+ │ AGENTS RUN HERE      │◀─────│ → HTTP target group   │◀───│ postgres (accounts │
+ └─────────────────────┘      └──────────────────────┘    │  + sessions)       │
+                                                            └────────────────────┘
 ```
+
+## TLS architecture: why an ALB
+
+An ACM certificate's private key is **not exportable**, so it cannot be
+installed on the instance (no Caddy/nginx/Let's Encrypt on the box). ACM certs
+attach only to AWS-managed front doors. For a WebSocket coordinator the right
+one is an **ALB**: it terminates TLS with `*.airbrx.ai`, natively proxies the
+HTTP/1.1 WebSocket upgrade, and forwards plain HTTP to the container inside the
+VPC. **The Caddy HTTPS overlay (`docker-compose.https.yaml`) is not used.**
 
 ## Branch model
 
 - The intern server tracks the **`2026-summer-internship`** branch.
-- Day-to-day customizations and fixes land on `main`. To ship updates to the
-  students, merge `main → 2026-summer-internship`, push, then rebuild on the
-  box (see [Updating](#updating-the-server)). Nothing reaches the interns until
-  you deliberately merge — the branch is a gate, not a mirror of `main`.
+- Customizations/fixes land on `main`. To ship updates to the students, merge
+  `main → 2026-summer-internship`, push, then rebuild on the box (see
+  [Updating](#updating-the-server)). Nothing reaches the interns until you
+  deliberately merge — the branch is a gate, not a mirror of `main`.
 
 ---
 
 ## One-time setup
 
-### 1. DNS (Route 53)
-
-You own `airbrx.com` in Route 53. After the instance has an Elastic IP
-(step 2), create one record:
-
-| Name | Type | Value | TTL |
-|---|---|---|---|
-| `interns.airbrx.com` | `A` | the instance's Elastic IP | 300 |
-
-Caddy uses the Let's Encrypt **HTTP-01** challenge on port 80, so the A record
-must resolve to the box *before* you bring the HTTPS overlay up.
-
-### 2. EC2 instance
+### 1. EC2 instance (private app server)
 
 - **Type: `t3.small` (2 GB RAM) minimum.** A `t3.micro` (1 GB) will OOM during
-  the image build (it compiles the web UI + Python deps). If you must use
-  `t3.micro`, build the image elsewhere and pull it instead of `--build`.
-- **AMI:** Ubuntu 24.04 LTS (x86_64).
-- **Disk:** 20 GB gp3 is plenty.
-- **Elastic IP:** allocate one and associate it, so the address survives a
-  stop/start. Point the Route 53 record at it.
-- **Security group (inbound):**
+  the image build (web UI + Python deps). On `t3.micro`, build the image
+  elsewhere and pull it instead of `--build`.
+- **AMI:** Ubuntu 24.04 LTS (x86_64). **Disk:** 20 GB gp3.
+- Place it in a subnet in the same VPC as the ALB. A private subnet (with NAT
+  for outbound) is ideal; a public subnet is fine too — inbound HTTP is locked
+  to the ALB's security group either way (step 4).
 
-  | Port | Source | Why |
-  |---|---|---|
-  | 22 (SSH) | your office/VPN IP only | admin access |
-  | 80 (HTTP) | `0.0.0.0/0` | Let's Encrypt HTTP-01 challenge + redirect to 443 |
-  | 443 (HTTPS) | `0.0.0.0/0` | the web UI + WebSocket coordinator |
-
-  Do **not** open 8000 — with the HTTPS overlay the omnigent container is not
-  published to the host; only Caddy's 80/443 are.
-
-### 3. Host packages
+Install the host packages:
 
 ```bash
 sudo apt-get update
@@ -74,7 +67,7 @@ sudo apt-get install -y docker.io docker-compose-v2 git
 sudo usermod -aG docker "$USER"   # log out/in so docker works without sudo
 ```
 
-### 4. Build & launch
+### 2. Build & launch (base compose — NO https overlay)
 
 ```bash
 git clone <your-repo-url> omnigent
@@ -85,32 +78,80 @@ cd deploy/docker
 ./bootstrap.sh                    # mints POSTGRES_PASSWORD + cookie secret into .env
 ```
 
-Add the public-domain settings to `deploy/docker/.env` (bootstrap already wrote
-the secrets — only add these two lines):
+Add the public-URL setting to `deploy/docker/.env` (bootstrap already wrote the
+secrets). The ALB terminates TLS and forwards plain HTTP, and uvicorn does not
+trust `X-Forwarded-Proto` — so this explicit `https://` base URL is what makes
+login cookies use the secure `__Host-` prefix and redirects resolve correctly:
 
 ```bash
-OMNIGENT_DOMAIN=interns.airbrx.com
-OMNIGENT_ACCOUNTS_BASE_URL=https://interns.airbrx.com
+OMNIGENT_ACCOUNTS_BASE_URL=https://interns.airbrx.ai
+# OMNIGENT_DOMAIN is only consumed by the Caddy overlay — leave it unset here.
 ```
 
-Bring it up with **both** compose files (the `--build` is what makes it build
-from this branch instead of pulling the official image):
+Bring it up with the **base compose only** (the `--build` is what builds from
+this branch instead of pulling the official image):
 
 ```bash
-docker compose -f docker-compose.yaml -f docker-compose.https.yaml up -d --build
+docker compose up -d --build
 docker compose logs -f omnigent      # watch for a clean boot; Ctrl-C when steady
 ```
 
-### 5. First admin login
+The container publishes `8000` on the host; the ALB target group points here.
+Confirm liveness locally before wiring the ALB:
 
-Grab the auto-generated admin password from the logs:
+```bash
+curl -s localhost:8000/health        # → {"status":"ok"}
+```
+
+### 3. ACM + ALB
+
+1. **Cert:** confirm the `*.airbrx.ai` certificate is **Issued** in ACM **in
+   the same region** as the ALB (ALB certs must be regional, not us-east-1
+   unless that's your region).
+2. **Target group** (`intern-tg`): target type **Instance**, protocol **HTTP**,
+   port **8000**, your VPC. Health check path **`/health`**, success code
+   **200**. Register the EC2 instance.
+3. **ALB** (`intern-alb`): **internet-facing**, across **≥2 public subnets in
+   different AZs** (an AWS requirement even for one backend). Give it a security
+   group `intern-alb-sg`.
+4. **Listeners:**
+   - **HTTPS :443** → default action **forward to `intern-tg`**, cert =
+     `*.airbrx.ai` (ACM), a modern TLS security policy.
+   - **HTTP :80** → **redirect to HTTPS :443** (301).
+5. **Idle timeout:** raise the ALB attribute **idle timeout to 3600s** (default
+   60s). Agent sessions hold long-lived WebSockets; 60s would drop them.
+
+### 4. Security groups
+
+| SG | Inbound rule | Source |
+|---|---|---|
+| `intern-alb-sg` | 443, 80 | `0.0.0.0/0` (or restrict to office/student CIDRs) |
+| EC2 instance SG | **8000** | **`intern-alb-sg`** (the SG, not a CIDR) — ALB-only |
+| EC2 instance SG | 22 (SSH) | your office/VPN IP only |
+
+The instance must **not** expose 8000, 80, or 443 to the internet — only the
+ALB reaches 8000, over the VPC.
+
+### 5. DNS (Route 53, `airbrx.ai` hosted zone)
+
+Create an **Alias** record (not a plain A → IP) pointing at the ALB:
+
+| Name | Type | Alias target |
+|---|---|---|
+| `interns.airbrx.ai` | `A` (Alias) | the `intern-alb` DNS name |
+
+(Add a matching `AAAA` alias if you want IPv6.) Alias records track the ALB's
+rotating IPs automatically — no Elastic IP needed for inbound. An EIP is still
+handy for stable SSH/egress, but it is no longer the front door.
+
+### 6. First admin login
 
 ```bash
 docker compose logs omnigent | grep -A4 "Created initial admin"
 ```
 
-Open `https://interns.airbrx.com`, sign in as that admin, then change the
-password. (The credential also persists at `/data/admin-credentials` on the
+Open `https://interns.airbrx.ai`, sign in as that admin, change the password.
+(The credential also persists at `/data/admin-credentials` on the
 `artifact-data` volume, surviving restarts.)
 
 ---
@@ -118,34 +159,31 @@ password. (The credential also persists at `/data/admin-credentials` on the
 ## Inviting students
 
 Web UI → your username (top-right) → **Members → Invite member**. Send the
-single-use link to the student; they pick their own username + password when
-they redeem it. Signup is invite-only — no link, no account.
+single-use link; the student picks their own username + password on redeem.
+Signup is invite-only.
 
-Optionally pin a stable admin roster that survives restarts: copy
-`deploy/intern-ec2/config.yaml` to the box's volume as `/data/config.yaml`
-(it lists admin **usernames** for accounts mode) and restart.
+Optionally pin a stable admin roster: copy `deploy/intern-ec2/config.yaml` to
+the box's volume as `/data/config.yaml` (admin **usernames** for accounts mode)
+and restart.
 
 ## Student onboarding (each student, once, on their own laptop)
 
 Prereqs on the laptop: **Node.js 22+**, **tmux**, and on Linux **bubblewrap**
-(`bwrap`); macOS needs nothing extra. Then install Omnigent (see the repo
-README's install section).
+(`bwrap`); macOS needs nothing extra. Then install Omnigent (repo README).
 
 ```bash
 claude login                                   # their OWN Claude Pro/Max subscription
-omnigent login https://interns.airbrx.com      # redeem-account login
-omnigent host  https://interns.airbrx.com      # register THIS laptop as a host
+omnigent login https://interns.airbrx.ai       # redeem-account login
+omnigent host  https://interns.airbrx.ai       # register THIS laptop as a host
 ```
 
-After `omnigent host`, the student opens `https://interns.airbrx.com`, hits
-**New Chat**, picks their laptop as the host, and runs. Their Claude
-subscription is the credential; the session executes on their machine.
+Then open `https://interns.airbrx.ai` → **New Chat**, pick their laptop as the
+host, and run. Their Claude subscription is the credential; the session runs on
+their machine.
 
 ---
 
 ## Updating the server
-
-When you want the students to get newer code:
 
 ```bash
 # on your workstation
@@ -156,41 +194,48 @@ git push
 # on the EC2 box
 cd ~/omnigent && git pull
 cd deploy/docker
-docker compose -f docker-compose.yaml -f docker-compose.https.yaml up -d --build
+docker compose up -d --build
 ```
 
-Account and session data live on the `postgres-data` / `artifact-data` Docker
-volumes and are untouched by a rebuild.
+Account/session data live on the `postgres-data` / `artifact-data` Docker
+volumes and survive a rebuild. The ALB health check flips the target healthy
+again once `/health` responds.
 
 ## Rotating / offboarding students
 
-Because students bring their own laptops and subscriptions, there are no
-server-side credentials to clean up. To offboard: **Members** page → deactivate
-the departing student's account. To onboard the next one: mint a fresh invite.
+No server-side credentials to clean up (students bring their own laptops +
+subscriptions). Offboard: **Members** page → deactivate the account. Onboard
+the next student: mint a fresh invite.
 
 ## Teardown (end of internship)
 
 ```bash
 cd ~/omnigent/deploy/docker
-docker compose -f docker-compose.yaml -f docker-compose.https.yaml down -v   # -v drops the DB + artifacts
+docker compose down -v          # drops the DB + artifacts
 ```
 
-Then release the Elastic IP and terminate the instance in the AWS console, and
-delete the `interns.airbrx.com` A record in Route 53.
+Then in AWS: delete the ALB, the target group, and the `interns.airbrx.ai`
+alias record; terminate the instance. Leave the `*.airbrx.ai` ACM cert (it's
+shared/wildcard).
 
 ---
 
 ## Troubleshooting
 
-- **Cert won't issue / 526 / connection refused on 443.** Confirm the A record
-  resolves to the Elastic IP (`dig interns.airbrx.com`) and that port 80 is
-  open to `0.0.0.0/0` — Let's Encrypt's HTTP-01 challenge needs it. Watch
-  `docker compose logs caddy`.
-- **Build OOMs / hangs.** You're on too small an instance — use `t3.small`+ or
-  build the image off-box and pull it.
-- **Student can't start a session.** They likely skipped `omnigent host`, or
-  their `claude` CLI isn't logged in. Both run on *their* laptop, not the
-  server.
-- **Login works but redirect/cookie is wrong.** `OMNIGENT_ACCOUNTS_BASE_URL`
-  must exactly match `https://interns.airbrx.com` (the URL the browser sees),
-  not the container address.
+- **ALB target unhealthy.** Health check must hit **HTTP :8000 `/health`** and
+  expect **200**. Verify the instance SG allows 8000 **from `intern-alb-sg`**,
+  and `curl localhost:8000/health` returns `{"status":"ok"}` on the box.
+- **502 / 504 from the ALB.** Container not up or not publishing 8000
+  (`docker compose ps`), or the target group port ≠ 8000.
+- **Sessions drop after ~1 minute.** ALB idle timeout still at the 60s default —
+  raise it to 3600s. WebSockets are long-lived.
+- **Login works but redirect/cookie is wrong (or "insecure cookie" errors).**
+  `OMNIGENT_ACCOUNTS_BASE_URL` must be exactly `https://interns.airbrx.ai` —
+  the public URL the browser sees, with `https`. The app doesn't infer the
+  scheme from the ALB, so this env var is mandatory here.
+- **Cert not selectable on the listener.** The ACM cert must be **Issued** and
+  **in the ALB's region**.
+- **Build OOMs / hangs.** Too small an instance — use `t3.small`+ or build the
+  image off-box and pull it.
+- **Student can't start a session.** They skipped `omnigent host`, or their
+  `claude` CLI isn't logged in — both run on *their* laptop, not the server.

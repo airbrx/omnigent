@@ -5,7 +5,9 @@
 #   docker compose -f docker-compose.yaml -f docker-compose.https.yaml up -d
 #
 # Non-secret settings only. DATABASE_URL, the cookie secret, and
-# OMNIGENT_DOMAIN / OMNIGENT_ACCOUNTS_BASE_URL stay in deploy/docker/.env.
+# OMNIGENT_ACCOUNTS_BASE_URL (=https://interns.airbrx.ai) stay in
+# deploy/docker/.env. TLS is terminated at the ALB with the *.airbrx.ai
+# ACM cert — there is no Caddy overlay and no OMNIGENT_DOMAIN here.
 # See deploy/docker/config.yaml.example for the full set of keys.
 
 # Admin roster. In accounts mode these are USERNAMES (not emails). A listed
