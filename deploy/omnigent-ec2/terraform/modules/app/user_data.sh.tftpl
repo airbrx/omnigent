@@ -1,0 +1,49 @@
+#!/bin/bash
+# EC2 first-boot bootstrap for the omnigent.airbrx.ai server (Docker + ALB,
+# JumpCloud OIDC). Rendered by Terraform's templatefile(): the percent-brace
+# tokens below are substituted at apply time. This script intentionally uses no
+# shell variable expansion, so every brace token is a Terraform value.
+set -euxo pipefail
+exec > >(tee /var/log/omnigent-bootstrap.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y docker.io docker-compose-v2 git
+systemctl enable --now docker
+
+# Clone (or refresh) the repo and check out the branch.
+install -d -o root -g root /opt
+cd /opt
+if [ ! -d omnigent/.git ]; then
+  git clone "${repo_url}" omnigent
+fi
+cd omnigent
+git fetch --all --prune
+git checkout "${branch}"
+git pull --ff-only origin "${branch}" || true
+
+# Admin roster (emails) consulted on each OIDC login. Bind-mounted read-only
+# into the container at /config/admins (see docker-compose.yaml).
+umask 077
+install -d -o root -g root /etc/omnigent
+cat > /etc/omnigent/admins <<'ADMINEOF'
+${admins_newline}
+ADMINEOF
+
+# Runtime env consumed by deploy/omnigent-ec2/docker-compose.yaml. Secrets land
+# in a 0600 file owned by root.
+cd deploy/omnigent-ec2
+cat > .env <<ENVEOF
+DATABASE_URL=${database_url}
+OMNIGENT_DOMAIN=${domain}
+OMNIGENT_OIDC_ISSUER=${oidc_issuer}
+OMNIGENT_OIDC_CLIENT_ID=${oidc_client_id}
+OMNIGENT_OIDC_CLIENT_SECRET=${oidc_client_secret}
+OMNIGENT_OIDC_COOKIE_SECRET=${oidc_cookie_secret}
+OMNIGENT_OIDC_ALLOWED_DOMAINS=${oidc_allowed_domains}
+OMNIGENT_OIDC_SESSION_TTL_HOURS=${oidc_session_ttl_hrs}
+ENVEOF
+
+# Build from the branch and start. The ALB target stays unhealthy until the
+# build finishes and /health responds — expected on first boot.
+docker compose up -d --build

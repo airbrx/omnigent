@@ -1,0 +1,13 @@
+# Omnigent admin roster (OIDC mode) — copy to /etc/omnigent/admins on the box
+# (Terraform user-data writes this from var.admins). One identity per line,
+# lowercased emails. A listed identity is promoted to admin on the NEXT login
+# (promotion is additive and case-insensitive; removing a line never demotes —
+# demote from the Members page). The file is bind-mounted read-only into the
+# container at /config/admins (OMNIGENT_ADMIN_LIST_PATH).
+#
+# Gotcha (native install only): the server's default admin-list path is
+# ~/.omnigent/admins and ignores OMNIGENT_DATA_DIR. In Docker this is moot
+# because OMNIGENT_ADMIN_LIST_PATH is set explicitly to /config/admins.
+
+ben@airbrx.com
+# aerickson@airbrx.com   # add staff who should also be admins
