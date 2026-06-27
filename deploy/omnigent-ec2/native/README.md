@@ -70,6 +70,9 @@ Rollback: `docker compose up -d`, point the Caddyfile back to `:8000`,
 
 ## Dev loop
 
+For a force-pushed branch use `git fetch && git reset --hard origin/<branch>`
+instead of `git pull`.
+
 ```bash
 # backend only
 ssm> cd /opt/omnigent && git pull && sudo systemctl restart omnigent-server
@@ -80,3 +83,33 @@ ssm> cd /opt/omnigent && git pull \
        && deploy/omnigent-ec2/native/pull-webui.sh webui-<sha> \
        && sudo systemctl restart omnigent-server
 ```
+
+## Gotchas (operations)
+
+- **Never run `uv sync` casually on the box.** `psycopg` is installed
+  *outside* the lockfile (step 2), so `uv sync` **prunes it** — the next
+  restart then crash-loops on the DB connect (500/502). `uv sync` is only
+  for a genuine dependency change, and you must reinstall psycopg right
+  after: `uv pip install --python /opt/omnigent/.venv/bin/python
+  'psycopg[binary]>=3.1,<4'`. The normal dev loop (`git reset` + restart,
+  or `pull-webui` + restart) never touches `uv`, so it's safe.
+
+- **`omnigent --version` lags the deployed code.** The `(sha, built …)`
+  string comes from `omnigent/_build_info.py`, which `setup.py` writes
+  only at *install/build* time — a `git reset && restart` redeploy does
+  **not** refresh it. The authoritative deployed commit is
+  `git -C /opt/omnigent rev-parse HEAD`. To make `--version` honest after
+  a code redeploy, regenerate the stamp (no reinstall needed):
+
+  ```bash
+  sudo -u ubuntu /opt/omnigent/.venv/bin/python - <<'PY'
+  import time, subprocess, pathlib
+  sha = subprocess.run(["git","-C","/opt/omnigent","rev-parse","HEAD"],
+                       capture_output=True, text=True).stdout.strip()
+  pathlib.Path("/opt/omnigent/omnigent/_build_info.py").write_text(
+      "from __future__ import annotations\n\n"
+      f"BUILD_TIME_EPOCH: int = {int(time.time())}\n"
+      f"COMMIT_SHA: str = {sha!r}\n")
+  PY
+  sudo systemctl restart omnigent-server
+  ```
