@@ -37,6 +37,7 @@ class _AdminScenario:
     member_email: str
     host_name: str
     host_version: str
+    host_os: str
     session_title: str
 
 
@@ -64,6 +65,7 @@ def admin_scenario(live_server: str) -> Iterator[_AdminScenario]:
         member_email=f"member-{suffix}@ui.test",
         host_name=f"member-laptop-{suffix}",
         host_version="9.9.9",
+        host_os="Darwin 99.9 (arm64)",
         session_title=f"Member session {suffix}",
     )
 
@@ -82,7 +84,11 @@ def admin_scenario(live_server: str) -> Iterator[_AdminScenario]:
     perms.grant(scenario.member_email, conv.id, level=LEVEL_OWNER)
     host_id = f"host-{suffix}"
     hosts.upsert_on_connect(
-        host_id, scenario.host_name, scenario.member_email, version=scenario.host_version
+        host_id,
+        scenario.host_name,
+        scenario.member_email,
+        version=scenario.host_version,
+        os=scenario.host_os,
     )
     convs.set_host_id(conv.id, host_id, workspace="/w")
 
@@ -119,5 +125,6 @@ def test_admin_three_views(
         host_row = page.get_by_test_id("admin-host-row").filter(has_text=admin_scenario.host_name)
         expect(host_row).to_be_visible(timeout=10_000)
         expect(host_row).to_contain_text(admin_scenario.host_version)
+        expect(host_row).to_contain_text(admin_scenario.host_os)
     finally:
         ctx.close()

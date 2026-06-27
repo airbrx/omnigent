@@ -194,6 +194,7 @@ def create_host_tunnel_router(
                 allow_host_id_reown=allow_host_id_reown,
                 configured_harnesses=frame.configured_harnesses,
                 version=frame.version,
+                os=frame.os,
             )
 
             conn = host_registry.register(

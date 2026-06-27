@@ -136,11 +136,13 @@ def test_upsert_persists_version(host_store: HostStore) -> None:
         name="laptop",
         owner="alice@example.com",
         version="0.3.1",
+        os="Darwin 23.5.0 (arm64)",
     )
 
     fetched = host_store.get_host("host_v1")
     assert fetched is not None
     assert fetched.version == "0.3.1"
+    assert fetched.os == "Darwin 23.5.0 (arm64)"
 
 
 def test_upsert_reconnect_keeps_last_known_version_when_unreported(

@@ -107,6 +107,8 @@ export interface AdminHost {
   online: boolean;
   /** Last-known version the host reported (null if never reported). */
   version: string | null;
+  /** OS + arch the host reported, e.g. "Darwin 23.5.0 (arm64)" (null if not). */
+  os: string | null;
   /** Per-harness readiness map, or null if the host never reported it. */
   harnesses: Record<string, boolean | string> | null;
   /** Unix epoch seconds the host was last seen. */

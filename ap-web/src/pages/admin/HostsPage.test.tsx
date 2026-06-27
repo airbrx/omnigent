@@ -32,6 +32,7 @@ describe("HostsPage", () => {
         owner: "alice@example.com",
         online: true,
         version: "0.3.1",
+        os: "Darwin 23.5.0 (arm64)",
         harnesses: { "claude-sdk": true, codex: false },
         last_seen: 1_700_000_000,
         created_at: 1_699_000_000,
@@ -45,6 +46,7 @@ describe("HostsPage", () => {
     await waitFor(() => expect(screen.getByText("alice-laptop")).toBeTruthy());
     const row = screen.getByTestId("admin-host-row");
     expect(within(row).getByText("0.3.1")).toBeTruthy();
+    expect(within(row).getByText("Darwin 23.5.0 (arm64)")).toBeTruthy();
     expect(within(row).getByText("online")).toBeTruthy();
     // Only the ready harness (value === true) is listed.
     expect(within(row).getByText("claude-sdk")).toBeTruthy();

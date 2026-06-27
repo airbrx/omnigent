@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import platform
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -69,6 +70,23 @@ from omnigent.runner.transports.ws_tunnel.frames import (
 )
 
 _logger = logging.getLogger(__name__)
+
+
+def _host_os_string() -> str:
+    """A compact OS + arch label for the host's ``hello`` frame.
+
+    OS family + release + machine arch — what an operator needs to reason
+    about harness compatibility, e.g. ``"Darwin 23.5.0 (arm64)"`` or
+    ``"Linux 6.10.0 (x86_64)"``. Falls back gracefully if ``platform``
+    returns empties.
+
+    :returns: The label; never raises.
+    """
+    system = platform.system() or "unknown"
+    release = platform.release()
+    machine = platform.machine()
+    label = f"{system} {release}".strip()
+    return f"{label} ({machine})" if machine else label
 
 
 def _runner_log_dir() -> Path:
@@ -1460,6 +1478,7 @@ class HostProcess:
             # the server's view refreshes whenever the tunnel does; the
             # launch-time check above stays the authoritative gate.
             configured_harnesses=await asyncio.to_thread(configured_harness_map),
+            os=_host_os_string(),
         )
         await ws.send(encode_host_frame(hello))
         self._ws = ws

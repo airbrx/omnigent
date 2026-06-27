@@ -733,6 +733,7 @@ class SqlHost(Base):
     sandbox_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     configured_harnesses: Mapped[str | None] = mapped_column(Text, nullable=True)
     version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    os: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     __table_args__ = (
         CheckConstraint(

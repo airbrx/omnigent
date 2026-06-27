@@ -77,6 +77,10 @@ class HostHelloFrame:
         unknown (an older host that doesn't report it) — never
         treat ``None`` as "nothing is configured". Recomputed on
         each (re)connect; the launch-time check is authoritative.
+    :param os: Host operating system + arch, e.g.
+        ``"Darwin 23.5.0 (arm64)"``. ``None`` from an older host that
+        doesn't report it. Optional/defaulted so the field is
+        backward-compatible — no protocol-major bump.
     """
 
     version: str
@@ -84,6 +88,7 @@ class HostHelloFrame:
     name: str
     runners: list[str] = field(default_factory=list)
     configured_harnesses: dict[str, HarnessAvailability] | None = None
+    os: str | None = None
 
 
 @dataclass

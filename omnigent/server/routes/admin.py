@@ -327,7 +327,7 @@ def create_admin_router(
             liveness gate the sidebar uses, not the raw stored status).
         :param version: Restrict to hosts reporting this exact version.
         :returns: ``{"hosts": [{"host_id", "name", "owner", "online",
-            "version", "harnesses", "last_seen", "created_at"}, ...]}``,
+            "version", "os", "harnesses", "last_seen", "created_at"}, ...]}``,
             most-recently-active first.
         """
         await _require_admin(request)
@@ -357,6 +357,7 @@ def create_admin_router(
                         "owner": h.owner,
                         "online": is_online,
                         "version": h.version,
+                        "os": h.os,
                         "harnesses": h.configured_harnesses,
                         "last_seen": h.updated_at,
                         "created_at": h.created_at,

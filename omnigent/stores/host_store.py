@@ -76,6 +76,7 @@ class Host:
     sandbox_id: str | None = None
     configured_harnesses: dict[str, HarnessAvailability] | None = None
     version: str | None = None
+    os: str | None = None
 
 
 def host_is_live(host: Host, now: int | None = None) -> bool:
@@ -145,6 +146,7 @@ def _row_to_host(row: SqlHost) -> Host:
         sandbox_id=row.sandbox_id,
         configured_harnesses=_parse_configured_harnesses(row.configured_harnesses),
         version=row.version,
+        os=row.os,
     )
 
 
@@ -191,6 +193,7 @@ class HostStore:
         allow_host_id_reown: bool = False,
         configured_harnesses: dict[str, HarnessAvailability] | None = None,
         version: str | None = None,
+        os: str | None = None,
     ) -> Host:
         """
         Register or update a host on WebSocket connect.
@@ -273,11 +276,13 @@ class HostStore:
                 row.status = "online"
                 row.updated_at = now
                 row.configured_harnesses = harnesses_json
-                # Only overwrite a known version — a reconnect from an older
-                # host build that doesn't report one shouldn't wipe the
-                # last-known value.
+                # Only overwrite a known version/os — a reconnect from an
+                # older host build that doesn't report them shouldn't wipe
+                # the last-known values.
                 if version is not None:
                     row.version = version
+                if os is not None:
+                    row.os = os
             else:
                 row = SqlHost(
                     owner=owner,
@@ -288,6 +293,7 @@ class HostStore:
                     updated_at=now,
                     configured_harnesses=harnesses_json,
                     version=version,
+                    os=os,
                 )
                 session.add(row)
             return _row_to_host(row)
