@@ -387,3 +387,118 @@ async def test_list_user_sessions_forbidden_for_non_admin(
         headers=_headers("peon@example.com"),
     )
     assert resp.status_code == 403
+
+
+# ── GET /v1/admin/sessions (global, filterable) ─────────────
+
+
+async def test_list_sessions_global_and_filtered_by_user(
+    auth_client: httpx.AsyncClient, db_uri: str
+) -> None:
+    """The global sessions list returns all sessions; ?user= scopes it."""
+    _make_user(db_uri, "boss@example.com", is_admin=True)
+    a = _make_session_for(db_uri, "alice@example.com", cost_usd=1.0)
+    b = _make_session_for(db_uri, "bob@example.com", cost_usd=2.0)
+
+    # No filter → both sessions.
+    resp = await auth_client.get("/v1/admin/sessions", headers=_headers("boss@example.com"))
+    assert resp.status_code == 200
+    all_ids = {s["id"] for s in resp.json()["sessions"]}
+    assert {a, b} <= all_ids
+
+    # ?user=alice → only alice's, with her role populated.
+    resp = await auth_client.get(
+        "/v1/admin/sessions?user=alice@example.com", headers=_headers("boss@example.com")
+    )
+    assert resp.status_code == 200
+    rows = resp.json()["sessions"]
+    assert {s["id"] for s in rows} == {a}
+    assert rows[0]["role"] == "owner"
+    assert rows[0]["is_owner"] is True
+
+
+async def test_list_sessions_filtered_by_host(auth_client: httpx.AsyncClient, db_uri: str) -> None:
+    """?host= returns only sessions bound to that host."""
+    _make_user(db_uri, "boss@example.com", is_admin=True)
+    bound = _make_session_for(db_uri, "alice@example.com")
+    _make_session_for(db_uri, "alice@example.com")  # unbound — must not match
+    HostStore(db_uri).upsert_on_connect("host_h1", "alice-laptop", "alice@example.com")
+    SqlAlchemyConversationStore(db_uri).set_host_id(bound, "host_h1", workspace="/w")
+
+    resp = await auth_client.get(
+        "/v1/admin/sessions?host=host_h1", headers=_headers("boss@example.com")
+    )
+    assert resp.status_code == 200
+    rows = resp.json()["sessions"]
+    assert {s["id"] for s in rows} == {bound}
+    assert rows[0]["host"] == "alice-laptop"
+
+
+async def test_list_sessions_forbidden_for_non_admin(
+    auth_client: httpx.AsyncClient, db_uri: str
+) -> None:
+    """Non-admins are refused the global sessions list."""
+    _make_user(db_uri, "peon@example.com")
+    resp = await auth_client.get("/v1/admin/sessions", headers=_headers("peon@example.com"))
+    assert resp.status_code == 403
+
+
+# ── GET /v1/admin/hosts ─────────────────────────────────────
+
+
+async def test_list_hosts_with_version_and_filters(
+    auth_client: httpx.AsyncClient, db_uri: str
+) -> None:
+    """All hosts with version + online state; user/status filters apply."""
+    _make_user(db_uri, "boss@example.com", is_admin=True)
+    hosts = HostStore(db_uri)
+    hosts.upsert_on_connect("host_on", "alice-laptop", "alice@example.com", version="0.3.1")
+    hosts.upsert_on_connect("host_off", "alice-desktop", "alice@example.com", version="0.3.0")
+    hosts.set_offline("host_off")
+    hosts.upsert_on_connect("host_bob", "bob-laptop", "bob@example.com", version="0.3.1")
+
+    # All hosts.
+    resp = await auth_client.get("/v1/admin/hosts", headers=_headers("boss@example.com"))
+    assert resp.status_code == 200
+    by_id = {h["host_id"]: h for h in resp.json()["hosts"]}
+    assert by_id["host_on"]["version"] == "0.3.1"
+    assert by_id["host_on"]["online"] is True
+    assert by_id["host_off"]["online"] is False
+    assert by_id["host_off"]["version"] == "0.3.0"
+
+    # Filter by owner.
+    resp = await auth_client.get(
+        "/v1/admin/hosts?user=alice@example.com", headers=_headers("boss@example.com")
+    )
+    owners = {h["owner"] for h in resp.json()["hosts"]}
+    assert owners == {"alice@example.com"}
+
+    # Filter by status=offline.
+    resp = await auth_client.get(
+        "/v1/admin/hosts?status=offline", headers=_headers("boss@example.com")
+    )
+    ids = {h["host_id"] for h in resp.json()["hosts"]}
+    assert ids == {"host_off"}
+
+
+async def test_list_hosts_forbidden_for_non_admin(
+    auth_client: httpx.AsyncClient, db_uri: str
+) -> None:
+    """Non-admins are refused the hosts list."""
+    _make_user(db_uri, "peon@example.com")
+    resp = await auth_client.get("/v1/admin/hosts", headers=_headers("peon@example.com"))
+    assert resp.status_code == 403
+
+
+# ── GET /v1/admin/server ────────────────────────────────────
+
+
+async def test_admin_server_info(auth_client: httpx.AsyncClient, db_uri: str) -> None:
+    """Server version info is returned for an admin."""
+    _make_user(db_uri, "boss@example.com", is_admin=True)
+    resp = await auth_client.get("/v1/admin/server", headers=_headers("boss@example.com"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body["version"], str) and body["version"]
+    # commit / built_at are present (possibly null in a never-built checkout).
+    assert "commit" in body and "built_at" in body

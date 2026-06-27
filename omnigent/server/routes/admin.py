@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from importlib.metadata import version as _pkg_version
 
 from fastapi import APIRouter, Query, Request
 
-from omnigent.entities import SessionPermission
+from omnigent.entities import Conversation, SessionPermission
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.server.auth import LEVEL_OWNER, AuthProvider
 from omnigent.server.routes._auth_helpers import get_user_id
@@ -48,6 +49,62 @@ def _role_for(grants: list[SessionPermission], user_id: str) -> str | None:
     if not levels:
         return None
     return _ROLE_NAMES.get(max(levels))
+
+
+def _build_session_rows(
+    convs: list[Conversation],
+    *,
+    permission_store: PermissionStore,
+    host_store: HostStore | None,
+    role_for: str | None,
+) -> list[dict[str, object]]:
+    """Build admin session rows (owner, role, cost/tokens, bound host).
+
+    Shared by the per-user and the global sessions listings.
+
+    :param convs: The conversations to render.
+    :param role_for: When set, each row's ``role`` / ``is_owner`` is computed
+        relative to this user (the per-user view); ``None`` for the global
+        view, where ``role`` is ``None`` and ``is_owner`` is ``False``.
+    """
+    grants_by_conv = permission_store.list_for_sessions([c.id for c in convs])
+    # Resolve each session's bound host to a name + liveness. Distinct host ids
+    # are few, so a small map over the distinct set avoids a per-session lookup.
+    host_ids = {c.host_id for c in convs if c.host_id}
+    hosts_by_id = {}
+    online_hosts: set[str] = set()
+    if host_store is not None and host_ids:
+        for hid in host_ids:
+            host = host_store.get_host(hid)
+            if host is not None:
+                hosts_by_id[hid] = host
+        online_hosts = host_store.online_host_ids(list(host_ids))
+    rows: list[dict[str, object]] = []
+    for c in convs:
+        grants = grants_by_conv.get(c.id, [])
+        owner = _owner_of(grants)
+        # Prefer the host's friendly name; fall back to the raw id for a host
+        # that's been deleted but still bound on the session.
+        host_label = None
+        if c.host_id:
+            known = hosts_by_id.get(c.host_id)
+            host_label = known.name if known is not None else c.host_id
+        rows.append(
+            {
+                "id": c.id,
+                "title": c.title,
+                "created_at": c.created_at,
+                "updated_at": c.updated_at,
+                "cost_usd": float(c.session_usage.get("total_cost_usd") or 0.0),
+                "total_tokens": int(c.session_usage.get("total_tokens") or 0),
+                "role": _role_for(grants, role_for) if role_for is not None else None,
+                "owner": owner,
+                "is_owner": owner == role_for if role_for is not None else False,
+                "host": host_label,
+                "host_online": c.host_id in online_hosts if c.host_id else False,
+            }
+        )
+    return rows
 
 
 def create_admin_router(
@@ -183,44 +240,12 @@ def create_admin_router(
         def _build() -> dict[str, object]:
             paged = conversation_store.list_conversations(accessible_by=user_id, limit=limit)
             totals = conversation_store.usage_totals_for_user(user_id)
-            grants_by_conv = permission_store.list_for_sessions([c.id for c in paged.data])
-            # Resolve each session's bound host to a name + liveness. Distinct
-            # host ids are few (a user has few hosts), so a small map over the
-            # distinct set avoids a per-session lookup.
-            host_ids = {c.host_id for c in paged.data if c.host_id}
-            hosts_by_id = {}
-            online_hosts: set[str] = set()
-            if host_store is not None and host_ids:
-                for hid in host_ids:
-                    host = host_store.get_host(hid)
-                    if host is not None:
-                        hosts_by_id[hid] = host
-                online_hosts = host_store.online_host_ids(list(host_ids))
-            sessions = []
-            for c in paged.data:
-                grants = grants_by_conv.get(c.id, [])
-                owner = _owner_of(grants)
-                # Prefer the host's friendly name; fall back to the raw id for a
-                # host that's been deleted but still bound on the session.
-                host_label = None
-                if c.host_id:
-                    known = hosts_by_id.get(c.host_id)
-                    host_label = known.name if known is not None else c.host_id
-                sessions.append(
-                    {
-                        "id": c.id,
-                        "title": c.title,
-                        "created_at": c.created_at,
-                        "updated_at": c.updated_at,
-                        "cost_usd": float(c.session_usage.get("total_cost_usd") or 0.0),
-                        "total_tokens": int(c.session_usage.get("total_tokens") or 0),
-                        "role": _role_for(grants, user_id),
-                        "owner": owner,
-                        "is_owner": owner == user_id,
-                        "host": host_label,
-                        "host_online": c.host_id in online_hosts if c.host_id else False,
-                    }
-                )
+            sessions = _build_session_rows(
+                paged.data,
+                permission_store=permission_store,
+                host_store=host_store,
+                role_for=user_id,
+            )
             return {
                 "user_id": user_id,
                 "totals": {
@@ -232,5 +257,133 @@ def create_admin_router(
             }
 
         return await asyncio.to_thread(_build)
+
+    @router.get("/admin/sessions")
+    async def list_sessions(
+        request: Request,
+        user: str | None = Query(default=None),
+        host: str | None = Query(default=None),
+        q: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict[str, object]:
+        """List sessions across users (admin only), with optional filters.
+
+        Powers the global admin Sessions view and the cross-links from the
+        Users / Hosts views. Top-level (``kind="default"``) sessions only.
+
+        :param user: Restrict to sessions this user can access (their
+            ``accessible_by`` set); also sets each row's ``role``/``is_owner``.
+        :param host: Restrict to sessions bound to this host id.
+        :param q: Case-insensitive title substring filter.
+        :param limit: Maximum sessions to return (1–500).
+        :returns: ``{"sessions": [{...same shape as the per-user listing...}]}``.
+        """
+        await _require_admin(request)
+
+        def _build() -> dict[str, object]:
+            if host is not None:
+                convs = [
+                    c
+                    for c in conversation_store.list_conversations_by_host_id(host)
+                    if c.kind == "default"
+                ]
+                if user is not None:
+                    accessible = {
+                        c.id
+                        for c in conversation_store.list_conversations(
+                            accessible_by=user, limit=500
+                        ).data
+                    }
+                    convs = [c for c in convs if c.id in accessible]
+                if q:
+                    needle = q.lower()
+                    convs = [c for c in convs if c.title and needle in c.title.lower()]
+                convs = sorted(convs, key=lambda c: c.updated_at, reverse=True)[:limit]
+            else:
+                convs = conversation_store.list_conversations(
+                    accessible_by=user, search_query=q, limit=limit
+                ).data
+            rows = _build_session_rows(
+                convs,
+                permission_store=permission_store,
+                host_store=host_store,
+                role_for=user,
+            )
+            return {"sessions": rows}
+
+        return await asyncio.to_thread(_build)
+
+    @router.get("/admin/hosts")
+    async def list_hosts(
+        request: Request,
+        user: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        version: str | None = Query(default=None),
+    ) -> dict[str, object]:
+        """List hosts across users (admin only), with optional filters.
+
+        :param user: Restrict to hosts owned by this user.
+        :param status: ``"online"`` or ``"offline"`` (computed via the same
+            liveness gate the sidebar uses, not the raw stored status).
+        :param version: Restrict to hosts reporting this exact version.
+        :returns: ``{"hosts": [{"host_id", "name", "owner", "online",
+            "version", "harnesses", "last_seen", "created_at"}, ...]}``,
+            most-recently-active first.
+        """
+        await _require_admin(request)
+
+        def _build() -> dict[str, object]:
+            hosts = host_store.list_all_hosts() if host_store is not None else []
+            if user is not None:
+                hosts = [h for h in hosts if h.owner == user]
+            online = (
+                host_store.online_host_ids([h.host_id for h in hosts])
+                if host_store is not None and hosts
+                else set()
+            )
+            rows: list[dict[str, object]] = []
+            for h in hosts:
+                is_online = h.host_id in online
+                if status == "online" and not is_online:
+                    continue
+                if status == "offline" and is_online:
+                    continue
+                if version is not None and (h.version or "") != version:
+                    continue
+                rows.append(
+                    {
+                        "host_id": h.host_id,
+                        "name": h.name,
+                        "owner": h.owner,
+                        "online": is_online,
+                        "version": h.version,
+                        "harnesses": h.configured_harnesses,
+                        "last_seen": h.updated_at,
+                        "created_at": h.created_at,
+                    }
+                )
+            return {"hosts": rows}
+
+        return await asyncio.to_thread(_build)
+
+    @router.get("/admin/server")
+    async def server_info(request: Request) -> dict[str, object]:
+        """Server version info for the admin header (admin only).
+
+        :returns: ``{"version", "commit", "built_at"}`` — the package
+            version plus the build stamp (git sha + epoch) when available
+            (``None`` in a source checkout that was never built).
+        """
+        await _require_admin(request)
+        commit: str | None = None
+        built_at: int | None = None
+        try:
+            from omnigent import _build_info
+
+            commit = _build_info.COMMIT_SHA or None
+            built_at = _build_info.BUILD_TIME_EPOCH
+        except (ImportError, AttributeError):  # source checkout that was never built
+            pass
+        return {"version": _pkg_version("omnigent"), "commit": commit, "built_at": built_at}
 
     return router
