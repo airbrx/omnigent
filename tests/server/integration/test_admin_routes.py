@@ -505,3 +505,46 @@ async def test_admin_server_info(auth_client: httpx.AsyncClient, db_uri: str) ->
     assert isinstance(body["version"], str) and body["version"]
     # commit / built_at are present (possibly null in a never-built checkout).
     assert "commit" in body and "built_at" in body
+    # Host-upgrade fields for the popup.
+    assert isinstance(body["version_label"], str) and body["version_label"]
+    assert "install_command" in body  # null when OMNIGENT_DOMAIN unset
+
+
+async def test_admin_hosts_outdated_flag(auth_client: httpx.AsyncClient, db_uri: str) -> None:
+    """A host whose reported version differs from the server's is flagged outdated."""
+    from omnigent.update_check import version_label
+
+    _make_user(db_uri, "boss@example.com", is_admin=True)
+    hosts = HostStore(db_uri)
+    # A host on the server's exact build is up to date; a different one is outdated.
+    hosts.upsert_on_connect("host_cur", "cur", "alice@example.com", version=version_label())
+    hosts.upsert_on_connect("host_old", "old", "alice@example.com", version="0.0.1 (deadbeef)")
+    hosts.upsert_on_connect("host_none", "none", "alice@example.com")  # no version
+
+    resp = await auth_client.get("/v1/admin/hosts", headers=_headers("boss@example.com"))
+    by_id = {h["host_id"]: h for h in resp.json()["hosts"]}
+    assert by_id["host_cur"]["outdated"] is False
+    assert by_id["host_old"]["outdated"] is True
+    assert by_id["host_none"]["outdated"] is None
+
+
+# ── GET /install.sh ─────────────────────────────────────────
+
+
+async def test_install_script_served(auth_client: httpx.AsyncClient) -> None:
+    """The installer is served as a shell script (public, no auth needed)."""
+    resp = await auth_client.get("/install.sh")
+    assert resp.status_code == 200
+    assert "Omnigent installer" in resp.text  # the script's header comment
+
+
+async def test_install_script_injects_fork_ref(
+    auth_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With OMNIGENT_HOST_INSTALL_REPO set, the served script pins the fork + skips web UI."""
+    monkeypatch.setenv("OMNIGENT_HOST_INSTALL_REPO", "https://github.com/airbrx/omnigent")
+    resp = await auth_client.get("/install.sh")
+    assert resp.status_code == 200
+    assert "OMNIGENT_INSTALL_REPO=" in resp.text
+    assert "github.com/airbrx/omnigent" in resp.text
+    assert "OMNIGENT_SKIP_WEB_UI=true" in resp.text

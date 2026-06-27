@@ -22,6 +22,7 @@ import websockets.asyncio.client
 from websockets.exceptions import InvalidStatus, InvalidURI
 
 from omnigent._platform import WINDOWS_ENV_PASSTHROUGH
+from omnigent.update_check import version_label
 from omnigent.host.frames import (
     HARNESS_NOT_CONFIGURED_ERROR_CODE,
     HostCreateDirFrame,
@@ -1469,7 +1470,7 @@ class HostProcess:
             to the reconnect loop in :meth:`run`.
         """
         hello = HostHelloFrame(
-            version="0.1.0",
+            version=version_label(),
             frame_protocol_version=1,
             name=self._identity.name,
             runners=self._alive_runner_ids(),

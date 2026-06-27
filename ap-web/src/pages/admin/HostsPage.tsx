@@ -8,10 +8,23 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { XIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, XIcon } from "lucide-react";
 import { useNavigate, useSearchParams } from "@/lib/routing";
-import { type AdminHost, listAdminHosts } from "@/lib/adminApi";
+import {
+  type AdminHost,
+  type AdminServerInfo,
+  getServerInfo,
+  listAdminHosts,
+} from "@/lib/adminApi";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { formatEpoch } from "./format";
 
 const STATUSES = [
@@ -29,6 +42,12 @@ export function HostsPage() {
 
   const [hosts, setHosts] = useState<AdminHost[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [server, setServer] = useState<AdminServerInfo | null>(null);
+  const [selected, setSelected] = useState<AdminHost | null>(null);
+
+  useEffect(() => {
+    void (async () => setServer(await getServerInfo()))();
+  }, []);
 
   const load = useCallback(async () => {
     setHosts(null);
@@ -153,8 +172,35 @@ export function HostsPage() {
                       {h.online ? "online" : "offline"}
                     </span>
                   </td>
-                  <td className="px-3 py-2 align-middle tabular-nums text-muted-foreground">
-                    {h.version ?? <span className="text-xs">—</span>}
+                  <td className="px-3 py-2 align-middle tabular-nums">
+                    {h.version ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelected(h);
+                        }}
+                        className="inline-flex items-center gap-1.5 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                        title="Version details & upgrade"
+                      >
+                        {h.outdated ? (
+                          <span
+                            className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                            aria-label="update available"
+                          />
+                        ) : (
+                          h.outdated === false && (
+                            <span
+                              className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                              aria-label="up to date"
+                            />
+                          )
+                        )}
+                        {h.version}
+                      </button>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </td>
                   <td className="px-3 py-2 align-middle text-muted-foreground">
                     {h.os ?? <span className="text-xs">—</span>}
@@ -171,7 +217,91 @@ export function HostsPage() {
           </table>
         </div>
       )}
+
+      <VersionDialog host={selected} server={server} onClose={() => setSelected(null)} />
     </div>
+  );
+}
+
+/** Version details + upgrade instructions for one host. */
+function VersionDialog({
+  host,
+  server,
+  onClose,
+}: {
+  host: AdminHost | null;
+  server: AdminServerInfo | null;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => setCopied(false), [host]);
+  if (host === null) return null;
+
+  const cmd = server?.install_command ?? null;
+  const copy = () => {
+    if (!cmd) return;
+    void navigator.clipboard?.writeText(cmd).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  return (
+    <Dialog open={host !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{host.name}</DialogTitle>
+          <DialogDescription>Installed version and how to upgrade this host.</DialogDescription>
+        </DialogHeader>
+
+        <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1.5 text-sm">
+          <dt className="text-muted-foreground">Installed</dt>
+          <dd className="tabular-nums">{host.version ?? "unknown"}</dd>
+          <dt className="text-muted-foreground">Server target</dt>
+          <dd className="tabular-nums">{server?.version_label ?? "—"}</dd>
+          <dt className="text-muted-foreground">Status</dt>
+          <dd>
+            {host.outdated === true ? (
+              <Badge className="bg-amber-500/15 text-amber-600 hover:bg-amber-500/15">
+                Update available
+              </Badge>
+            ) : host.outdated === false ? (
+              <Badge variant="secondary">Up to date</Badge>
+            ) : (
+              <span className="text-muted-foreground">Unknown</span>
+            )}
+          </dd>
+          {host.os && (
+            <>
+              <dt className="text-muted-foreground">OS</dt>
+              <dd>{host.os}</dd>
+            </>
+          )}
+        </dl>
+
+        {host.outdated !== false && (
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Run this on <span className="font-medium text-foreground">{host.name}</span> to
+              install the version this server runs:
+            </p>
+            {cmd ? (
+              <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 p-2">
+                <code className="flex-1 overflow-x-auto whitespace-nowrap text-xs">{cmd}</code>
+                <Button variant="ghost" size="icon" onClick={copy} aria-label="Copy command">
+                  {copied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
+                </Button>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                The server has no public URL configured (OMNIGENT_DOMAIN), so it can't provide an
+                installer command.
+              </p>
+            )}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 

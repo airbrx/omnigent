@@ -109,6 +109,8 @@ export interface AdminHost {
   version: string | null;
   /** OS + arch the host reported, e.g. "Darwin 23.5.0 (arm64)" (null if not). */
   os: string | null;
+  /** Whether the host's build differs from the server's (null if no version reported). */
+  outdated: boolean | null;
   /** Per-harness readiness map, or null if the host never reported it. */
   harnesses: Record<string, boolean | string> | null;
   /** Unix epoch seconds the host was last seen. */
@@ -116,13 +118,17 @@ export interface AdminHost {
   created_at: number;
 }
 
-/** Server build info for the admin header. */
+/** Server build info for the admin header + the host-upgrade popup. */
 export interface AdminServerInfo {
   version: string;
   /** Git commit the running build was stamped from (null in a source checkout). */
   commit: string | null;
   /** Unix epoch seconds the build was stamped (null when unknown). */
   built_at: number | null;
+  /** Build-identity label hosts are compared against, e.g. "0.3.0.dev0 (c983f9b0)". */
+  version_label: string;
+  /** One-liner that upgrades a host to this server's version (null if no domain). */
+  install_command: string | null;
 }
 
 // Type aliases (not interfaces) so they satisfy buildQuery's

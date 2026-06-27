@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from importlib.metadata import version as _pkg_version
 
 from fastapi import APIRouter, Query, Request
@@ -28,6 +29,7 @@ from omnigent.server.routes._auth_helpers import get_user_id
 from omnigent.stores.conversation_store import ConversationStore
 from omnigent.stores.host_store import HostStore
 from omnigent.stores.permission_store import PermissionStore
+from omnigent.update_check import version_label
 
 _logger = logging.getLogger(__name__)
 
@@ -341,6 +343,10 @@ def create_admin_router(
                 if host_store is not None and hosts
                 else set()
             )
+            # The host is "outdated" when its reported version label differs
+            # from the build this server runs (None when the host reported no
+            # version — an older build that predates version reporting).
+            server_label = version_label()
             rows: list[dict[str, object]] = []
             for h in hosts:
                 is_online = h.host_id in online
@@ -358,6 +364,7 @@ def create_admin_router(
                         "online": is_online,
                         "version": h.version,
                         "os": h.os,
+                        "outdated": (h.version != server_label) if h.version else None,
                         "harnesses": h.configured_harnesses,
                         "last_seen": h.updated_at,
                         "created_at": h.created_at,
@@ -369,11 +376,15 @@ def create_admin_router(
 
     @router.get("/admin/server")
     async def server_info(request: Request) -> dict[str, object]:
-        """Server version info for the admin header (admin only).
+        """Server version + host-upgrade info for the admin header (admin only).
 
-        :returns: ``{"version", "commit", "built_at"}`` — the package
-            version plus the build stamp (git sha + epoch) when available
-            (``None`` in a source checkout that was never built).
+        ``version_label`` is the build-identity string hosts are compared
+        against. ``install_command`` is the one-liner that upgrades a host to
+        exactly this server's version (served by ``GET /install.sh``); it is
+        ``None`` when ``OMNIGENT_DOMAIN`` is unset (no public URL to curl).
+
+        :returns: ``{"version", "commit", "built_at", "version_label",
+            "install_command"}``.
         """
         await _require_admin(request)
         commit: str | None = None
@@ -385,6 +396,14 @@ def create_admin_router(
             built_at = _build_info.BUILD_TIME_EPOCH
         except (ImportError, AttributeError):  # source checkout that was never built
             pass
-        return {"version": _pkg_version("omnigent"), "commit": commit, "built_at": built_at}
+        domain = os.environ.get("OMNIGENT_DOMAIN", "").strip()
+        install_command = f"curl -fsSL https://{domain}/install.sh | sh" if domain else None
+        return {
+            "version": _pkg_version("omnigent"),
+            "commit": commit,
+            "built_at": built_at,
+            "version_label": version_label(),
+            "install_command": install_command,
+        }
 
     return router

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
@@ -1637,6 +1637,46 @@ def create_app(
         from importlib.metadata import version as _pkg_version
 
         return {"version": _pkg_version("omnigent")}
+
+    @app.get("/install.sh", include_in_schema=False)
+    async def install_script() -> PlainTextResponse:
+        """Serve the host installer, pre-pointed at this server's fork+ref.
+
+        A host upgrades to exactly the version this server runs with one line:
+        ``curl -fsSL https://<domain>/install.sh | sh``. The body is
+        ``scripts/install_oss.sh`` with ``OMNIGENT_INSTALL_REPO`` (this server's
+        fork@sha) + ``OMNIGENT_SKIP_WEB_UI`` injected after the shebang — so a
+        bare ``| sh`` installs the matching fork build without needing Node.
+        Injection only happens when ``OMNIGENT_HOST_INSTALL_REPO`` is set;
+        otherwise the plain installer (PyPI default) is served. Public and
+        unauthenticated — it carries no secrets and installs only public code.
+        """
+        import os as _os
+        from pathlib import Path as _Path
+
+        import omnigent as _omni
+
+        script_path = _Path(_omni.__file__).resolve().parent.parent / "scripts" / "install_oss.sh"
+        if not script_path.is_file():
+            return PlainTextResponse(
+                "# Omnigent installer is not bundled with this server build.\n",
+                status_code=404,
+            )
+        body = script_path.read_text()
+        base = _os.environ.get("OMNIGENT_HOST_INSTALL_REPO", "").strip()
+        if base:
+            from omnigent.update_check import _read_build_info
+
+            info = _read_build_info()
+            sha = info[1] if info and info[1] else ""
+            ref = f"{base}@{sha}" if sha else base
+            inject = (
+                f'OMNIGENT_INSTALL_REPO="{ref}"\nexport OMNIGENT_INSTALL_REPO\n'
+                "OMNIGENT_SKIP_WEB_UI=true\nexport OMNIGENT_SKIP_WEB_UI\n"
+            )
+            shebang, sep, rest = body.partition("\n")
+            body = f"{shebang}\n{inject}{rest}" if sep else inject + body
+        return PlainTextResponse(body, media_type="text/x-shellscript")
 
     @app.get("/v1/info")
     async def info() -> dict[str, bool | str | None]:

@@ -46,6 +46,8 @@ describe("AdminLayout", () => {
       version: "0.3.0.dev0",
       commit: "6fdc4b8c1234",
       built_at: 1_700_000_000,
+      version_label: "0.3.0.dev0 (6fdc4b8c)",
+      install_command: "curl -fsSL https://omnigent.example/install.sh | sh",
     });
     renderLayout();
     await waitFor(() => expect(screen.getByText("child content")).toBeTruthy());
