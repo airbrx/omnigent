@@ -36,6 +36,7 @@ class _AdminScenario:
     admin_email: str
     member_email: str
     host_name: str
+    host_version: str
     session_title: str
 
 
@@ -62,6 +63,7 @@ def admin_scenario(live_server: str) -> Iterator[_AdminScenario]:
         admin_email=f"admin-{suffix}@ui.test",
         member_email=f"member-{suffix}@ui.test",
         host_name=f"member-laptop-{suffix}",
+        host_version="9.9.9",
         session_title=f"Member session {suffix}",
     )
 
@@ -79,37 +81,43 @@ def admin_scenario(live_server: str) -> Iterator[_AdminScenario]:
     convs.update_conversation(conv.id, title=scenario.session_title)
     perms.grant(scenario.member_email, conv.id, level=LEVEL_OWNER)
     host_id = f"host-{suffix}"
-    hosts.upsert_on_connect(host_id, scenario.host_name, scenario.member_email)
+    hosts.upsert_on_connect(
+        host_id, scenario.host_name, scenario.member_email, version=scenario.host_version
+    )
     convs.set_host_id(conv.id, host_id, workspace="/w")
 
     yield scenario
 
 
-def test_admin_user_list_and_session_host(
+def test_admin_three_views(
     browser: Browser, live_server: str, admin_scenario: _AdminScenario
 ) -> None:
-    """Admin sees the member (with host count) and drills into their session."""
+    """Admin walks Users → Sessions → Hosts and reads the seeded scenario back."""
     # The extra header rides every fetch/XHR, so /v1/me resolves the admin
     # identity and the SPA renders the admin chrome.
     ctx = browser.new_context(extra_http_headers={"X-Forwarded-Email": admin_scenario.admin_email})
+    member = admin_scenario.member_email
     try:
         page = ctx.new_page()
-        page.goto(f"{live_server}/admin")
 
-        # The member shows up in the user list...
-        member_row = page.get_by_test_id("admin-user-row").filter(
-            has_text=admin_scenario.member_email
-        )
+        # Users: the member shows up with one owned session + one online host.
+        page.goto(f"{live_server}/admin/users")
+        member_row = page.get_by_test_id("admin-user-row").filter(has_text=member)
         expect(member_row).to_be_visible(timeout=20_000)
-        # ...with one owned session and one online host ("1 · 1 online").
         expect(member_row).to_contain_text("1 · 1 online")
 
-        # Drilling into the member lists their session with its bound host.
-        member_row.click()
+        # Sessions filtered by the member: the host-bound session, with its host.
+        page.goto(f"{live_server}/admin/sessions?user={member}")
         session_row = page.get_by_test_id("admin-session-row").filter(
             has_text=admin_scenario.session_title
         )
         expect(session_row).to_be_visible(timeout=10_000)
         expect(session_row).to_contain_text(admin_scenario.host_name)
+
+        # Hosts filtered by the member: the host with its persisted version.
+        page.goto(f"{live_server}/admin/hosts?user={member}")
+        host_row = page.get_by_test_id("admin-host-row").filter(has_text=admin_scenario.host_name)
+        expect(host_row).to_be_visible(timeout=10_000)
+        expect(host_row).to_contain_text(admin_scenario.host_version)
     finally:
         ctx.close()

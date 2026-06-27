@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { ChatPage } from "@/pages/ChatPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
@@ -29,11 +29,22 @@ const InboxPage = lazy(() => import("@/pages/InboxPage").then((m) => ({ default:
 const SettingsPage = lazy(() =>
   import("@/pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
 );
-// Admin surface (user list + per-user session browser). Unlike the
-// accounts Members page, this is NOT gated on accounts_enabled — it must
-// work under OIDC/SSO. The route is always registered; the page and the
-// server both gate on the caller's is_admin flag.
-const AdminPage = lazy(() => import("@/pages/AdminPage").then((m) => ({ default: m.AdminPage })));
+// Admin surface (Users / Sessions / Hosts). Unlike the accounts Members
+// page, this is NOT gated on accounts_enabled — it must work under
+// OIDC/SSO. The routes are always registered; the layout and the server
+// both gate on the caller's is_admin flag.
+const AdminLayout = lazy(() =>
+  import("@/pages/admin/AdminLayout").then((m) => ({ default: m.AdminLayout })),
+);
+const AdminUsersPage = lazy(() =>
+  import("@/pages/admin/UsersPage").then((m) => ({ default: m.UsersPage })),
+);
+const AdminSessionsPage = lazy(() =>
+  import("@/pages/admin/SessionsPage").then((m) => ({ default: m.SessionsPage })),
+);
+const AdminHostsPage = lazy(() =>
+  import("@/pages/admin/HostsPage").then((m) => ({ default: m.HostsPage })),
+);
 
 interface AppProps {
   /**
@@ -135,9 +146,15 @@ function App({ basename }: AppProps = {}) {
               defaults to Appearance. */}
           <Route path={`${prefix}/settings`} element={<SettingsPage />} />
           <Route path={`${prefix}/settings/:section`} element={<SettingsPage />} />
-          {/* Admin: registered in every mode (incl. OIDC). The page renders
-              a "no access" state for non-admins; the server 403s regardless. */}
-          <Route path={`${prefix}/admin`} element={<AdminPage />} />
+          {/* Admin: registered in every mode (incl. OIDC). The layout renders
+              a "no access" state for non-admins; the server 403s regardless.
+              Three tabs (Users / Sessions / Hosts) share the layout. */}
+          <Route path={`${prefix}/admin`} element={<AdminLayout />}>
+            <Route index element={<Navigate to="users" replace />} />
+            <Route path="users" element={<AdminUsersPage />} />
+            <Route path="sessions" element={<AdminSessionsPage />} />
+            <Route path="hosts" element={<AdminHostsPage />} />
+          </Route>
           {info.accounts_enabled && (
             <>
               <Route path={`${prefix}/members`} element={<MembersPage />} />

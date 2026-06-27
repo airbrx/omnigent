@@ -183,9 +183,11 @@ function useActiveNavItem(): {
   isAdminPage: boolean;
 } {
   const { conversationId: activeConversationId } = useParams<{ conversationId: string }>();
-  const lastSegment = useLocation().pathname.split("/").filter(Boolean).at(-1);
+  const segments = useLocation().pathname.split("/").filter(Boolean);
+  const lastSegment = segments.at(-1);
   const isInboxPage = lastSegment === "inbox";
-  const isAdminPage = lastSegment === "admin";
+  // Any /admin/* tab (users/sessions/hosts), not just a bare /admin.
+  const isAdminPage = segments.includes("admin");
   // Exclude inbox/admin: they also have no `:conversationId`, so they would
   // otherwise light up the "New session" button.
   const isNewChatPage = activeConversationId == null && !isInboxPage && !isAdminPage;
@@ -513,7 +515,7 @@ export function Sidebar({ open, onClose, dragProgress = null }: SidebarProps) {
                 variant="ghost"
                 data-testid="admin-button"
               >
-                <Link to="/admin" onClick={onNavClick}>
+                <Link to="/admin/users" onClick={onNavClick}>
                   <ShieldIcon className="size-4" />
                   Admin
                 </Link>

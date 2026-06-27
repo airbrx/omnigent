@@ -98,3 +98,100 @@ export async function listUserSessions(userId: string): Promise<AdminUserSession
     return null;
   }
 }
+
+/** A host row from ``GET /v1/admin/hosts``. */
+export interface AdminHost {
+  host_id: string;
+  name: string;
+  owner: string;
+  online: boolean;
+  /** Last-known version the host reported (null if never reported). */
+  version: string | null;
+  /** Per-harness readiness map, or null if the host never reported it. */
+  harnesses: Record<string, boolean | string> | null;
+  /** Unix epoch seconds the host was last seen. */
+  last_seen: number;
+  created_at: number;
+}
+
+/** Server build info for the admin header. */
+export interface AdminServerInfo {
+  version: string;
+  /** Git commit the running build was stamped from (null in a source checkout). */
+  commit: string | null;
+  /** Unix epoch seconds the build was stamped (null when unknown). */
+  built_at: number | null;
+}
+
+// Type aliases (not interfaces) so they satisfy buildQuery's
+// `Record<string, string | undefined>` param — interfaces are open to
+// declaration merging and so lack an implicit index signature.
+
+/** Filters for the global sessions listing. */
+export type SessionFilters = {
+  user?: string;
+  host?: string;
+  q?: string;
+};
+
+/** Filters for the hosts listing. */
+export type HostFilters = {
+  user?: string;
+  status?: string;
+  version?: string;
+};
+
+function buildQuery(params: Record<string, string | undefined>): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v) sp.set(k, v);
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : "";
+}
+
+/**
+ * GET /v1/admin/sessions — sessions across users, with optional filters
+ * (admin only).
+ *
+ * :returns: The session rows, or ``null`` on error / forbidden.
+ */
+export async function listSessions(filters: SessionFilters = {}): Promise<AdminSession[] | null> {
+  try {
+    const res = await authenticatedFetch(`/v1/admin/sessions${buildQuery(filters)}`);
+    if (!res.ok) return null;
+    return ((await res.json()) as { sessions: AdminSession[] }).sessions;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * GET /v1/admin/hosts — all hosts, with optional filters (admin only).
+ *
+ * :returns: The host rows, or ``null`` on error / forbidden.
+ */
+export async function listAdminHosts(filters: HostFilters = {}): Promise<AdminHost[] | null> {
+  try {
+    const res = await authenticatedFetch(`/v1/admin/hosts${buildQuery(filters)}`);
+    if (!res.ok) return null;
+    return ((await res.json()) as { hosts: AdminHost[] }).hosts;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * GET /v1/admin/server — server version/build info (admin only).
+ *
+ * :returns: The server info, or ``null`` on error / forbidden.
+ */
+export async function getServerInfo(): Promise<AdminServerInfo | null> {
+  try {
+    const res = await authenticatedFetch("/v1/admin/server");
+    if (!res.ok) return null;
+    return (await res.json()) as AdminServerInfo;
+  } catch {
+    return null;
+  }
+}
