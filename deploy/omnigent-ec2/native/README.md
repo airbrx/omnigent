@@ -33,15 +33,20 @@ sudo chown -R ubuntu:ubuntu /opt/omnigent
 sudo -u ubuntu bash -lc 'curl -LsSf https://astral.sh/uv/install.sh | sh'
 
 # 2. Backend venv (editable install + sibling SDK path-deps; psycopg is not
-#    a baseline dep — pulled in explicitly, as the Docker image does)
+#    a baseline dep — pulled in explicitly, as the Docker image does).
+#    OMNIGENT_SKIP_WEB_UI=true is REQUIRED: the package's build hook otherwise
+#    tries to `npm run build` the SPA and hard-fails (no node on the box).
+#    --no-dev keeps the venv lean; the SPA is shipped via release (step 3).
 cd /opt/omnigent
-sudo -u ubuntu /home/ubuntu/.local/bin/uv sync
-sudo -u ubuntu /home/ubuntu/.local/bin/uv pip install 'psycopg[binary]>=3.1,<4'
+sudo -u ubuntu bash -lc 'export PATH=$HOME/.local/bin:$PATH; OMNIGENT_SKIP_WEB_UI=true uv sync --no-dev'
+sudo -u ubuntu bash -lc 'export PATH=$HOME/.local/bin:$PATH; uv pip install --python /opt/omnigent/.venv/bin/python "psycopg[binary]>=3.1,<4"'
 
 # 3. SPA bundle (publish from a dev machine first: ./release-webui.sh)
 sudo -u ubuntu deploy/omnigent-ec2/native/pull-webui.sh webui-<sha>
 
-# 4. Service
+# 4. Service. If a prior native install left a drop-in, remove it first — a
+#    leftover override.conf silently wins over this unit's ExecStart.
+sudo rm -rf /etc/systemd/system/omnigent-server.service.d
 sudo cp deploy/omnigent-ec2/native/omnigent-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now omnigent-server
