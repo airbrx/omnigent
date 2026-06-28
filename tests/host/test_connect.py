@@ -2160,12 +2160,12 @@ def test_run_host_process_announces_session_log_dir_on_start(
 # ── --auto-upgrade decision (_should_auto_upgrade) ──────────
 
 
-def test_should_auto_upgrade_when_outdated_and_idle() -> None:
-    """Outdated + idle + not-yet-attempted ⇒ upgrade."""
+def test_should_auto_upgrade_when_outdated() -> None:
+    """Outdated + not-yet-attempted ⇒ upgrade (live runners no longer gate —
+    the upgrade path sleeps them, so a busy host still keeps current)."""
     assert _should_auto_upgrade(
         target="0.3.0 (bbbbbbbb)",
         current="0.3.0 (aaaaaaaa)",
-        has_live_runners=False,
         last_attempt=None,
     )
 
@@ -2175,17 +2175,6 @@ def test_should_not_auto_upgrade_when_current() -> None:
     assert not _should_auto_upgrade(
         target="0.3.0 (aaaaaaaa)",
         current="0.3.0 (aaaaaaaa)",
-        has_live_runners=False,
-        last_attempt=None,
-    )
-
-
-def test_should_not_auto_upgrade_with_live_runners() -> None:
-    """Never upgrade mid-session — the re-exec would kill the live runner."""
-    assert not _should_auto_upgrade(
-        target="0.3.0 (bbbbbbbb)",
-        current="0.3.0 (aaaaaaaa)",
-        has_live_runners=True,
         last_attempt=None,
     )
 
@@ -2195,7 +2184,6 @@ def test_should_not_auto_upgrade_when_target_unknown() -> None:
     assert not _should_auto_upgrade(
         target=None,
         current="0.3.0 (aaaaaaaa)",
-        has_live_runners=False,
         last_attempt=None,
     )
 
@@ -2206,9 +2194,32 @@ def test_should_not_retry_same_failed_target() -> None:
     assert not _should_auto_upgrade(
         target="0.3.0 (bbbbbbbb)",
         current="0.3.0 (aaaaaaaa)",
-        has_live_runners=False,
         last_attempt="0.3.0 (bbbbbbbb)",
     )
+
+
+def test_terminate_live_runners_sleeps_sessions_and_counts(tmp_path: Path) -> None:
+    """The upgrade-sleep helper stops every live runner and reports the count.
+
+    Stopping a runner is what flips its session to runner_asleep (preserved,
+    resumable) — this is how auto-upgrade idles a busy host without orphaning
+    or hard-killing work before the re-exec.
+    """
+    host = _make_host_process()
+    procs = []
+    for name in ("runner_x", "runner_y"):
+        proc = subprocess.Popen(
+            ["sleep", "60"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        host._runners[name] = _RunnerHandle(proc=proc, log_path=tmp_path / f"{name}.log")
+        procs.append(proc)
+
+    slept = host._terminate_live_runners("auto-upgrade")
+
+    assert slept == 2
+    for proc in procs:
+        assert proc.poll() is not None  # actually stopped
+    assert host._runners == {}  # all cleared, host now idle
 
 
 # ── _augment_user_path (harness CLIs on a minimal systemd PATH) ──────

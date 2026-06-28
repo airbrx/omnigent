@@ -189,23 +189,22 @@ def _should_auto_upgrade(
     *,
     target: str | None,
     current: str,
-    has_live_runners: bool,
     last_attempt: str | None,
 ) -> bool:
     """Decide whether the host should upgrade itself now (pure, testable).
 
+    Live runners do NOT block the decision: the upgrade path sleeps them
+    first (each session becomes ``runner_asleep`` — preserved and resumable)
+    so a busy host still keeps current, rather than deferring forever.
+
     :param target: The server's build label, or ``None`` if it couldn't be
         fetched (offline, or an older server without the ``commit`` field).
     :param current: This host's build label (:func:`version_label`).
-    :param has_live_runners: Whether any runner/session is live — we never
-        upgrade mid-session because the re-exec would kill it.
     :param last_attempt: The target we last tried to upgrade to — guards
         against re-execing forever when an install never advances the
         version.
     :returns: ``True`` iff we should install + re-exec now.
     """
-    if has_live_runners:
-        return False
     if not target or target == current:
         return False
     if target == last_attempt:
@@ -802,11 +801,15 @@ class HostProcess:
         return list(self._runners.keys())
 
     async def _maybe_auto_upgrade(self) -> None:
-        """Install the server's build and re-exec, if outdated and idle.
+        """Install the server's build and re-exec, if outdated.
 
         Called on each (re)connect attempt when ``--auto-upgrade`` is set.
-        Idle-gated and loop-guarded via :func:`_should_auto_upgrade`. On a
-        successful install this re-execs the process and never returns.
+        Loop-guarded via :func:`_should_auto_upgrade`. Live sessions don't
+        block it: after a successful install, any live runners are slept
+        (terminated cleanly → ``runner_asleep``, resumable on next message)
+        right before the re-exec, so a busy host still stays current without
+        orphaning or hard-killing work. On success this re-execs and never
+        returns.
         """
         if not self._auto_upgrade:
             return
@@ -814,7 +817,6 @@ class HostProcess:
         if not _should_auto_upgrade(
             target=target,
             current=version_label(),
-            has_live_runners=bool(self._alive_runner_ids()),
             last_attempt=self._last_upgrade_attempt,
         ):
             return
@@ -829,6 +831,17 @@ class HostProcess:
         if not ok:
             _logger.error("auto-upgrade install failed; staying on the current build")
             return
+        # Install succeeded — only now sleep any live sessions, so a failed
+        # install never disturbs them. Terminating each runner flips its
+        # session to runner_asleep (preserved; the next message relaunches a
+        # runner on the upgraded host) instead of leaving it orphaned by the
+        # re-exec.
+        slept = await asyncio.to_thread(self._terminate_live_runners, "auto-upgrade")
+        if slept:
+            _logger.info(
+                "auto-upgrade: slept %d live session(s) — they resume on next message",
+                slept,
+            )
         _logger.info("auto-upgrade installed; re-executing into the new build")
         _reexec_self()
 
@@ -1582,21 +1595,39 @@ class HostProcess:
         finally:
             self._cleanup_runners()
 
-    def _cleanup_runners(self) -> None:
-        """Terminate all live runners on shutdown.
+    def _terminate_live_runners(self, reason: str) -> int:
+        """Terminate every live runner subprocess; return how many were stopped.
 
-        :returns: None.
+        Terminating a runner drops its tunnel to the server, which the server
+        reads as a runner-disconnect: the session flips to ``runner_asleep``
+        — preserved and resumable (the next message relaunches a fresh
+        runner). Shared by shutdown cleanup and the auto-upgrade
+        sleep-before-re-exec path so active sessions sleep cleanly instead of
+        being orphaned.
+
+        :param reason: Short context for the log line (e.g. ``"shutdown"`` /
+            ``"auto-upgrade"``).
+        :returns: Count of runners that were live and have been stopped.
         """
-        for runner_id, handle in self._runners.items():
-            if handle.proc.poll() is None:
-                _logger.info("Terminating runner %s on shutdown", runner_id)
-                handle.proc.terminate()
-        for handle in self._runners.values():
+        live = [(rid, h) for rid, h in self._runners.items() if h.proc.poll() is None]
+        for runner_id, handle in live:
+            _logger.info("Terminating runner %s (%s)", runner_id, reason)
+            handle.proc.terminate()
+        for _runner_id, handle in live:
             try:
                 handle.proc.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
                 handle.proc.kill()
+                handle.proc.wait()
         self._runners.clear()
+        return len(live)
+
+    def _cleanup_runners(self) -> None:
+        """Terminate all live runners on shutdown (Ctrl-C / ``finally``).
+
+        :returns: None.
+        """
+        self._terminate_live_runners("shutdown")
 
     async def _connect_and_serve(self) -> None:
         """Single connection attempt: connect, hello, serve.
