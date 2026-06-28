@@ -113,3 +113,16 @@ ssm> cd /opt/omnigent && git pull \
   PY
   sudo systemctl restart omnigent-server
   ```
+
+## Host auto-upgrade (opt-in)
+
+A host can keep itself in sync with this server's build. Add `--auto-upgrade`
+to the host's launch and it will, on each (re)connect, install the server's
+build (via `GET /install.sh`) and restart — but only when idle (no live
+runner) and only when the builds actually differ. Opt-in: the flag consents
+to the connected server installing code on that machine.
+
+```ini
+# in the host's systemd user unit (omnigent-host.service):
+ExecStart=/bin/bash -lc 'exec ~/.local/bin/omnigent host https://omnigent.airbrx.ai --auto-upgrade'
+```
