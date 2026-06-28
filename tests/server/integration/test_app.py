@@ -277,10 +277,34 @@ async def test_me_header_mode_behaviors(
     # 200 (it's the identity probe the frontend bootstraps from) but
     # reports no user instead of resolving to a shared "local" identity.
     assert missing.status_code == 200
-    assert missing.json() == {"user_id": None}
-    # Valid header returns the identity.
+    # /v1/me now also carries is_admin (the admin surface gates on it); a
+    # headerless caller is no user and therefore not an admin.
+    assert missing.json() == {"user_id": None, "is_admin": False}
+    # Valid header returns the identity (not an admin on a fresh DB).
     assert normal.status_code == 200
-    assert normal.json() == {"user_id": "alice@example.com"}
+    assert normal.json() == {"user_id": "alice@example.com", "is_admin": False}
     # Reserved name is rejected (returns None → route returns null).
     assert reserved.status_code == 200
-    assert reserved.json() == {"user_id": None}
+    assert reserved.json() == {"user_id": None, "is_admin": False}
+
+
+async def test_api_version_includes_commit(
+    runtime_init: None, db_uri: str, tmp_path: Path
+) -> None:
+    """GET /api/version returns the package version + build commit (key always
+    present; ``host --auto-upgrade`` compares against it)."""
+    artifact_store = LocalArtifactStore(str(tmp_path / "artifacts"))
+    app = app_module.create_app(
+        agent_store=SqlAlchemyAgentStore(db_uri),
+        file_store=SqlAlchemyFileStore(db_uri),
+        conversation_store=SqlAlchemyConversationStore(db_uri),
+        artifact_store=artifact_store,
+        agent_cache=AgentCache(artifact_store=artifact_store, cache_dir=tmp_path / "cache"),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/version")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body["version"], str) and body["version"]
+    assert "commit" in body  # may be None in an unbuilt checkout

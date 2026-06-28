@@ -6650,8 +6650,22 @@ def _prompt_stop_local_server() -> None:
         "launching the browser login flow. Use this in scripts and CI."
     ),
 )
+@click.option(
+    "--auto-upgrade",
+    "auto_upgrade",
+    is_flag=True,
+    default=False,
+    help=(
+        "Keep this host in sync with the server's build: when the host is "
+        "idle (no live runners) and the server runs a different version, "
+        "install it (via the server's installer) and restart. Opt-in — it "
+        "lets the connected server install code on this machine."
+    ),
+)
 @click.pass_context
-def host(ctx: click.Context, server: str | None, non_interactive: bool) -> None:
+def host(
+    ctx: click.Context, server: str | None, non_interactive: bool, auto_upgrade: bool
+) -> None:
     """
     Register this machine as a host with a server.
 
@@ -6729,7 +6743,7 @@ def host(ctx: click.Context, server: str | None, non_interactive: bool) -> None:
         # (or a headless invocation) fails loud with the command to run.
         if remote_mode:
             _ensure_databricks_server_auth(server, non_interactive=non_interactive)
-        run_host_process(server_url=server)
+        run_host_process(server_url=server, auto_upgrade=auto_upgrade)
         stopped_cleanly = True
     except KeyboardInterrupt:
         # Ctrl-C is the normal way to stop the foreground daemon — swallow it

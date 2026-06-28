@@ -18,6 +18,7 @@ from omnigent.host.connect import (
     HostProcess,
     _build_runner_env,
     _RunnerHandle,
+    _should_auto_upgrade,
     run_host_process,
 )
 from omnigent.host.frames import (
@@ -2152,3 +2153,57 @@ def test_run_host_process_announces_session_log_dir_on_start(
 
     out = capsys.readouterr().out
     assert "Session logs: ~/.omnigent/logs/host-runner/" in out
+
+
+# ── --auto-upgrade decision (_should_auto_upgrade) ──────────
+
+
+def test_should_auto_upgrade_when_outdated_and_idle() -> None:
+    """Outdated + idle + not-yet-attempted ⇒ upgrade."""
+    assert _should_auto_upgrade(
+        target="0.3.0 (bbbbbbbb)",
+        current="0.3.0 (aaaaaaaa)",
+        has_live_runners=False,
+        last_attempt=None,
+    )
+
+
+def test_should_not_auto_upgrade_when_current() -> None:
+    """Same build ⇒ no upgrade."""
+    assert not _should_auto_upgrade(
+        target="0.3.0 (aaaaaaaa)",
+        current="0.3.0 (aaaaaaaa)",
+        has_live_runners=False,
+        last_attempt=None,
+    )
+
+
+def test_should_not_auto_upgrade_with_live_runners() -> None:
+    """Never upgrade mid-session — the re-exec would kill the live runner."""
+    assert not _should_auto_upgrade(
+        target="0.3.0 (bbbbbbbb)",
+        current="0.3.0 (aaaaaaaa)",
+        has_live_runners=True,
+        last_attempt=None,
+    )
+
+
+def test_should_not_auto_upgrade_when_target_unknown() -> None:
+    """No reachable server build (None) ⇒ fail safe, no upgrade."""
+    assert not _should_auto_upgrade(
+        target=None,
+        current="0.3.0 (aaaaaaaa)",
+        has_live_runners=False,
+        last_attempt=None,
+    )
+
+
+def test_should_not_retry_same_failed_target() -> None:
+    """Loop guard: a target we already tried (install didn't advance the
+    version) is not retried, so we can't re-exec forever."""
+    assert not _should_auto_upgrade(
+        target="0.3.0 (bbbbbbbb)",
+        current="0.3.0 (aaaaaaaa)",
+        has_live_runners=False,
+        last_attempt="0.3.0 (bbbbbbbb)",
+    )

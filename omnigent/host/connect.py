@@ -12,17 +12,18 @@ import asyncio
 import logging
 import os
 import platform
+import shlex
 import subprocess
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 import websockets.asyncio.client
 from websockets.exceptions import InvalidStatus, InvalidURI
 
 from omnigent._platform import WINDOWS_ENV_PASSTHROUGH
-from omnigent.update_check import version_label
 from omnigent.host.frames import (
     HARNESS_NOT_CONFIGURED_ERROR_CODE,
     HostCreateDirFrame,
@@ -69,6 +70,7 @@ from omnigent.runner.transports.ws_tunnel.frames import (
     decode_frame,
     encode_frame,
 )
+from omnigent.update_check import version_label
 
 _logger = logging.getLogger(__name__)
 
@@ -88,6 +90,97 @@ def _host_os_string() -> str:
     machine = platform.machine()
     label = f"{system} {release}".strip()
     return f"{label} ({machine})" if machine else label
+
+
+def _should_auto_upgrade(
+    *,
+    target: str | None,
+    current: str,
+    has_live_runners: bool,
+    last_attempt: str | None,
+) -> bool:
+    """Decide whether the host should upgrade itself now (pure, testable).
+
+    :param target: The server's build label, or ``None`` if it couldn't be
+        fetched (offline, or an older server without the ``commit`` field).
+    :param current: This host's build label (:func:`version_label`).
+    :param has_live_runners: Whether any runner/session is live — we never
+        upgrade mid-session because the re-exec would kill it.
+    :param last_attempt: The target we last tried to upgrade to — guards
+        against re-execing forever when an install never advances the
+        version.
+    :returns: ``True`` iff we should install + re-exec now.
+    """
+    if has_live_runners:
+        return False
+    if not target or target == current:
+        return False
+    if target == last_attempt:
+        return False
+    return True
+
+
+async def _fetch_server_build_label(server_url: str) -> str | None:
+    """Fetch the server's build label from ``GET /api/version``.
+
+    Builds the SAME format as :func:`version_label` (``"0.3.0.dev0
+    (sha8)"``) so host and server compare equal when on the same commit.
+
+    :returns: The label, or ``None`` on any error — in which case the host
+        never upgrades (fail safe).
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{server_url}/api/version")
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:  # noqa: BLE001 — any failure ⇒ don't upgrade
+        return None
+    version = data.get("version")
+    if not isinstance(version, str):
+        return None
+    commit = data.get("commit")
+    if isinstance(commit, str) and commit:
+        return f"{version} ({commit[:8]})"
+    return version
+
+
+def _run_host_installer(server_url: str) -> bool:
+    """Run the server's installer to replace this host's omnigent build.
+
+    ``curl <server>/install.sh | sh`` — the server serves an installer
+    pinned to its own build (see ``GET /install.sh``).
+
+    :returns: ``True`` on a clean install.
+    """
+    cmd = f"curl -fsSL {shlex.quote(server_url)}/install.sh | sh -s -- --non-interactive"
+    result = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
+    if result.returncode != 0:
+        _logger.error(
+            "auto-upgrade installer failed (rc=%s): %s",
+            result.returncode,
+            result.stderr[-500:],
+        )
+    return result.returncode == 0
+
+
+def _reexec_self() -> NoReturn:
+    """Replace this process with a fresh exec of the same command.
+
+    After the installer swaps the on-disk binary, re-exec so the NEW code
+    runs and reconnects (the ``host_id`` is stable). ``os.execv`` needs no
+    supervisor; if it somehow fails, exit non-zero so a supervisor (systemd
+    ``Restart=on-failure``) still restarts us into the new build.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.execv(sys.argv[0], sys.argv)
+    except OSError as exc:  # pragma: no cover - exec almost never fails
+        _logger.error("re-exec failed (%s); exiting for supervisor restart", exc)
+        sys.exit(42)
 
 
 def _runner_log_dir() -> Path:
@@ -557,14 +650,22 @@ class HostProcess:
         self,
         identity: HostIdentity,
         server_url: str,
+        *,
+        auto_upgrade: bool = False,
     ) -> None:
         """Initialize the host process.
 
         :param identity: Host identity from ``config.yaml``.
         :param server_url: Server URL to connect to.
+        :param auto_upgrade: When True, keep this host in sync with the
+            server's build — see :meth:`_maybe_auto_upgrade`.
         """
         self._identity = identity
         self._server_url = server_url.rstrip("/")
+        self._auto_upgrade = auto_upgrade
+        # The version label we last tried to upgrade TO — a loop guard so a
+        # failed install (version never advances) can't re-exec forever.
+        self._last_upgrade_attempt: str | None = None
         self._runners: dict[str, _RunnerHandle] = {}
         # Set on the first accepted WS upgrade. Distinguishes a host that
         # never authenticated (login redirects turn fatal after
@@ -594,6 +695,37 @@ class HostProcess:
         for rid in dead:
             self._runners.pop(rid)
         return list(self._runners.keys())
+
+    async def _maybe_auto_upgrade(self) -> None:
+        """Install the server's build and re-exec, if outdated and idle.
+
+        Called on each (re)connect attempt when ``--auto-upgrade`` is set.
+        Idle-gated and loop-guarded via :func:`_should_auto_upgrade`. On a
+        successful install this re-execs the process and never returns.
+        """
+        if not self._auto_upgrade:
+            return
+        target = await _fetch_server_build_label(self._server_url)
+        if not _should_auto_upgrade(
+            target=target,
+            current=version_label(),
+            has_live_runners=bool(self._alive_runner_ids()),
+            last_attempt=self._last_upgrade_attempt,
+        ):
+            return
+        self._last_upgrade_attempt = target
+        _logger.info(
+            "auto-upgrade: %s -> %s (installing from %s)",
+            version_label(),
+            target,
+            self._server_url,
+        )
+        ok = await asyncio.to_thread(_run_host_installer, self._server_url)
+        if not ok:
+            _logger.error("auto-upgrade install failed; staying on the current build")
+            return
+        _logger.info("auto-upgrade installed; re-executing into the new build")
+        _reexec_self()
 
     def _tunnel_url(self) -> str:
         """Build the WebSocket tunnel URL.
@@ -1276,6 +1408,10 @@ class HostProcess:
         try:
             while True:
                 try:
+                    # Before each (re)connect, sync to the server's build when
+                    # idle (--auto-upgrade). On a server deploy the tunnel
+                    # drops and we land back here — the natural upgrade point.
+                    await self._maybe_auto_upgrade()
                     await self._connect_and_serve()
                     backoff = _RECONNECT_BASE_S
                 except (KeyboardInterrupt, asyncio.CancelledError):
@@ -1568,6 +1704,8 @@ class HostProcess:
 def run_host_process(
     server_url: str,
     config_path: Path | None = None,
+    *,
+    auto_upgrade: bool = False,
 ) -> None:
     """Entry point for ``omnigent host``.
 
@@ -1603,7 +1741,7 @@ def run_host_process(
     if _cli_log is not None:
         print(f"This host's log: {_display_log_path(_cli_log)}")
 
-    host = HostProcess(identity, server_url)
+    host = HostProcess(identity, server_url, auto_upgrade=auto_upgrade)
     try:
         asyncio.run(host.run())
     except HostConnectError as exc:

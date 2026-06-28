@@ -1625,18 +1625,27 @@ def create_app(
         return result
 
     @app.get("/api/version")
-    async def version() -> dict[str, str]:
+    async def version() -> dict[str, str | None]:
         """
-        Return the installed omnigent package version.
+        Return the installed omnigent package version + build commit.
 
-        Used by the web UI to include version info in bug reports.
+        Used by the web UI for bug reports and by ``omnigent host
+        --auto-upgrade`` to compare its build against the server's.
 
-        :returns: ``{"version": "<semver string>"}``,
-            e.g. ``{"version": "0.1.0"}``.
+        :returns: ``{"version": "<semver>", "commit": "<git sha>"}``;
+            ``commit`` is ``None`` in a source checkout that was never
+            built (no ``_build_info``).
         """
         from importlib.metadata import version as _pkg_version
 
-        return {"version": _pkg_version("omnigent")}
+        commit: str | None = None
+        try:
+            from omnigent import _build_info
+
+            commit = _build_info.COMMIT_SHA or None
+        except (ImportError, AttributeError):
+            pass
+        return {"version": _pkg_version("omnigent"), "commit": commit}
 
     @app.get("/install.sh", include_in_schema=False)
     async def install_script() -> PlainTextResponse:
