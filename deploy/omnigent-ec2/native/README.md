@@ -127,6 +127,4 @@ to the connected server installing code on that machine.
 ExecStart=/bin/bash -lc 'exec ~/.local/bin/omnigent host https://omnigent.airbrx.ai --auto-upgrade'
 ```
 
-<!-- build bump to validate host auto-upgrade on reconnect -->
 
-<!-- bump 2 -->
