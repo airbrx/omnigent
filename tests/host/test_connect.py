@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +17,7 @@ from websockets.http11 import Response
 from omnigent.host.connect import (
     HostConnectError,
     HostProcess,
+    _augment_user_path,
     _build_runner_env,
     _RunnerHandle,
     _should_auto_upgrade,
@@ -2207,3 +2209,55 @@ def test_should_not_retry_same_failed_target() -> None:
         has_live_runners=False,
         last_attempt="0.3.0 (bbbbbbbb)",
     )
+
+
+# ── _augment_user_path (harness CLIs on a minimal systemd PATH) ──────
+
+
+def test_augment_user_path_adds_local_bin(tmp_path, monkeypatch) -> None:
+    """A minimal PATH gains ~/.local/bin (prepended) when it exists on disk.
+
+    This is what makes a systemd-launched host find the claude/codex CLIs
+    the user installed there — without it, claude-native reads as
+    not-configured even with a valid subscription. Shell probe stubbed off
+    so this exercises the well-known-dir backstop deterministically.
+    """
+    monkeypatch.setattr("omnigent.host.connect._login_shell_path", lambda: None)
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    _augment_user_path()
+    parts = os.environ["PATH"].split(os.pathsep)
+    assert parts[0] == str(local_bin)  # prepended, so it wins
+    assert "/usr/bin" in parts
+
+
+def test_augment_user_path_idempotent_and_skips_absent(tmp_path, monkeypatch) -> None:
+    """A dir already on PATH isn't duplicated; a non-existent dir is skipped."""
+    monkeypatch.setattr("omnigent.host.connect._login_shell_path", lambda: None)
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{local_bin}{os.pathsep}/usr/bin")
+    _augment_user_path()
+    parts = os.environ["PATH"].split(os.pathsep)
+    assert parts.count(str(local_bin)) == 1  # not duplicated
+    assert str(tmp_path / ".cargo" / "bin") not in parts  # absent ⇒ skipped
+
+
+def test_augment_user_path_merges_login_shell_path(tmp_path, monkeypatch) -> None:
+    """The login-shell PATH is merged in — this is what surfaces nvm-installed
+    CLIs (e.g. codex in ~/.nvm/versions/node/<v>/bin) the hardcoded dirs miss."""
+    nvm_bin = tmp_path / ".nvm" / "versions" / "node" / "v24.15.0" / "bin"
+    nvm_bin.mkdir(parents=True)
+    monkeypatch.setattr(
+        "omnigent.host.connect._login_shell_path",
+        lambda: f"{nvm_bin}{os.pathsep}/usr/bin",
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    _augment_user_path()
+    parts = os.environ["PATH"].split(os.pathsep)
+    assert str(nvm_bin) in parts  # the versioned node bin is now reachable
+    assert parts.count("/usr/bin") == 1  # already present ⇒ not duplicated

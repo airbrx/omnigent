@@ -93,6 +93,98 @@ def _host_os_string() -> str:
     return f"{label} ({machine})" if machine else label
 
 
+# Sentinel framing the captured PATH so rc-file chatter (MOTD, echoes) on
+# stdout can't be mistaken for it — we read what follows the last marker.
+_LOGIN_PATH_SENTINEL = "__OMNIGENT_LOGIN_PATH__"
+
+
+def _login_shell_path() -> str | None:
+    """Best-effort capture of the user's interactive login-shell ``PATH``.
+
+    Version managers (nvm, pyenv, rbenv, bun, …) extend ``PATH`` only when
+    an interactive login shell sources the user's rc files — so a harness
+    CLI installed via node/npm (``codex``) lives in a versioned dir
+    (``~/.nvm/versions/node/<v>/bin``) we can't enumerate. Ask the user's
+    own shell what its ``PATH`` is instead of guessing.
+
+    Unix-only; returns ``None`` on Windows or any failure (the caller falls
+    back to the well-known dirs).
+    """
+    if sys.platform == "win32":
+        return None
+    shell = os.environ.get("SHELL")
+    if not shell:
+        try:
+            import pwd
+
+            shell = pwd.getpwuid(os.getuid()).pw_shell or None
+        except (KeyError, ImportError, OSError):
+            shell = None
+    shell = shell or "/bin/bash"
+    try:
+        # -i -l: source the same rc files an interactive login session would
+        # (where nvm/pyenv/etc. live). DEVNULL stdin + a timeout keep a
+        # misbehaving rc from hanging the host; stderr (job-control noise) is
+        # captured and ignored.
+        out = subprocess.run(
+            [shell, "-ilc", f'printf "%s%s" "{_LOGIN_PATH_SENTINEL}" "$PATH"'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    idx = out.stdout.rfind(_LOGIN_PATH_SENTINEL)
+    if idx == -1:
+        return None
+    path = out.stdout[idx + len(_LOGIN_PATH_SENTINEL) :].strip()
+    return path or None
+
+
+def _augment_user_path() -> None:
+    """Make the harness CLIs visible by widening this process's ``PATH``.
+
+    A systemd user service (and other non-login launches) starts with a
+    minimal ``PATH`` — so harness CLIs aren't found: harness readiness
+    reports them missing (``claude-native`` shows as not-configured even
+    with a valid subscription) and runner launches can't exec them. Merge
+    in the user's interactive login-shell ``PATH`` (picks up nvm/pyenv/…
+    bins like ``codex``), then a few well-known dirs as a backstop. Both
+    detection and execution then see what an interactive shell would.
+    Idempotent — skips dirs already on ``PATH`` or absent on disk.
+    """
+    home = os.path.expanduser("~")
+    current = os.environ.get("PATH", "")
+    have = set(current.split(os.pathsep)) if current else set()
+    additions: list[str] = []
+
+    def _consider(directory: str) -> None:
+        if directory and directory not in have and directory not in additions:
+            if os.path.isdir(directory):
+                additions.append(directory)
+
+    # 1. The user's real login-shell PATH — authoritative for version managers.
+    login_path = _login_shell_path()
+    if login_path:
+        for directory in login_path.split(os.pathsep):
+            _consider(directory)
+    # 2. Well-known user bin dirs, in case the shell probe came up empty.
+    for directory in (
+        os.path.join(home, ".local", "bin"),
+        os.path.join(home, ".cargo", "bin"),
+        "/opt/homebrew/bin",  # macOS (Apple silicon) Homebrew
+    ):
+        _consider(directory)
+
+    if not additions:
+        return
+    os.environ["PATH"] = (
+        os.pathsep.join([*additions, current]) if current else os.pathsep.join(additions)
+    )
+    _logger.debug("augmented PATH with %s", additions)
+
+
 def _should_auto_upgrade(
     *,
     target: str | None,
@@ -1738,6 +1830,11 @@ def run_host_process(
         actionable cause is printed to stderr first.
     """
     from omnigent.host.identity import CONFIG_PATH
+
+    # Make the user's local bin dirs visible before anything probes harness
+    # CLIs or spawns runners — a systemd-launched host otherwise inherits a
+    # minimal PATH that hides ~/.local/bin (claude, codex, …).
+    _augment_user_path()
 
     path = config_path or CONFIG_PATH
     identity = load_or_create_host_identity(path)
