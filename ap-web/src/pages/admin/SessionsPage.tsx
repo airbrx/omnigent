@@ -85,7 +85,7 @@ export function SessionsPage() {
       )}
 
       {sessions !== null && sessions.length > 0 && (
-        <div className="overflow-hidden rounded-md border border-border">
+        <div className="overflow-x-auto rounded-md border border-border">
           <table className="w-full text-sm">
             <thead className="bg-muted/40 text-left text-xs uppercase text-muted-foreground">
               <tr>
@@ -106,9 +106,11 @@ export function SessionsPage() {
                   onClick={() => navigate(`/c/${s.id}`)}
                 >
                   <td className="px-3 py-2 align-middle font-medium">
-                    {s.title ?? <span className="text-muted-foreground">Untitled</span>}
+                    <div className="max-w-[24rem] truncate" title={s.title ?? undefined}>
+                      {s.title ?? <span className="text-muted-foreground">Untitled</span>}
+                    </div>
                   </td>
-                  <td className="px-3 py-2 align-middle text-muted-foreground">
+                  <td className="whitespace-nowrap px-3 py-2 align-middle text-muted-foreground">
                     {s.owner ?? <span className="text-xs">—</span>}
                   </td>
                   <td className="px-3 py-2 align-middle text-muted-foreground">

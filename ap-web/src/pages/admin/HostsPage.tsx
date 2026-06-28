@@ -137,7 +137,7 @@ export function HostsPage() {
       )}
 
       {hosts !== null && hosts.length > 0 && (
-        <div className="overflow-hidden rounded-md border border-border">
+        <div className="overflow-x-auto rounded-md border border-border">
           <table className="w-full text-sm">
             <thead className="bg-muted/40 text-left text-xs uppercase text-muted-foreground">
               <tr>
@@ -159,8 +159,10 @@ export function HostsPage() {
                   onClick={() => navigate(`/admin/sessions?host=${encodeURIComponent(h.host_id)}`)}
                   title="View this host's sessions"
                 >
-                  <td className="px-3 py-2 align-middle font-medium">{h.name}</td>
-                  <td className="px-3 py-2 align-middle text-muted-foreground">{h.owner}</td>
+                  <td className="whitespace-nowrap px-3 py-2 align-middle font-medium">{h.name}</td>
+                  <td className="whitespace-nowrap px-3 py-2 align-middle text-muted-foreground">
+                    {h.owner}
+                  </td>
                   <td className="px-3 py-2 align-middle">
                     <span className="inline-flex items-center gap-1.5 text-muted-foreground">
                       <span
@@ -172,7 +174,7 @@ export function HostsPage() {
                       {h.online ? "online" : "offline"}
                     </span>
                   </td>
-                  <td className="px-3 py-2 align-middle tabular-nums">
+                  <td className="whitespace-nowrap px-3 py-2 align-middle tabular-nums">
                     {h.version ? (
                       <button
                         type="button"
@@ -202,13 +204,15 @@ export function HostsPage() {
                       <span className="text-xs text-muted-foreground">—</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 align-middle text-muted-foreground">
+                  <td className="whitespace-nowrap px-3 py-2 align-middle text-muted-foreground">
                     {h.os ?? <span className="text-xs">—</span>}
                   </td>
                   <td className="px-3 py-2 align-middle text-muted-foreground">
-                    {formatHarnesses(h.harnesses)}
+                    <div className="max-w-[16rem] truncate" title={formatHarnesses(h.harnesses)}>
+                      {formatHarnesses(h.harnesses)}
+                    </div>
                   </td>
-                  <td className="px-3 py-2 align-middle text-muted-foreground">
+                  <td className="whitespace-nowrap px-3 py-2 align-middle text-muted-foreground">
                     {formatEpoch(h.last_seen)}
                   </td>
                 </tr>

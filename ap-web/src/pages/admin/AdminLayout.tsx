@@ -53,7 +53,7 @@ export function AdminLayout() {
   }
 
   return (
-    <PageScroll contentClassName="px-6">
+    <PageScroll contentClassName="px-6" maxWidthClassName="max-w-[1400px]">
       <div className="mb-4 flex items-baseline justify-between gap-4 pt-1">
         <h1 className="text-2xl font-semibold">Admin</h1>
         {server !== null && (
