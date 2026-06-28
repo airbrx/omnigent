@@ -518,6 +518,7 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "name": frame.name,
                 "runners": list(frame.runners),
                 "configured_harnesses": frame.configured_harnesses,
+                "os": frame.os,
             }
         )
     if isinstance(frame, HostLaunchRunnerFrame):
@@ -776,12 +777,14 @@ def _decode_host_hello(msg: dict[str, Any]) -> HostHelloFrame:
     :param msg: Decoded frame object.
     :returns: Typed host hello frame.
     """
+    raw_os = msg.get("os")
     return HostHelloFrame(
         version=_required_str(msg, "version"),
         frame_protocol_version=_required_int(msg, "frame_protocol_version"),
         name=_required_str(msg, "name"),
         runners=_optional_str_list(msg, "runners"),
         configured_harnesses=_optional_str_availability_map(msg, "configured_harnesses"),
+        os=raw_os if isinstance(raw_os, str) else None,
     )
 
 

@@ -43,6 +43,7 @@ def test_hello_frame_round_trip() -> None:
         frame_protocol_version=1,
         name="corey-laptop",
         runners=["runner_token_aaa", "runner_token_bbb"],
+        os="Darwin 23.5.0 (arm64)",
     )
     decoded = decode_host_frame(encode_host_frame(original))
     assert isinstance(decoded, HostHelloFrame)
@@ -50,6 +51,17 @@ def test_hello_frame_round_trip() -> None:
     assert decoded.frame_protocol_version == 1
     assert decoded.name == "corey-laptop"
     assert decoded.runners == ["runner_token_aaa", "runner_token_bbb"]
+    # os round-trips over the wire (it's serialized in encode + read in decode).
+    assert decoded.os == "Darwin 23.5.0 (arm64)"
+
+
+def test_hello_frame_os_absent_decodes_to_none() -> None:
+    """An older host that omits ``os`` decodes to ``None`` (backward-compatible)."""
+    decoded = decode_host_frame(
+        '{"kind": "host.hello", "version": "0.1.0", "frame_protocol_version": 1, "name": "x"}'
+    )
+    assert isinstance(decoded, HostHelloFrame)
+    assert decoded.os is None
 
 
 def test_hello_frame_empty_runners() -> None:
