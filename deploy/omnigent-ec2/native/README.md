@@ -128,3 +128,5 @@ ExecStart=/bin/bash -lc 'exec ~/.local/bin/omnigent host https://omnigent.airbrx
 ```
 
 <!-- build bump to validate host auto-upgrade on reconnect -->
+
+<!-- bump 2 -->
