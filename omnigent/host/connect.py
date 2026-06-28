@@ -156,7 +156,10 @@ def _run_host_installer(server_url: str) -> bool:
     :returns: ``True`` on a clean install.
     """
     cmd = f"curl -fsSL {shlex.quote(server_url)}/install.sh | sh -s -- --non-interactive"
-    result = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
+    # A login shell (``bash -lc``) so the installer sees the same PATH the host
+    # itself runs under — otherwise uv/git (in ~/.local/bin) aren't found and
+    # the installer fails with "uv is required".
+    result = subprocess.run(["bash", "-lc", cmd], capture_output=True, text=True)
     if result.returncode != 0:
         _logger.error(
             "auto-upgrade installer failed (rc=%s): %s",
@@ -1408,10 +1411,6 @@ class HostProcess:
         try:
             while True:
                 try:
-                    # Before each (re)connect, sync to the server's build when
-                    # idle (--auto-upgrade). On a server deploy the tunnel
-                    # drops and we land back here — the natural upgrade point.
-                    await self._maybe_auto_upgrade()
                     await self._connect_and_serve()
                     backoff = _RECONNECT_BASE_S
                 except (KeyboardInterrupt, asyncio.CancelledError):
@@ -1635,6 +1634,13 @@ class HostProcess:
             "Listening for sessions — Ctrl-C to disconnect.",
             flush=True,
         )
+
+        # Now that we're connected, the server is confirmed up — the reliable
+        # moment to sync builds (--auto-upgrade). Doing this on FAILURE/before
+        # connect would race the server restart that just dropped us; doing it
+        # here, on a successful (re)connect, always sees the server's real
+        # build. Re-execs into the new build when outdated + idle.
+        await self._maybe_auto_upgrade()
 
         while True:
             try:
