@@ -147,6 +147,7 @@ export function HostsPage() {
                 <th className="px-3 py-2 font-medium">Version</th>
                 <th className="px-3 py-2 font-medium">OS</th>
                 <th className="px-3 py-2 font-medium">Harnesses</th>
+                <th className="px-3 py-2 font-medium">Token expires</th>
                 <th className="px-3 py-2 font-medium">Last seen</th>
               </tr>
             </thead>
@@ -211,6 +212,26 @@ export function HostsPage() {
                     <div className="max-w-[16rem] truncate" title={formatHarnesses(h.harnesses)}>
                       {formatHarnesses(h.harnesses)}
                     </div>
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 align-middle">
+                    {h.login_token_expires_at ? (
+                      <span
+                        className={
+                          h.login_token_expires_at * 1000 < Date.now()
+                            ? "text-destructive"
+                            : "text-muted-foreground"
+                        }
+                        title={
+                          h.login_token_expires_at * 1000 < Date.now()
+                            ? "Login token expired — host needs re-login"
+                            : "When this host's login token expires"
+                        }
+                      >
+                        {formatEpoch(h.login_token_expires_at)}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 align-middle text-muted-foreground">
                     {formatEpoch(h.last_seen)}

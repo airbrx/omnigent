@@ -453,7 +453,12 @@ async def test_list_hosts_with_version_and_filters(
     _make_user(db_uri, "boss@example.com", is_admin=True)
     hosts = HostStore(db_uri)
     hosts.upsert_on_connect(
-        "host_on", "alice-laptop", "alice@example.com", version="0.3.1", os="Darwin (arm64)"
+        "host_on",
+        "alice-laptop",
+        "alice@example.com",
+        version="0.3.1",
+        os="Darwin (arm64)",
+        login_token_expires_at=1784433709,
     )
     hosts.upsert_on_connect("host_off", "alice-desktop", "alice@example.com", version="0.3.0")
     hosts.set_offline("host_off")
@@ -465,6 +470,8 @@ async def test_list_hosts_with_version_and_filters(
     by_id = {h["host_id"]: h for h in resp.json()["hosts"]}
     assert by_id["host_on"]["version"] == "0.3.1"
     assert by_id["host_on"]["os"] == "Darwin (arm64)"
+    assert by_id["host_on"]["login_token_expires_at"] == 1784433709
+    assert by_id["host_bob"]["login_token_expires_at"] is None
     assert by_id["host_on"]["online"] is True
     assert by_id["host_off"]["online"] is False
     assert by_id["host_off"]["version"] == "0.3.0"

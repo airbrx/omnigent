@@ -77,6 +77,7 @@ class Host:
     configured_harnesses: dict[str, HarnessAvailability] | None = None
     version: str | None = None
     os: str | None = None
+    login_token_expires_at: int | None = None
 
 
 def host_is_live(host: Host, now: int | None = None) -> bool:
@@ -147,6 +148,7 @@ def _row_to_host(row: SqlHost) -> Host:
         configured_harnesses=_parse_configured_harnesses(row.configured_harnesses),
         version=row.version,
         os=row.os,
+        login_token_expires_at=row.login_token_expires_at,
     )
 
 
@@ -194,6 +196,7 @@ class HostStore:
         configured_harnesses: dict[str, HarnessAvailability] | None = None,
         version: str | None = None,
         os: str | None = None,
+        login_token_expires_at: int | None = None,
     ) -> Host:
         """
         Register or update a host on WebSocket connect.
@@ -283,6 +286,10 @@ class HostStore:
                     row.version = version
                 if os is not None:
                     row.os = os
+                # login_token_expires_at refreshes on every connect (it advances on
+                # re-login), so overwrite unconditionally — including back to
+                # None when the host reports none.
+                row.login_token_expires_at = login_token_expires_at
             else:
                 row = SqlHost(
                     owner=owner,
@@ -294,6 +301,7 @@ class HostStore:
                     configured_harnesses=harnesses_json,
                     version=version,
                     os=os,
+                    login_token_expires_at=login_token_expires_at,
                 )
                 session.add(row)
             return _row_to_host(row)

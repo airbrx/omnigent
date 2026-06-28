@@ -24,6 +24,7 @@ import websockets.asyncio.client
 from websockets.exceptions import InvalidStatus, InvalidURI
 
 from omnigent._platform import WINDOWS_ENV_PASSTHROUGH
+from omnigent.cli_auth import token_expires_at as _stored_token_expiry
 from omnigent.host.frames import (
     HARNESS_NOT_CONFIGURED_ERROR_CODE,
     HostCreateDirFrame,
@@ -1624,6 +1625,7 @@ class HostProcess:
             # launch-time check above stays the authoritative gate.
             configured_harnesses=await asyncio.to_thread(configured_harness_map),
             os=_host_os_string(),
+            login_token_expires_at=_stored_token_expiry(self._server_url),
         )
         await ws.send(encode_host_frame(hello))
         self._ws = ws

@@ -195,6 +195,11 @@ def create_host_tunnel_router(
                 configured_harnesses=frame.configured_harnesses,
                 version=frame.version,
                 os=frame.os,
+                login_token_expires_at=(
+                    int(frame.login_token_expires_at)
+                    if frame.login_token_expires_at is not None
+                    else None
+                ),
             )
 
             conn = host_registry.register(

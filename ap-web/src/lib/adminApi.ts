@@ -111,6 +111,8 @@ export interface AdminHost {
   os: string | null;
   /** Whether the host's build differs from the server's (null if no version reported). */
   outdated: boolean | null;
+  /** Unix epoch when the host's login token expires (null if none reported). */
+  login_token_expires_at: number | null;
   /** Per-harness readiness map, or null if the host never reported it. */
   harnesses: Record<string, boolean | string> | null;
   /** Unix epoch seconds the host was last seen. */
