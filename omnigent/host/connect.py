@@ -156,10 +156,19 @@ def _run_host_installer(server_url: str) -> bool:
     :returns: ``True`` on a clean install.
     """
     cmd = f"curl -fsSL {shlex.quote(server_url)}/install.sh | sh -s -- --non-interactive"
-    # A login shell (``bash -lc``) so the installer sees the same PATH the host
-    # itself runs under — otherwise uv/git (in ~/.local/bin) aren't found and
-    # the installer fails with "uv is required".
-    result = subprocess.run(["bash", "-lc", cmd], capture_output=True, text=True)
+    # Ensure uv/git are findable. The systemd unit launches the host by FULL
+    # path, so the inherited PATH need not include ~/.local/bin — and a login
+    # shell doesn't reliably add it either. uv lives next to our own launcher
+    # (sys.argv[0]), so prepend that dir plus the usual user-bin dirs.
+    home = os.path.expanduser("~")
+    extra = [
+        os.path.dirname(os.path.abspath(sys.argv[0])),
+        os.path.join(home, ".local", "bin"),
+        os.path.join(home, ".cargo", "bin"),
+    ]
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join([*extra, env.get("PATH", "")])
+    result = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, env=env)
     if result.returncode != 0:
         _logger.error(
             "auto-upgrade installer failed (rc=%s): %s",
