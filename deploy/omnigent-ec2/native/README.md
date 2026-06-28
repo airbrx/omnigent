@@ -126,3 +126,5 @@ to the connected server installing code on that machine.
 # in the host's systemd user unit (omnigent-host.service):
 ExecStart=/bin/bash -lc 'exec ~/.local/bin/omnigent host https://omnigent.airbrx.ai --auto-upgrade'
 ```
+
+<!-- build bump to validate host auto-upgrade on reconnect -->
