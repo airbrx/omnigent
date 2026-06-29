@@ -114,6 +114,7 @@ import { PermissionsModal } from "@/components/PermissionsModal";
 import { SessionStateBadge } from "@/components/SessionStateBadge";
 import { useSessionRunnerOnline } from "@/hooks/RunnerHealthProvider";
 import { useCommentInbox } from "@/hooks/useCommentInbox";
+import { useHosts } from "@/hooks/useHosts";
 import { sumPendingApprovals } from "@/lib/inbox";
 import { isSessionStoppable } from "@/lib/sessionStop";
 import { isOwnerLevel } from "@/lib/permissionsApi";
@@ -2145,6 +2146,24 @@ function ConversationRow({
   const currentProject = conversation.labels?.[PROJECT_LABEL_KEY] ?? null;
 
   const label = conversationDisplayLabel(conversation);
+
+  // Hover tooltip: the full title plus where the session runs (host, resolved
+  // to its friendly name) and what it runs (bound agent). Native multi-line
+  // `title` rather than a styled Radix tooltip — the row link is already a
+  // ContextMenuTrigger and drag target, so a second asChild trigger on the
+  // same element would fight those.
+  const hosts = useHosts();
+  const hostName = conversation.host_id
+    ? (hosts.data?.find((h) => h.host_id === conversation.host_id)?.name ?? conversation.host_id)
+    : null;
+  const rowTooltip = [
+    conversation.title ?? conversation.id,
+    hostName ? `Host: ${hostName}` : null,
+    conversation.agent_name ? `Agent: ${conversation.agent_name}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   const hasUnseenMessages =
     !isActive &&
     isConversationUnseen(conversation.id, conversation.updated_at, conversation.status);
@@ -2361,7 +2380,7 @@ function ConversationRow({
         e.preventDefault();
         setIsEditing(true);
       }}
-      title={conversation.title ?? conversation.id}
+      title={rowTooltip}
     >
       {/* Row 1: the session name. Status markers (working, needs-approval,
           unseen) render in the trailing time-marker slot below, replacing

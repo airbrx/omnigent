@@ -94,6 +94,12 @@ vi.mock("@/hooks/useConversations", () => ({
 // Header / dialog children that pull their own context — stub to keep the
 // test scoped to the conversation list + funnel.
 vi.mock("@/components/PermissionsModal", () => ({ PermissionsModal: () => null }));
+// The row resolves host_id → a friendly name for its hover tooltip.
+vi.mock("@/hooks/useHosts", () => ({
+  useHosts: () => ({
+    data: [{ host_id: "host_a1", name: "fedora", owner: "ben", status: "online" }],
+  }),
+}));
 
 import { useConversations } from "@/hooks/useConversations";
 import { Sidebar } from "./Sidebar";
@@ -724,6 +730,28 @@ describe("Sidebar project sections", () => {
 
     // Commit relabels every session in the project (from → to).
     expect(renameProjectSpy).toHaveBeenCalledWith({ from: "Customer X", to: "Customer Y" });
+  });
+
+  it("shows the host (resolved name) and agent in the session row's hover tooltip", () => {
+    mockConversations([
+      conv("conv_h", "research-agent", { title: "Deploy Saas", host_id: "host_a1" }),
+    ]);
+    renderSidebar();
+
+    const tip = screen.getByRole("link", { name: /Deploy Saas/ }).getAttribute("title") ?? "";
+    expect(tip).toContain("Deploy Saas"); // full title (also covers truncation)
+    expect(tip).toContain("Host: fedora"); // host_id → friendly name
+    expect(tip).toContain("Agent: research-agent");
+  });
+
+  it("omits host/agent tooltip lines for a session bound to neither", () => {
+    mockConversations([
+      conv("conv_n", "x", { title: "Local chat", host_id: null, agent_name: null }),
+    ]);
+    renderSidebar();
+
+    const tip = screen.getByRole("link", { name: /Local chat/ }).getAttribute("title") ?? "";
+    expect(tip).toBe("Local chat"); // just the title — no Host:/Agent: lines
   });
 
   it("does not rename when the name is unchanged or blank", async () => {
