@@ -77,6 +77,10 @@ class HostHelloFrame:
         unknown (an older host that doesn't report it) — never
         treat ``None`` as "nothing is configured". Recomputed on
         each (re)connect; the launch-time check is authoritative.
+    :param os: Host operating system + arch, e.g.
+        ``"Darwin 23.5.0 (arm64)"``. ``None`` from an older host that
+        doesn't report it. Optional/defaulted so the field is
+        backward-compatible — no protocol-major bump.
     """
 
     version: str
@@ -84,6 +88,8 @@ class HostHelloFrame:
     name: str
     runners: list[str] = field(default_factory=list)
     configured_harnesses: dict[str, HarnessAvailability] | None = None
+    os: str | None = None
+    login_token_expires_at: float | None = None
 
 
 @dataclass
@@ -513,6 +519,8 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "name": frame.name,
                 "runners": list(frame.runners),
                 "configured_harnesses": frame.configured_harnesses,
+                "os": frame.os,
+                "login_token_expires_at": frame.login_token_expires_at,
             }
         )
     if isinstance(frame, HostLaunchRunnerFrame):
@@ -771,12 +779,16 @@ def _decode_host_hello(msg: dict[str, Any]) -> HostHelloFrame:
     :param msg: Decoded frame object.
     :returns: Typed host hello frame.
     """
+    raw_os = msg.get("os")
+    raw_exp = msg.get("login_token_expires_at")
     return HostHelloFrame(
         version=_required_str(msg, "version"),
         frame_protocol_version=_required_int(msg, "frame_protocol_version"),
         name=_required_str(msg, "name"),
         runners=_optional_str_list(msg, "runners"),
         configured_harnesses=_optional_str_availability_map(msg, "configured_harnesses"),
+        os=raw_os if isinstance(raw_os, str) else None,
+        login_token_expires_at=raw_exp if isinstance(raw_exp, (int, float)) else None,
     )
 
 

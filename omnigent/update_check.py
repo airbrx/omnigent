@@ -951,6 +951,27 @@ def _read_build_info() -> tuple[float, str] | None:
     return ts, sha
 
 
+def version_label() -> str:
+    """A build-identity label: package version plus the commit short-SHA.
+
+    ``"0.3.0.dev0 (c983f9b0)"`` when a build SHA is available, else just
+    the package version. The build *timestamp* is deliberately excluded —
+    two builds of the same commit must produce the SAME label so a host's
+    label can be compared for equality against the server's to decide
+    "is this host on the same build as the server?".
+
+    :returns: The label; never raises (falls back to the bare version).
+    """
+    try:
+        version_str = importlib.metadata.version("omnigent")
+    except importlib.metadata.PackageNotFoundError:
+        version_str = "unknown"
+    info = _read_build_info()
+    if info is not None and info[1]:
+        return f"{version_str} ({info[1][:8]})"
+    return version_str
+
+
 def _get_distribution() -> importlib.metadata.Distribution | None:
     """Resolve our installed distribution, or ``None`` if not installed.
 

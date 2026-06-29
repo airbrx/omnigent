@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -16,8 +17,10 @@ from websockets.http11 import Response
 from omnigent.host.connect import (
     HostConnectError,
     HostProcess,
+    _augment_user_path,
     _build_runner_env,
     _RunnerHandle,
+    _should_auto_upgrade,
     run_host_process,
 )
 from omnigent.host.frames import (
@@ -1057,6 +1060,7 @@ def test_build_runner_env_allowlists_host_env_and_strips_secrets() -> None:
         "SOME_RANDOM_VAR": "x",
         "OMNIGENT_CLAUDE_SDK_NO_SANDBOX": "1",
         "KUBECONFIG": "/home/alice/.kube/config",
+        "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "1",
     }
 
     env = _build_runner_env(
@@ -1093,6 +1097,9 @@ def test_build_runner_env_allowlists_host_env_and_strips_secrets() -> None:
     # KUBECONFIG is a filesystem path (not a secret) — kubectl, helm, k9s
     # need it to resolve the user's cluster contexts and namespaces.
     assert env["KUBECONFIG"] == "/home/alice/.kube/config"
+    # CLAUDE_CODE_SKIP_BEDROCK_AUTH disables AWS SigV4 auth for LiteLLM
+    # proxies — a non-secret boolean, same rationale as CLAUDE_CODE_USE_BEDROCK.
+    assert env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
     # Non-harness secrets are stripped — the point of the allowlist.
     assert "DATABRICKS_TOKEN" not in env
     assert "AWS_SECRET_ACCESS_KEY" not in env
@@ -1812,6 +1819,31 @@ def _host(
     return HostProcess(identity, server_url)
 
 
+def test_build_connect_headers_adds_org_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A recorded ?o= selector rides the tunnel handshake.
+
+    The WS upgrade must name the workspace via ``X-Databricks-Org-Id`` or it
+    routes to the account. The header rides alongside the Origin sentinel,
+    independent of the bearer/managed-token branch.
+
+    :param monkeypatch: The pytest monkeypatch fixture.
+    :returns: None.
+    """
+    import omnigent.runner._entry as entry_mod
+
+    # No managed token + no real Databricks creds: isolate the bearer
+    # branch so only the routing header is under test.
+    monkeypatch.delenv("OMNIGENT_HOST_TOKEN", raising=False)
+    monkeypatch.setattr(entry_mod, "_make_auth_token_factory", lambda *, server_url=None: None)
+    monkeypatch.setattr(
+        "omnigent.cli_auth.load_databricks_org_id", lambda _url: "2850744067564480"
+    )
+
+    headers = _host("https://acme.databricks.com/api/2.0/omnigent")._build_connect_headers()
+
+    assert headers["X-Databricks-Org-Id"] == "2850744067564480"
+
+
 async def test_run_retries_on_login_redirect(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -2123,3 +2155,120 @@ def test_run_host_process_announces_session_log_dir_on_start(
 
     out = capsys.readouterr().out
     assert "Session logs: ~/.omnigent/logs/host-runner/" in out
+
+
+# ── --auto-upgrade decision (_should_auto_upgrade) ──────────
+
+
+def test_should_auto_upgrade_when_outdated() -> None:
+    """Outdated + not-yet-attempted ⇒ upgrade (live runners no longer gate —
+    the upgrade path sleeps them, so a busy host still keeps current)."""
+    assert _should_auto_upgrade(
+        target="0.3.0 (bbbbbbbb)",
+        current="0.3.0 (aaaaaaaa)",
+        last_attempt=None,
+    )
+
+
+def test_should_not_auto_upgrade_when_current() -> None:
+    """Same build ⇒ no upgrade."""
+    assert not _should_auto_upgrade(
+        target="0.3.0 (aaaaaaaa)",
+        current="0.3.0 (aaaaaaaa)",
+        last_attempt=None,
+    )
+
+
+def test_should_not_auto_upgrade_when_target_unknown() -> None:
+    """No reachable server build (None) ⇒ fail safe, no upgrade."""
+    assert not _should_auto_upgrade(
+        target=None,
+        current="0.3.0 (aaaaaaaa)",
+        last_attempt=None,
+    )
+
+
+def test_should_not_retry_same_failed_target() -> None:
+    """Loop guard: a target we already tried (install didn't advance the
+    version) is not retried, so we can't re-exec forever."""
+    assert not _should_auto_upgrade(
+        target="0.3.0 (bbbbbbbb)",
+        current="0.3.0 (aaaaaaaa)",
+        last_attempt="0.3.0 (bbbbbbbb)",
+    )
+
+
+def test_terminate_live_runners_sleeps_sessions_and_counts(tmp_path: Path) -> None:
+    """The upgrade-sleep helper stops every live runner and reports the count.
+
+    Stopping a runner is what flips its session to runner_asleep (preserved,
+    resumable) — this is how auto-upgrade idles a busy host without orphaning
+    or hard-killing work before the re-exec.
+    """
+    host = _make_host_process()
+    procs = []
+    for name in ("runner_x", "runner_y"):
+        proc = subprocess.Popen(
+            ["sleep", "60"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        host._runners[name] = _RunnerHandle(proc=proc, log_path=tmp_path / f"{name}.log")
+        procs.append(proc)
+
+    slept = host._terminate_live_runners("auto-upgrade")
+
+    assert slept == 2
+    for proc in procs:
+        assert proc.poll() is not None  # actually stopped
+    assert host._runners == {}  # all cleared, host now idle
+
+
+# ── _augment_user_path (harness CLIs on a minimal systemd PATH) ──────
+
+
+def test_augment_user_path_adds_local_bin(tmp_path, monkeypatch) -> None:
+    """A minimal PATH gains ~/.local/bin (prepended) when it exists on disk.
+
+    This is what makes a systemd-launched host find the claude/codex CLIs
+    the user installed there — without it, claude-native reads as
+    not-configured even with a valid subscription. Shell probe stubbed off
+    so this exercises the well-known-dir backstop deterministically.
+    """
+    monkeypatch.setattr("omnigent.host.connect._login_shell_path", lambda: None)
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    _augment_user_path()
+    parts = os.environ["PATH"].split(os.pathsep)
+    assert parts[0] == str(local_bin)  # prepended, so it wins
+    assert "/usr/bin" in parts
+
+
+def test_augment_user_path_idempotent_and_skips_absent(tmp_path, monkeypatch) -> None:
+    """A dir already on PATH isn't duplicated; a non-existent dir is skipped."""
+    monkeypatch.setattr("omnigent.host.connect._login_shell_path", lambda: None)
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{local_bin}{os.pathsep}/usr/bin")
+    _augment_user_path()
+    parts = os.environ["PATH"].split(os.pathsep)
+    assert parts.count(str(local_bin)) == 1  # not duplicated
+    assert str(tmp_path / ".cargo" / "bin") not in parts  # absent ⇒ skipped
+
+
+def test_augment_user_path_merges_login_shell_path(tmp_path, monkeypatch) -> None:
+    """The login-shell PATH is merged in — this is what surfaces nvm-installed
+    CLIs (e.g. codex in ~/.nvm/versions/node/<v>/bin) the hardcoded dirs miss."""
+    nvm_bin = tmp_path / ".nvm" / "versions" / "node" / "v24.15.0" / "bin"
+    nvm_bin.mkdir(parents=True)
+    monkeypatch.setattr(
+        "omnigent.host.connect._login_shell_path",
+        lambda: f"{nvm_bin}{os.pathsep}/usr/bin",
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    _augment_user_path()
+    parts = os.environ["PATH"].split(os.pathsep)
+    assert str(nvm_bin) in parts  # the versioned node bin is now reachable
+    assert parts.count("/usr/bin") == 1  # already present ⇒ not duplicated

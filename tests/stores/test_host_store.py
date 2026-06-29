@@ -124,6 +124,50 @@ def test_upsert_persists_configured_harnesses(host_store: HostStore) -> None:
     assert fetched.configured_harnesses == {"claude-sdk": True, "codex": "needs-auth"}
 
 
+def test_upsert_persists_version(host_store: HostStore) -> None:
+    """The host's advertised version is written on connect and read back.
+
+    Persisting it is what lets the admin hosts view show the last-known
+    version of an *offline* host (the live value is only in the in-memory
+    tunnel registry for connected hosts).
+    """
+    host_store.upsert_on_connect(
+        host_id="host_v1",
+        name="laptop",
+        owner="alice@example.com",
+        version="0.3.1",
+        os="Darwin 23.5.0 (arm64)",
+        login_token_expires_at=1784433709,
+    )
+
+    fetched = host_store.get_host("host_v1")
+    assert fetched is not None
+    assert fetched.version == "0.3.1"
+    assert fetched.os == "Darwin 23.5.0 (arm64)"
+    assert fetched.login_token_expires_at == 1784433709
+
+
+def test_upsert_reconnect_keeps_last_known_version_when_unreported(
+    host_store: HostStore,
+) -> None:
+    """A reconnect updates the version, but a reconnect that reports no
+    version (older host build) keeps the last-known value rather than
+    wiping it — so an offline host still shows the version it last ran."""
+    host_store.upsert_on_connect(
+        host_id="host_v2", name="laptop2", owner="alice@example.com", version="0.3.0"
+    )
+    # Newer build reports a bumped version.
+    host_store.upsert_on_connect(
+        host_id="host_v2", name="laptop2", owner="alice@example.com", version="0.3.2"
+    )
+    assert host_store.get_host("host_v2").version == "0.3.2"  # type: ignore[union-attr]
+    # A reconnect with no version must not erase the known value.
+    host_store.upsert_on_connect(
+        host_id="host_v2", name="laptop2", owner="alice@example.com", version=None
+    )
+    assert host_store.get_host("host_v2").version == "0.3.2"  # type: ignore[union-attr]
+
+
 def test_upsert_reconnect_overwrites_and_nulls_configured_harnesses(
     host_store: HostStore,
 ) -> None:

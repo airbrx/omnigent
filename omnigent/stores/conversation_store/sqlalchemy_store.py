@@ -25,6 +25,7 @@ from sqlalchemy.sql.selectable import Subquery
 from omnigent._wrapper_labels import UI_MODE_LABEL_KEY, WRAPPER_LABEL_KEY
 from omnigent.db.converters import sql_agent_to_entity
 from omnigent.db.db_models import (
+    LABEL_VALUE_MAX_LEN,
     SqlAgent,
     SqlConversation,
     SqlConversationItem,
@@ -49,6 +50,7 @@ from omnigent.entities import (
     ConversationItem,
     NewConversationItem,
     PagedList,
+    UsageTotals,
     parse_item_data,
 )
 from omnigent.stores.conversation_store import (
@@ -56,6 +58,7 @@ from omnigent.stores.conversation_store import (
     FORK_CARRY_HISTORY_LABEL_KEY,
     FORK_SOURCE_EXTERNAL_SESSION_LABEL_KEY,
     FORK_SOURCE_LABEL_KEY,
+    PROJECT_LABEL_KEY,
     SWITCH_PREVIOUS_BUILTIN_LABEL_KEY,
     ConversationNotFoundError,
     ConversationStore,
@@ -262,11 +265,17 @@ def _upsert_labels(
         touched by this call.
     """
     dialect = session.bind.dialect.name if session.bind is not None else ""
+    # Defense-in-depth: clamp every value to the column width so no label
+    # writer can overflow ``String(256)`` and raise ``DataError`` on
+    # PostgreSQL. Callers (session error labels, client-supplied ``body.labels``
+    # on session create/patch, policy-author writes) all funnel through here,
+    # so this is the single point that guarantees the column constraint. The
+    # slice is character-based, matching Postgres ``VARCHAR(n)`` semantics.
     rows = [
         {
             "conversation_id": conversation_id,
             "key": key,
-            "value": value,
+            "value": value[:LABEL_VALUE_MAX_LEN],
             "updated_at": updated_at,
         }
         for key, value in updates.items()
@@ -1449,6 +1458,75 @@ class SqlAlchemyConversationStore(ConversationStore):
 
         return persisted
 
+    def list_projects(
+        self,
+        accessible_by: str | None = None,
+    ) -> list[str]:
+        """
+        Return all distinct project names, ordered alphabetically.
+
+        Projects are implicit: they exist as long as at least one
+        *non-archived* ``conversation_labels`` row with ``key="omni_project"``
+        references them. Archived sessions keep their project label (so
+        unarchiving restores a session to its original project), but a project
+        whose every member is archived drops out of this list — that is what
+        makes "Delete project" (which archives all members) remove the folder
+        while leaving the sessions recoverable. The label key is namespaced
+        (``omni_*``) to keep this internal storage key distinct from the
+        user-facing "project" term and from any future reserved keys; it is
+        never surfaced as a label in the UI.
+
+        :param accessible_by: When set, restrict to sessions that
+            ``accessible_by`` has a permission row for (mirrors the
+            ``list_conversations`` ACL filter).
+        :returns: List of project names ordered ascending.
+        """
+        with self._session() as session:
+            # Join to the conversation so archived sessions don't keep an
+            # otherwise-empty project alive in the sidebar.
+            stmt = (
+                select(SqlConversationLabel.value)
+                .join(
+                    SqlConversation,
+                    SqlConversation.id == SqlConversationLabel.conversation_id,
+                )
+                .where(
+                    SqlConversationLabel.key == PROJECT_LABEL_KEY,
+                    SqlConversation.archived.is_(False),
+                )
+                .distinct()
+                .order_by(SqlConversationLabel.value)
+            )
+            if accessible_by is not None:
+                from omnigent.db.db_models import SqlSessionPermission
+
+                accessible_ids = select(SqlSessionPermission.conversation_id).where(
+                    SqlSessionPermission.user_id == accessible_by
+                )
+                stmt = stmt.where(SqlConversationLabel.conversation_id.in_(accessible_ids))
+            return [row[0] for row in session.execute(stmt).all()]
+
+    def delete_label(
+        self,
+        conversation_id: str,
+        key: str,
+    ) -> None:
+        """
+        Delete a single label key from a conversation.
+
+        No-op if the label does not exist.
+
+        :param conversation_id: The conversation to update.
+        :param key: The label key to remove, e.g. ``"omni_project"``.
+        """
+        with self._session() as session:
+            session.execute(
+                delete(SqlConversationLabel).where(
+                    SqlConversationLabel.conversation_id == conversation_id,
+                    SqlConversationLabel.key == key,
+                )
+            )
+
     def list_conversations(
         self,
         limit: int = 20,
@@ -1465,6 +1543,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         search_query: str | None = None,
         accessible_by: str | None = None,
         include_archived: bool = False,
+        project: str | None = None,
     ) -> PagedList[Conversation]:
         """
         List conversations with cursor-based pagination.
@@ -1509,6 +1588,12 @@ class SqlAlchemyConversationStore(ConversationStore):
         :param include_archived: When ``False`` (default), exclude
             rows where ``archived`` is true. When ``True``, include
             archived rows alongside non-archived ones.
+        :param project: When set to a non-empty string, only return
+            sessions that have a ``conversation_labels`` row with
+            ``key="omni_project"`` and ``value=project``. When set to an
+            empty string ``""``, only return sessions with NO project
+            label (i.e., unfiled sessions). ``None`` disables the
+            filter.
         :returns: A :class:`PagedList` of :class:`Conversation`
             objects.
         """
@@ -1558,6 +1643,26 @@ class SqlAlchemyConversationStore(ConversationStore):
                     .distinct()
                 )
                 stmt = stmt.where(or_(title_match, content_match))
+            if project is not None:
+                if project == "":
+                    # Unfiled: sessions with no project label at all.
+                    stmt = stmt.where(
+                        SqlConversation.id.not_in(
+                            select(SqlConversationLabel.conversation_id).where(
+                                SqlConversationLabel.key == PROJECT_LABEL_KEY
+                            )
+                        )
+                    )
+                else:
+                    # Specific project: session must have this project label.
+                    stmt = stmt.where(
+                        SqlConversation.id.in_(
+                            select(SqlConversationLabel.conversation_id).where(
+                                SqlConversationLabel.key == PROJECT_LABEL_KEY,
+                                SqlConversationLabel.value == project,
+                            )
+                        )
+                    )
             if after:
                 stmt = self._apply_cursor(
                     stmt,
@@ -1865,6 +1970,44 @@ class SqlAlchemyConversationStore(ConversationStore):
             row.updated_at = now_epoch()
             return _to_conversation(row, _fetch_labels(session, conversation_id))
 
+    def usage_totals_for_user(self, user_id: str) -> UsageTotals:
+        """Sum session_usage across the user's OWNED top-level sessions.
+
+        Cost is attributed to the owner (the ``LEVEL_OWNER`` grantee), so
+        a user merely invited to a session is not charged for it. See
+        base class.
+        """
+        from omnigent.db.db_models import SqlSessionPermission
+        from omnigent.server.auth import LEVEL_OWNER
+
+        with self._session() as session:
+            owned_ids = select(SqlSessionPermission.conversation_id).where(
+                SqlSessionPermission.user_id == user_id,
+                SqlSessionPermission.level >= LEVEL_OWNER,
+            )
+            rows = (
+                session.execute(
+                    select(SqlConversation.session_usage).where(
+                        SqlConversation.id.in_(owned_ids),
+                        SqlConversation.kind == "default",
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        cost = 0.0
+        tokens = 0
+        for raw in rows:
+            if not raw:
+                continue
+            try:
+                usage = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            cost += float(usage.get("total_cost_usd") or 0.0)
+            tokens += int(usage.get("total_tokens") or 0)
+        return UsageTotals(cost_usd=cost, total_tokens=tokens, session_count=len(rows))
+
     def list_conversations_by_host_id(
         self,
         host_id: str,
@@ -2116,6 +2259,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         cloned_agent_bundle_location: str | None = None,
         cloned_agent_description: str | None = None,
         copy_model_settings: bool = True,
+        model_override: str | None = None,
         carry_history_into_native: bool = False,
         resume_source_native_session: bool = True,
         presentation_labels: dict[str, str] | None = None,
@@ -2171,6 +2315,13 @@ class SqlAlchemyConversationStore(ConversationStore):
             the bound agent's defaults — used when the fork switches to
             an agent in a different provider family, where the source's
             model id is meaningless (a model is provider-bound).
+        :param model_override: When set, the fork's ``model_override`` is
+            this value instead of the source's copied one — the
+            "restart with model" path, where the whole point is to launch
+            the clone on a different model. Wins over the
+            ``copy_model_settings`` copy; ``reasoning_effort`` still follows
+            ``copy_model_settings`` (a same-family model switch keeps the
+            effort). ``None`` (default) leaves the copy behavior unchanged.
         :param carry_history_into_native: When ``True``, stamp
             :data:`FORK_CARRY_HISTORY_LABEL_KEY` on the fork so a native
             target harness rebuilds its transcript instead of starting
@@ -2243,7 +2394,14 @@ class SqlAlchemyConversationStore(ConversationStore):
                     else (agent_id if agent_id is not None else source.agent_id)
                 ),
                 reasoning_effort=source.reasoning_effort if copy_model_settings else None,
-                model_override=source.model_override if copy_model_settings else None,
+                # An explicit override wins over the copied value — this is
+                # the "restart with model" launch model. Otherwise fall back
+                # to the source's copied model (gated by copy_model_settings).
+                model_override=(
+                    model_override
+                    if model_override is not None
+                    else (source.model_override if copy_model_settings else None)
+                ),
                 # The brain-harness override is family-bound like the model,
                 # so it follows the same copy gate.
                 harness_override=source.harness_override if copy_model_settings else None,

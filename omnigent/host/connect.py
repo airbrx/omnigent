@@ -11,16 +11,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import platform
+import shlex
 import subprocess
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 import websockets.asyncio.client
 from websockets.exceptions import InvalidStatus, InvalidURI
 
 from omnigent._platform import WINDOWS_ENV_PASSTHROUGH
+from omnigent.cli_auth import token_expires_at as _stored_token_expiry
 from omnigent.host.frames import (
     HARNESS_NOT_CONFIGURED_ERROR_CODE,
     HostCreateDirFrame,
@@ -67,8 +71,220 @@ from omnigent.runner.transports.ws_tunnel.frames import (
     decode_frame,
     encode_frame,
 )
+from omnigent.update_check import version_label
 
 _logger = logging.getLogger(__name__)
+
+
+def _host_os_string() -> str:
+    """A compact OS + arch label for the host's ``hello`` frame.
+
+    OS family + release + machine arch — what an operator needs to reason
+    about harness compatibility, e.g. ``"Darwin 23.5.0 (arm64)"`` or
+    ``"Linux 6.10.0 (x86_64)"``. Falls back gracefully if ``platform``
+    returns empties.
+
+    :returns: The label; never raises.
+    """
+    system = platform.system() or "unknown"
+    release = platform.release()
+    machine = platform.machine()
+    label = f"{system} {release}".strip()
+    return f"{label} ({machine})" if machine else label
+
+
+# Sentinel framing the captured PATH so rc-file chatter (MOTD, echoes) on
+# stdout can't be mistaken for it — we read what follows the last marker.
+_LOGIN_PATH_SENTINEL = "__OMNIGENT_LOGIN_PATH__"
+
+
+def _login_shell_path() -> str | None:
+    """Best-effort capture of the user's interactive login-shell ``PATH``.
+
+    Version managers (nvm, pyenv, rbenv, bun, …) extend ``PATH`` only when
+    an interactive login shell sources the user's rc files — so a harness
+    CLI installed via node/npm (``codex``) lives in a versioned dir
+    (``~/.nvm/versions/node/<v>/bin``) we can't enumerate. Ask the user's
+    own shell what its ``PATH`` is instead of guessing.
+
+    Unix-only; returns ``None`` on Windows or any failure (the caller falls
+    back to the well-known dirs).
+    """
+    if sys.platform == "win32":
+        return None
+    shell = os.environ.get("SHELL")
+    if not shell:
+        try:
+            import pwd
+
+            shell = pwd.getpwuid(os.getuid()).pw_shell or None
+        except (KeyError, ImportError, OSError):
+            shell = None
+    shell = shell or "/bin/bash"
+    try:
+        # -i -l: source the same rc files an interactive login session would
+        # (where nvm/pyenv/etc. live). DEVNULL stdin + a timeout keep a
+        # misbehaving rc from hanging the host; stderr (job-control noise) is
+        # captured and ignored.
+        out = subprocess.run(
+            [shell, "-ilc", f'printf "%s%s" "{_LOGIN_PATH_SENTINEL}" "$PATH"'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    idx = out.stdout.rfind(_LOGIN_PATH_SENTINEL)
+    if idx == -1:
+        return None
+    path = out.stdout[idx + len(_LOGIN_PATH_SENTINEL) :].strip()
+    return path or None
+
+
+def _augment_user_path() -> None:
+    """Make the harness CLIs visible by widening this process's ``PATH``.
+
+    A systemd user service (and other non-login launches) starts with a
+    minimal ``PATH`` — so harness CLIs aren't found: harness readiness
+    reports them missing (``claude-native`` shows as not-configured even
+    with a valid subscription) and runner launches can't exec them. Merge
+    in the user's interactive login-shell ``PATH`` (picks up nvm/pyenv/…
+    bins like ``codex``), then a few well-known dirs as a backstop. Both
+    detection and execution then see what an interactive shell would.
+    Idempotent — skips dirs already on ``PATH`` or absent on disk.
+    """
+    home = os.path.expanduser("~")
+    current = os.environ.get("PATH", "")
+    have = set(current.split(os.pathsep)) if current else set()
+    additions: list[str] = []
+
+    def _consider(directory: str) -> None:
+        if directory and directory not in have and directory not in additions:
+            if os.path.isdir(directory):
+                additions.append(directory)
+
+    # 1. The user's real login-shell PATH — authoritative for version managers.
+    login_path = _login_shell_path()
+    if login_path:
+        for directory in login_path.split(os.pathsep):
+            _consider(directory)
+    # 2. Well-known user bin dirs, in case the shell probe came up empty.
+    for directory in (
+        os.path.join(home, ".local", "bin"),
+        os.path.join(home, ".cargo", "bin"),
+        "/opt/homebrew/bin",  # macOS (Apple silicon) Homebrew
+    ):
+        _consider(directory)
+
+    if not additions:
+        return
+    os.environ["PATH"] = (
+        os.pathsep.join([*additions, current]) if current else os.pathsep.join(additions)
+    )
+    _logger.debug("augmented PATH with %s", additions)
+
+
+def _should_auto_upgrade(
+    *,
+    target: str | None,
+    current: str,
+    last_attempt: str | None,
+) -> bool:
+    """Decide whether the host should upgrade itself now (pure, testable).
+
+    Live runners do NOT block the decision: the upgrade path sleeps them
+    first (each session becomes ``runner_asleep`` — preserved and resumable)
+    so a busy host still keeps current, rather than deferring forever.
+
+    :param target: The server's build label, or ``None`` if it couldn't be
+        fetched (offline, or an older server without the ``commit`` field).
+    :param current: This host's build label (:func:`version_label`).
+    :param last_attempt: The target we last tried to upgrade to — guards
+        against re-execing forever when an install never advances the
+        version.
+    :returns: ``True`` iff we should install + re-exec now.
+    """
+    if not target or target == current:
+        return False
+    if target == last_attempt:
+        return False
+    return True
+
+
+async def _fetch_server_build_label(server_url: str) -> str | None:
+    """Fetch the server's build label from ``GET /api/version``.
+
+    Builds the SAME format as :func:`version_label` (``"0.3.0.dev0
+    (sha8)"``) so host and server compare equal when on the same commit.
+
+    :returns: The label, or ``None`` on any error — in which case the host
+        never upgrades (fail safe).
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{server_url}/api/version")
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:  # noqa: BLE001 — any failure ⇒ don't upgrade
+        return None
+    version = data.get("version")
+    if not isinstance(version, str):
+        return None
+    commit = data.get("commit")
+    if isinstance(commit, str) and commit:
+        return f"{version} ({commit[:8]})"
+    return version
+
+
+def _run_host_installer(server_url: str) -> bool:
+    """Run the server's installer to replace this host's omnigent build.
+
+    ``curl <server>/install.sh | sh`` — the server serves an installer
+    pinned to its own build (see ``GET /install.sh``).
+
+    :returns: ``True`` on a clean install.
+    """
+    cmd = f"curl -fsSL {shlex.quote(server_url)}/install.sh | sh -s -- --non-interactive"
+    # Ensure uv/git are findable. The systemd unit launches the host by FULL
+    # path, so the inherited PATH need not include ~/.local/bin — and a login
+    # shell doesn't reliably add it either. uv lives next to our own launcher
+    # (sys.argv[0]), so prepend that dir plus the usual user-bin dirs.
+    home = os.path.expanduser("~")
+    extra = [
+        os.path.dirname(os.path.abspath(sys.argv[0])),
+        os.path.join(home, ".local", "bin"),
+        os.path.join(home, ".cargo", "bin"),
+    ]
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join([*extra, env.get("PATH", "")])
+    result = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, env=env)
+    if result.returncode != 0:
+        _logger.error(
+            "auto-upgrade installer failed (rc=%s): %s",
+            result.returncode,
+            result.stderr[-500:],
+        )
+    return result.returncode == 0
+
+
+def _reexec_self() -> NoReturn:
+    """Replace this process with a fresh exec of the same command.
+
+    After the installer swaps the on-disk binary, re-exec so the NEW code
+    runs and reconnects (the ``host_id`` is stable). ``os.execv`` needs no
+    supervisor; if it somehow fails, exit non-zero so a supervisor (systemd
+    ``Restart=on-failure``) still restarts us into the new build.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.execv(sys.argv[0], sys.argv)
+    except OSError as exc:  # pragma: no cover - exec almost never fails
+        _logger.error("re-exec failed (%s); exiting for supervisor restart", exc)
+        sys.exit(42)
 
 
 def _runner_log_dir() -> Path:
@@ -280,6 +496,15 @@ _RUNNER_ENV_ALLOWLIST: frozenset[str] = frozenset(
         # ``OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_CLAUDE_SDK_NO_SANDBOX``).
         # Safe to propagate: not a secret.
         "OMNIGENT_CLAUDE_SDK_NO_SANDBOX",
+        # Native-Claude launcher plugin selector: the entry-point NAME of a
+        # launcher registered in the ``omnigent.claude_launcher`` group (e.g.
+        # ``isaac``). Read by omnigent.claude_launcher.resolve_claude_launch in
+        # the managed-host runner (``_auto_create_claude_terminal``) to wrap the
+        # Claude launch through a downstream binary (e.g. Databricks' isaac).
+        # The daemon→runner env strip would otherwise drop it, leaving the
+        # runner on the default launch. Safe to propagate: not a secret, just a
+        # plugin name.
+        "OMNIGENT_CLAUDE_LAUNCHER",
         # Testing knob: override the context window size for compaction
         # trigger threshold. Not a secret — a plain integer.
         "AP_CONTEXT_WINDOW_OVERRIDE",
@@ -290,6 +515,12 @@ _RUNNER_ENV_ALLOWLIST: frozenset[str] = frozenset(
         # live in HARNESS_CREDENTIAL_ENV_VARS, mirroring ANTHROPIC_API_KEY /
         # ANTHROPIC_BASE_URL. Safe to propagate: not a secret.
         "CLAUDE_CODE_USE_BEDROCK",
+        # Claude Code's Bedrock-auth-skip switch: a non-secret boolean flag
+        # that disables AWS SigV4 auth so Claude Code can talk to a LiteLLM
+        # proxy fronting Bedrock. Without it the runner attempts native AWS
+        # auth, which fails for non-AWS proxies. Same rationale as
+        # CLAUDE_CODE_USE_BEDROCK above. Safe to propagate: not a secret.
+        "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
         # Kubernetes config path. A filesystem path (typically
         # ``~/.kube/config``), not a bearer secret — the file *contains*
         # cluster certs/tokens but the env var is just a path string,
@@ -524,14 +755,22 @@ class HostProcess:
         self,
         identity: HostIdentity,
         server_url: str,
+        *,
+        auto_upgrade: bool = False,
     ) -> None:
         """Initialize the host process.
 
         :param identity: Host identity from ``config.yaml``.
         :param server_url: Server URL to connect to.
+        :param auto_upgrade: When True, keep this host in sync with the
+            server's build — see :meth:`_maybe_auto_upgrade`.
         """
         self._identity = identity
         self._server_url = server_url.rstrip("/")
+        self._auto_upgrade = auto_upgrade
+        # The version label we last tried to upgrade TO — a loop guard so a
+        # failed install (version never advances) can't re-exec forever.
+        self._last_upgrade_attempt: str | None = None
         self._runners: dict[str, _RunnerHandle] = {}
         # Set on the first accepted WS upgrade. Distinguishes a host that
         # never authenticated (login redirects turn fatal after
@@ -561,6 +800,51 @@ class HostProcess:
         for rid in dead:
             self._runners.pop(rid)
         return list(self._runners.keys())
+
+    async def _maybe_auto_upgrade(self) -> None:
+        """Install the server's build and re-exec, if outdated.
+
+        Called on each (re)connect attempt when ``--auto-upgrade`` is set.
+        Loop-guarded via :func:`_should_auto_upgrade`. Live sessions don't
+        block it: after a successful install, any live runners are slept
+        (terminated cleanly → ``runner_asleep``, resumable on next message)
+        right before the re-exec, so a busy host still stays current without
+        orphaning or hard-killing work. On success this re-execs and never
+        returns.
+        """
+        if not self._auto_upgrade:
+            return
+        target = await _fetch_server_build_label(self._server_url)
+        if not _should_auto_upgrade(
+            target=target,
+            current=version_label(),
+            last_attempt=self._last_upgrade_attempt,
+        ):
+            return
+        self._last_upgrade_attempt = target
+        _logger.info(
+            "auto-upgrade: %s -> %s (installing from %s)",
+            version_label(),
+            target,
+            self._server_url,
+        )
+        ok = await asyncio.to_thread(_run_host_installer, self._server_url)
+        if not ok:
+            _logger.error("auto-upgrade install failed; staying on the current build")
+            return
+        # Install succeeded — only now sleep any live sessions, so a failed
+        # install never disturbs them. Terminating each runner flips its
+        # session to runner_asleep (preserved; the next message relaunches a
+        # runner on the upgraded host) instead of leaving it orphaned by the
+        # re-exec.
+        slept = await asyncio.to_thread(self._terminate_live_runners, "auto-upgrade")
+        if slept:
+            _logger.info(
+                "auto-upgrade: slept %d live session(s) — they resume on next message",
+                slept,
+            )
+        _logger.info("auto-upgrade installed; re-executing into the new build")
+        _reexec_self()
 
     def _tunnel_url(self) -> str:
         """Build the WebSocket tunnel URL.
@@ -698,6 +982,17 @@ class HostProcess:
                 "or the server is running a build that predates the host API "
                 "(the /v1/hosts tunnel route). Confirm you have access and that "
                 "the server is up to date, then retry. " + self._login_fix_hint()
+            )
+        if status == 409:
+            return HostConnectError(
+                "Connection refused (HTTP 409): this machine is already "
+                "registered to a different account on this server, so the "
+                "account you authenticated as cannot claim it. This usually "
+                "means the host was first registered under another identity "
+                "(e.g. the single-user 'local' owner before the server "
+                "switched to accounts auth). Ask an administrator to remove "
+                "the existing host registration, or reset this machine's host "
+                "id, then retry. " + self._login_fix_hint()
             )
         return HostConnectError(
             f"Connection refused (HTTP {status}): the server rejected the host "
@@ -1312,21 +1607,39 @@ class HostProcess:
         finally:
             self._cleanup_runners()
 
-    def _cleanup_runners(self) -> None:
-        """Terminate all live runners on shutdown.
+    def _terminate_live_runners(self, reason: str) -> int:
+        """Terminate every live runner subprocess; return how many were stopped.
 
-        :returns: None.
+        Terminating a runner drops its tunnel to the server, which the server
+        reads as a runner-disconnect: the session flips to ``runner_asleep``
+        — preserved and resumable (the next message relaunches a fresh
+        runner). Shared by shutdown cleanup and the auto-upgrade
+        sleep-before-re-exec path so active sessions sleep cleanly instead of
+        being orphaned.
+
+        :param reason: Short context for the log line (e.g. ``"shutdown"`` /
+            ``"auto-upgrade"``).
+        :returns: Count of runners that were live and have been stopped.
         """
-        for runner_id, handle in self._runners.items():
-            if handle.proc.poll() is None:
-                _logger.info("Terminating runner %s on shutdown", runner_id)
-                handle.proc.terminate()
-        for handle in self._runners.values():
+        live = [(rid, h) for rid, h in self._runners.items() if h.proc.poll() is None]
+        for runner_id, handle in live:
+            _logger.info("Terminating runner %s (%s)", runner_id, reason)
+            handle.proc.terminate()
+        for _runner_id, handle in live:
             try:
                 handle.proc.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
                 handle.proc.kill()
+                handle.proc.wait()
         self._runners.clear()
+        return len(live)
+
+    def _cleanup_runners(self) -> None:
+        """Terminate all live runners on shutdown (Ctrl-C / ``finally``).
+
+        :returns: None.
+        """
+        self._terminate_live_runners("shutdown")
 
     async def _connect_and_serve(self) -> None:
         """Single connection attempt: connect, hello, serve.
@@ -1396,6 +1709,12 @@ class HostProcess:
         # is not a browser. Seeded before either auth branch so it is sent
         # on both the managed-token and Bearer paths.
         headers: dict[str, str] = {"Origin": OMNIGENT_INTERNAL_WS_ORIGIN}
+        # Workspace routing: the tunnel handshake must name the workspace or
+        # it routes to the account. Empty for single-workspace and managed
+        # hosts (no recorded selector), so neither is affected.
+        from omnigent.cli_auth import databricks_org_id_headers
+
+        headers.update(databricks_org_id_headers(self._server_url))
 
         managed_token = os.environ.get(HOST_TOKEN_ENV_VAR)
         if managed_token:
@@ -1431,7 +1750,7 @@ class HostProcess:
             to the reconnect loop in :meth:`run`.
         """
         hello = HostHelloFrame(
-            version="0.1.0",
+            version=version_label(),
             frame_protocol_version=1,
             name=self._identity.name,
             runners=self._alive_runner_ids(),
@@ -1440,6 +1759,8 @@ class HostProcess:
             # the server's view refreshes whenever the tunnel does; the
             # launch-time check above stays the authoritative gate.
             configured_harnesses=await asyncio.to_thread(configured_harness_map),
+            os=_host_os_string(),
+            login_token_expires_at=_stored_token_expiry(self._server_url),
         )
         await ws.send(encode_host_frame(hello))
         self._ws = ws
@@ -1459,6 +1780,13 @@ class HostProcess:
             "Listening for sessions — Ctrl-C to disconnect.",
             flush=True,
         )
+
+        # Now that we're connected, the server is confirmed up — the reliable
+        # moment to sync builds (--auto-upgrade). Doing this on FAILURE/before
+        # connect would race the server restart that just dropped us; doing it
+        # here, on a successful (re)connect, always sees the server's real
+        # build. Re-execs into the new build when outdated + idle.
+        await self._maybe_auto_upgrade()
 
         while True:
             try:
@@ -1528,6 +1856,8 @@ class HostProcess:
 def run_host_process(
     server_url: str,
     config_path: Path | None = None,
+    *,
+    auto_upgrade: bool = False,
 ) -> None:
     """Entry point for ``omnigent host``.
 
@@ -1543,6 +1873,11 @@ def run_host_process(
         actionable cause is printed to stderr first.
     """
     from omnigent.host.identity import CONFIG_PATH
+
+    # Make the user's local bin dirs visible before anything probes harness
+    # CLIs or spawns runners — a systemd-launched host otherwise inherits a
+    # minimal PATH that hides ~/.local/bin (claude, codex, …).
+    _augment_user_path()
 
     path = config_path or CONFIG_PATH
     identity = load_or_create_host_identity(path)
@@ -1563,7 +1898,7 @@ def run_host_process(
     if _cli_log is not None:
         print(f"This host's log: {_display_log_path(_cli_log)}")
 
-    host = HostProcess(identity, server_url)
+    host = HostProcess(identity, server_url, auto_upgrade=auto_upgrade)
     try:
         asyncio.run(host.run())
     except HostConnectError as exc:

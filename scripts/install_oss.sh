@@ -31,7 +31,9 @@ VERSION=
 EXTRAS=
 # Set by --repo to install from a git checkout instead (development; builds
 # the web UI from source). Empty => install the published wheel from PyPI.
-REPO_URL=
+# Defaults from OMNIGENT_INSTALL_REPO so a server can serve this installer
+# pre-pointed at its own fork/ref (see GET /install.sh); --repo overrides.
+REPO_URL="${OMNIGENT_INSTALL_REPO:-}"
 PYTHON_VERSION="3.12"
 INSTALL_URL=
 NON_INTERACTIVE=false
@@ -354,9 +356,20 @@ ensure_uv() {
 # and the bare web UI don't need them, so a missing one is a warning here.
 # With --repo (source build) npm is required up front, so it becomes an error.
 
-# Report a missing prereq: fatal when building from source, otherwise a warning.
+# OMNIGENT_SKIP_WEB_UI: a from-source (--repo) install of a HOST doesn't serve
+# the web UI, so the build hook skips it (setup.py honors this env, inherited
+# by `uv tool install` below) and npm/Node stop being hard requirements.
+skip_web_ui() {
+  case "${OMNIGENT_SKIP_WEB_UI:-}" in
+    1 | true | TRUE | yes | YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Report a missing prereq: fatal when building from source (unless we're
+# skipping the web UI build), otherwise a warning.
 require_or_warn() {
-  if building_from_source; then
+  if building_from_source && ! skip_web_ui; then
     fail "$1"
   fi
   warn "$1"

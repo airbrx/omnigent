@@ -4,14 +4,16 @@ import asyncio
 import logging
 import mimetypes
 import os
+import re
 import tarfile
+import uuid
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
@@ -49,7 +51,11 @@ from omnigent.server.performance_metrics import (
     ServerPerformanceMetrics,
     publish_server_metrics_periodically,
     set_request_duration_for_access_log,
+    set_request_id_for_access_log,
+    set_request_session_id_for_access_log,
+    set_request_user_agent_for_access_log,
 )
+from omnigent.server.routes.admin import create_admin_router
 from omnigent.server.routes.builtin_agents import create_builtin_agents_router
 from omnigent.server.routes.comments import create_comments_router
 from omnigent.server.routes.default_policies import create_default_policies_router
@@ -77,6 +83,85 @@ from omnigent.stores.permission_store import PermissionStore
 from omnigent.stores.policy_store import PolicyStore
 
 _logger = logging.getLogger(__name__)
+
+
+def _is_pep440_version(version: str) -> bool:
+    """Return whether *version* can be parsed as a PEP 440 version."""
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        Version(version)
+    except InvalidVersion:
+        return False
+    return True
+
+
+def _metadata_omnigent_version() -> str:
+    """Return the omnigent version recorded in installed package metadata."""
+    from importlib.metadata import version as _pkg_version
+
+    return _pkg_version("omnigent")
+
+
+def _source_pyproject_version(start: Path | None = None) -> str | None:
+    """Return ``[project].version`` from a source checkout's ``pyproject.toml``."""
+    import tomllib
+
+    current = start or Path(__file__).resolve()
+    for parent in (current, *current.parents):
+        pyproject = parent / "pyproject.toml"
+        if not pyproject.is_file():
+            continue
+        try:
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+            _logger.warning(
+                "could not read %s for server version fallback (%s)",
+                pyproject,
+                exc,
+            )
+            return None
+        project = data.get("project")
+        if not isinstance(project, dict) or project.get("name") != "omnigent":
+            continue
+        version = project.get("version")
+        if not isinstance(version, str) or not version:
+            return None
+        if not _is_pep440_version(version):
+            _logger.warning(
+                "pyproject version %r from %s is not PEP 440",
+                version,
+                pyproject,
+            )
+            return None
+        return version
+    return None
+
+
+def _server_version() -> str:
+    """Return the server version exposed to clients.
+
+    Source/editable installs can have placeholder package metadata such as
+    ``source``. Prefer the installed metadata when it is parseable, but fall
+    back to the source checkout's ``pyproject.toml`` version so local developer
+    servers still report a PEP 440 version.
+    """
+    version = _metadata_omnigent_version()
+    if _is_pep440_version(version):
+        return version
+    fallback = _source_pyproject_version()
+    if fallback is not None:
+        _logger.info(
+            "installed omnigent version %r is not PEP 440; using pyproject version %s",
+            version,
+            fallback,
+        )
+        return fallback
+    _logger.warning(
+        "installed omnigent version %r is not PEP 440 and no pyproject fallback was found",
+        version,
+    )
+    return version
 
 
 def _register_web_mimetypes() -> None:
@@ -122,6 +207,7 @@ _KIMI_NATIVE_AGENT_NAME = KIMI_NATIVE_CODING_AGENT.agent_name
 _DEBBY_AGENT_NAME = "debby"
 _POLLY_AGENT_NAME = "polly"
 _UNMATCHED_ROUTE_TEMPLATE = "<unmatched>"
+_SESSION_PATH_RE = re.compile(r"/v1/sessions/([^/]+)")
 # polly's and debby's multi-file bundles are packaged under
 # omnigent.resources.examples (see pyproject package-data), so they resolve
 # in both a repo checkout and an installed wheel. The presence check in each
@@ -1288,19 +1374,35 @@ def create_app(
         call_next: _FastAPICallNext,
     ) -> Response:
         """
-        Count each HTTP request while it is being processed.
+        Count each HTTP request and enrich access logs.
+
+        Generates a per-request correlation ID, captures the
+        ``User-Agent`` header and session ID from the URL path, and
+        stores them in context variables for the Uvicorn access
+        formatter.
 
         :param request: Incoming FastAPI request, e.g. ``GET /health``.
         :param call_next: FastAPI middleware continuation that executes
             the matched route and returns its response.
         :returns: The downstream route response.
         """
+        request_id = uuid.uuid4().hex
+        set_request_id_for_access_log(request_id)
+        set_request_user_agent_for_access_log(
+            request.headers.get("user-agent"),
+        )
+        session_match = _SESSION_PATH_RE.search(request.url.path)
+        set_request_session_id_for_access_log(
+            session_match.group(1) if session_match else None,
+        )
+
         failed = False
         status_code: int | None = None
         started_at = server_metrics.request_started()
         try:
             response = await call_next(request)
             status_code = response.status_code
+            response.headers["X-Request-Id"] = request_id
             return response
         except Exception:
             failed = True
@@ -1624,18 +1726,65 @@ def create_app(
         return result
 
     @app.get("/api/version")
-    async def version() -> dict[str, str]:
+    async def version() -> dict[str, str | None]:
         """
-        Return the installed omnigent package version.
+        Return the installed omnigent package version + build commit.
 
-        Used by the web UI to include version info in bug reports.
+        Used by the web UI for bug reports and by ``omnigent host
+        --auto-upgrade`` to compare its build against the server's.
 
-        :returns: ``{"version": "<semver string>"}``,
-            e.g. ``{"version": "0.1.0"}``.
+        :returns: ``{"version": "<semver>", "commit": "<git sha>"}``;
+            ``commit`` is ``None`` in a source checkout that was never
+            built (no ``_build_info``).
         """
-        from importlib.metadata import version as _pkg_version
+        commit: str | None = None
+        try:
+            from omnigent import _build_info
 
-        return {"version": _pkg_version("omnigent")}
+            commit = _build_info.COMMIT_SHA or None
+        except (ImportError, AttributeError):
+            pass
+        return {"version": _server_version(), "commit": commit}
+
+    @app.get("/install.sh", include_in_schema=False)
+    async def install_script() -> PlainTextResponse:
+        """Serve the host installer, pre-pointed at this server's fork+ref.
+
+        A host upgrades to exactly the version this server runs with one line:
+        ``curl -fsSL https://<domain>/install.sh | sh``. The body is
+        ``scripts/install_oss.sh`` with ``OMNIGENT_INSTALL_REPO`` (this server's
+        fork@sha) + ``OMNIGENT_SKIP_WEB_UI`` injected after the shebang — so a
+        bare ``| sh`` installs the matching fork build without needing Node.
+        Injection only happens when ``OMNIGENT_HOST_INSTALL_REPO`` is set;
+        otherwise the plain installer (PyPI default) is served. Public and
+        unauthenticated — it carries no secrets and installs only public code.
+        """
+        import os as _os
+        from pathlib import Path as _Path
+
+        import omnigent as _omni
+
+        script_path = _Path(_omni.__file__).resolve().parent.parent / "scripts" / "install_oss.sh"
+        if not script_path.is_file():
+            return PlainTextResponse(
+                "# Omnigent installer is not bundled with this server build.\n",
+                status_code=404,
+            )
+        body = script_path.read_text()
+        base = _os.environ.get("OMNIGENT_HOST_INSTALL_REPO", "").strip()
+        if base:
+            from omnigent.update_check import _read_build_info
+
+            info = _read_build_info()
+            sha = info[1] if info and info[1] else ""
+            ref = f"{base}@{sha}" if sha else base
+            inject = (
+                f'OMNIGENT_INSTALL_REPO="{ref}"\nexport OMNIGENT_INSTALL_REPO\n'
+                "OMNIGENT_SKIP_WEB_UI=true\nexport OMNIGENT_SKIP_WEB_UI\n"
+            )
+            shebang, sep, rest = body.partition("\n")
+            body = f"{shebang}\n{inject}{rest}" if sep else inject + body
+        return PlainTextResponse(body, media_type="text/x-shellscript")
 
     @app.get("/v1/info")
     async def info() -> dict[str, bool | str | None]:
@@ -1705,8 +1854,6 @@ def create_app(
         # server_version is the installed omnigent package version (same
         # source as /api/version), surfaced so the web UI can show it in the
         # session info popover alongside the per-session host version.
-        from importlib.metadata import version as _pkg_version
-
         # smart_routing_enabled: true when the server can route — either
         # a RoutingClient is explicitly configured (OMNIGENT_SMART_ROUTING=1
         # + llm: config) or the managed deployment registered a
@@ -1727,12 +1874,12 @@ def create_app(
             "databricks_features": databricks_features,
             "managed_sandboxes_enabled": managed_sandboxes_enabled,
             "sandbox_provider": sandbox_provider,
-            "server_version": _pkg_version("omnigent"),
+            "server_version": _server_version(),
             "smart_routing_enabled": smart_routing_enabled,
         }
 
     @app.get("/v1/me", response_model=None)  # Union return type (dict | JSONResponse)
-    async def me(request: Request) -> dict[str, str | None] | JSONResponse:
+    async def me(request: Request) -> dict[str, str | bool | None] | JSONResponse:
         """Return the current user's identity.
 
         Reads the user from the auth provider (same logic that
@@ -1757,7 +1904,14 @@ def create_app(
                 status_code=401,
                 content={"user_id": None, "login_url": login_url},
             )
-        return {"user_id": user_id}
+        # is_admin lets the SPA render admin chrome (the user list /
+        # session-browser) under OIDC, where the accounts Members page
+        # never mounts. Resolved live — it is never baked into the
+        # session cookie. False whenever permissions are disabled.
+        is_admin = False
+        if user_id is not None and permission_store is not None:
+            is_admin = await asyncio.to_thread(permission_store.is_admin, user_id)
+        return {"user_id": user_id, "is_admin": is_admin}
 
     app.include_router(
         create_sessions_router(
@@ -1852,6 +2006,19 @@ def create_app(
             ),
             prefix="/v1",
             tags=["default_policies"],
+        )
+    if permission_store is not None:
+        # Admin discovery surface (user list + per-user session browse).
+        # Multi-user only; in single-user mode there is nothing to admin.
+        app.include_router(
+            create_admin_router(
+                permission_store,
+                conversation_store,
+                auth_provider=auth_provider,
+                host_store=host_store,
+            ),
+            prefix="/v1",
+            tags=["admin"],
         )
     app.include_router(
         create_policy_registry_router(auth_provider=auth_provider),
@@ -2129,9 +2296,9 @@ def create_app(
                 tags=["auth"],
             )
 
-    # Mount the built ap-web SPA at "/" if a build is present. The SPA is
-    # built into ``omnigent/server/static/web-ui/`` by ``ap-web/``'s Vite
-    # build (see ``ap-web/vite.config.ts`` ``build.outDir``). The mount is
+    # Mount the built web SPA at "/" if a build is present. The SPA is
+    # built into ``omnigent/server/static/web-ui/`` by ``web/``'s Vite
+    # build (see ``web/vite.config.ts`` ``build.outDir``). The mount is
     # registered AFTER all API routers so router routes win on overlap.
     # Skipping the mount when no build is present keeps API-only
     # deployments working (and ``/`` 404s cleanly instead of exploding at

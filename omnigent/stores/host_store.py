@@ -75,6 +75,9 @@ class Host:
     sandbox_provider: str | None = None
     sandbox_id: str | None = None
     configured_harnesses: dict[str, HarnessAvailability] | None = None
+    version: str | None = None
+    os: str | None = None
+    login_token_expires_at: int | None = None
 
 
 def host_is_live(host: Host, now: int | None = None) -> bool:
@@ -143,6 +146,9 @@ def _row_to_host(row: SqlHost) -> Host:
         sandbox_provider=row.sandbox_provider,
         sandbox_id=row.sandbox_id,
         configured_harnesses=_parse_configured_harnesses(row.configured_harnesses),
+        version=row.version,
+        os=row.os,
+        login_token_expires_at=row.login_token_expires_at,
     )
 
 
@@ -188,6 +194,9 @@ class HostStore:
         *,
         allow_host_id_reown: bool = False,
         configured_harnesses: dict[str, HarnessAvailability] | None = None,
+        version: str | None = None,
+        os: str | None = None,
+        login_token_expires_at: int | None = None,
     ) -> Host:
         """
         Register or update a host on WebSocket connect.
@@ -270,6 +279,17 @@ class HostStore:
                 row.status = "online"
                 row.updated_at = now
                 row.configured_harnesses = harnesses_json
+                # Only overwrite a known version/os — a reconnect from an
+                # older host build that doesn't report them shouldn't wipe
+                # the last-known values.
+                if version is not None:
+                    row.version = version
+                if os is not None:
+                    row.os = os
+                # login_token_expires_at refreshes on every connect (it advances on
+                # re-login), so overwrite unconditionally — including back to
+                # None when the host reports none.
+                row.login_token_expires_at = login_token_expires_at
             else:
                 row = SqlHost(
                     owner=owner,
@@ -279,6 +299,9 @@ class HostStore:
                     created_at=now,
                     updated_at=now,
                     configured_harnesses=harnesses_json,
+                    version=version,
+                    os=os,
+                    login_token_expires_at=login_token_expires_at,
                 )
                 session.add(row)
             return _row_to_host(row)
@@ -504,6 +527,18 @@ class HostStore:
                 .order_by(SqlHost.updated_at.desc())
                 .all()
             )
+            return [_row_to_host(row) for row in rows]
+
+    def list_all_hosts(self) -> list[Host]:
+        """List every host across all owners, most-recently-active first.
+
+        The admin counterpart to :meth:`list_hosts` (which is per-owner) —
+        backs the admin hosts view. Returns both online and offline hosts.
+
+        :returns: List of :class:`Host` entities, ``updated_at`` desc.
+        """
+        with self._session() as session:
+            rows = session.query(SqlHost).order_by(SqlHost.updated_at.desc()).all()
             return [_row_to_host(row) for row in rows]
 
     def get_host(self, host_id: str) -> Host | None:
