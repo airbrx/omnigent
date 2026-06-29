@@ -20,8 +20,8 @@ TAG="webui-${SHA}"
 ASSET="web-ui-${SHA}.tar.gz"
 BUNDLE_DIR="omnigent/server/static/web-ui"
 
-echo ">> Building SPA (ap-web) for ${SHA} ..."
-( cd ap-web && npm ci && npm run build )
+echo ">> Building SPA (web) for ${SHA} ..."
+( cd web && npm ci && npm run build )
 test -f "${BUNDLE_DIR}/index.html" \
   || { echo "ERROR: ${BUNDLE_DIR}/index.html missing after build" >&2; exit 1; }
 
