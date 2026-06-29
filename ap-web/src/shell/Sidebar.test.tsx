@@ -19,6 +19,7 @@ const {
   projectsMock,
   moveToProjectSpy,
   deleteProjectSpy,
+  renameProjectSpy,
   fetchProjectSessionIdsMock,
   conversationsRef,
   projectSessionsMock,
@@ -26,6 +27,7 @@ const {
   projectsMock: [] as string[],
   moveToProjectSpy: vi.fn(),
   deleteProjectSpy: vi.fn(),
+  renameProjectSpy: vi.fn(),
   // Server-side "ids in this project" check that gates the remove
   // confirmation. Defaults to "no other sessions"; tests override per case.
   fetchProjectSessionIdsMock: vi.fn(() => Promise.resolve([] as string[])),
@@ -85,6 +87,7 @@ vi.mock("@/hooks/useConversations", () => ({
   },
   useMoveToProject: () => ({ mutate: moveToProjectSpy }),
   useDeleteProject: () => ({ mutate: deleteProjectSpy, isPending: false, isError: false }),
+  useRenameProject: () => ({ mutate: renameProjectSpy, isPending: false, isError: false }),
   fetchProjectSessionIds: fetchProjectSessionIdsMock,
   PROJECT_LABEL_KEY: "omni_project",
 }));
@@ -165,6 +168,7 @@ beforeEach(() => {
   projectsMock.length = 0;
   moveToProjectSpy.mockReset();
   deleteProjectSpy.mockReset();
+  renameProjectSpy.mockReset();
   fetchProjectSessionIdsMock.mockReset();
   fetchProjectSessionIdsMock.mockResolvedValue([]);
   projectSessionsMock.current = {};
@@ -693,6 +697,54 @@ describe("Sidebar project sections", () => {
     expect(screen.getByText(/all of its sessions/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
     expect(deleteProjectSpy).toHaveBeenCalledWith("Customer X", expect.anything());
+  });
+
+  it("renames a project inline from the folder kebab", async () => {
+    projectsMock.push("Customer X");
+    mockConversations([
+      conv("conv_filed", "Claude Code", { labels: { omni_project: "Customer X" } }),
+    ]);
+    renderSidebar();
+
+    // Kebab → "Rename project" swaps the header for the inline editor.
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Project actions for Customer X" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByTestId("rename-project"));
+
+    // The inline editor (shared with session rename) appears, pre-filled, and
+    // the collapse-toggle header is gone while editing.
+    const input = screen.getByTestId("rename-conversation-input") as HTMLInputElement;
+    expect(input.value).toBe("Customer X");
+    expect(screen.queryByRole("button", { name: /^Customer X/ })).toBeNull();
+
+    fireEvent.change(input, { target: { value: "Customer Y" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    // Commit relabels every session in the project (from → to).
+    expect(renameProjectSpy).toHaveBeenCalledWith({ from: "Customer X", to: "Customer Y" });
+  });
+
+  it("does not rename when the name is unchanged or blank", async () => {
+    projectsMock.push("Customer X");
+    mockConversations([
+      conv("conv_filed", "Claude Code", { labels: { omni_project: "Customer X" } }),
+    ]);
+    renderSidebar();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Project actions for Customer X" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByTestId("rename-project"));
+
+    const input = screen.getByTestId("rename-conversation-input") as HTMLInputElement;
+    // Commit the unchanged name → no-op, editor closes, no mutation.
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(renameProjectSpy).not.toHaveBeenCalled();
+    // The normal header (collapse toggle) is back.
+    expect(screen.getByRole("button", { name: /^Customer X/ })).toBeInTheDocument();
   });
 });
 

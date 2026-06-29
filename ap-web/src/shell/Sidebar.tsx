@@ -100,6 +100,7 @@ import {
   useConversations,
   useMoveToProject,
   useDeleteProject,
+  useRenameProject,
   fetchProjectSessionIds,
   PROJECT_LABEL_KEY,
   usePinnedConversationBackfill,
@@ -730,6 +731,8 @@ function ProjectFolder({
   onProjectAssigned?: (projectName: string) => void;
 }) {
   const query = useProjectSessions(name, expanded);
+  const renameProject = useRenameProject();
+  const [isRenaming, setIsRenaming] = useState(false);
   const pinnedSet = useMemo(() => new Set(pinnedConversationIds), [pinnedConversationIds]);
   const conversations = useMemo(() => {
     const loaded = query.data?.pages.flatMap((page) => page.data) ?? [];
@@ -785,7 +788,30 @@ function ProjectFolder({
         onProjectAssigned={onProjectAssigned}
         emptyMessage={loadingFirstPage ? undefined : "No chats"}
         indentRows
-        headerAction={<ProjectFolderActions projectName={name} onNavigate={onRowClick} />}
+        titleEditor={
+          isRenaming ? (
+            <ConversationEditRow
+              initialTitle={name}
+              onCommit={(value) => {
+                // No-op edits (unchanged or blank) just close — a project is
+                // its sessions' label, so renaming relabels every member.
+                const to = value.trim();
+                if (to && to !== name) {
+                  renameProject.mutate({ from: name, to });
+                }
+                setIsRenaming(false);
+              }}
+              onCancel={() => setIsRenaming(false)}
+            />
+          ) : undefined
+        }
+        headerAction={
+          <ProjectFolderActions
+            projectName={name}
+            onNavigate={onRowClick}
+            onRename={() => setIsRenaming(true)}
+          />
+        }
         footer={
           loadingFirstPage ? (
             <p className="px-2 py-1 pl-7 text-muted-foreground text-xs">Loading…</p>
@@ -1630,6 +1656,7 @@ function ConversationSection({
   emptyMessage,
   indentRows,
   headerAction,
+  titleEditor,
   footer,
   onProjectAssigned,
 }: {
@@ -1655,6 +1682,10 @@ function ConversationSection({
   /** Optional control overlaid at the header's right edge (e.g. a project's
       kebab). Hover/focus-revealed on desktop, always shown on mobile. */
   headerAction?: ReactNode;
+  /** When set, replaces the header's title/kebab with an inline editor (the
+      shared {@link ConversationEditRow}) — used for renaming a project folder
+      in place, mirroring session rename. */
+  titleEditor?: ReactNode;
   /** Optional content rendered after the rows inside the expanded body (e.g. a
       project folder's own infinite-scroll sentinel / loading row). */
   footer?: ReactNode;
@@ -1666,26 +1697,31 @@ function ConversationSection({
   const isCollapsed = title != null && collapsed;
   return (
     <section className="group/section relative">
-      {title && (
-        // Header + its hover-revealed kebab share a `group/header` scope so the
-        // kebab keys off hovering the header alone — NOT the whole section,
-        // which would also reveal it when hovering a child row.
-        <div className="group/header relative">
-          <SectionHeader
-            title={title}
-            icon={icon}
-            marker={marker}
-            hasAction={headerAction != null}
-            collapsed={isCollapsed}
-            onToggleCollapsed={onToggleCollapsed}
-          />
-          {headerAction && (
-            <div className="absolute top-0.5 right-1 flex items-center transition-opacity md:opacity-0 md:group-focus-within/header:opacity-100 md:group-hover/header:opacity-100 md:group-has-[[data-state=open]]/header:opacity-100">
-              {headerAction}
-            </div>
-          )}
-        </div>
-      )}
+      {title &&
+        (titleEditor ? (
+          // Renaming: swap the whole header (title + kebab) for the inline
+          // editor, so there's no collapse toggle or kebab to fight focus.
+          <div className="px-1 py-0.5">{titleEditor}</div>
+        ) : (
+          // Header + its hover-revealed kebab share a `group/header` scope so the
+          // kebab keys off hovering the header alone — NOT the whole section,
+          // which would also reveal it when hovering a child row.
+          <div className="group/header relative">
+            <SectionHeader
+              title={title}
+              icon={icon}
+              marker={marker}
+              hasAction={headerAction != null}
+              collapsed={isCollapsed}
+              onToggleCollapsed={onToggleCollapsed}
+            />
+            {headerAction && (
+              <div className="absolute top-0.5 right-1 flex items-center transition-opacity md:opacity-0 md:group-focus-within/header:opacity-100 md:group-hover/header:opacity-100 md:group-has-[[data-state=open]]/header:opacity-100">
+                {headerAction}
+              </div>
+            )}
+          </div>
+        ))}
       {!isCollapsed && (
         <>
           {conversations.length === 0 && emptyMessage ? (
@@ -2725,15 +2761,18 @@ function ArchivingRow({ label }: { label: string }) {
 function ProjectFolderActions({
   projectName,
   onNavigate,
+  onRename,
 }: {
   projectName: string;
   /** Plain-left-click nav handler — closes the mobile overlay so the
       pre-filed new-session page isn't left hidden behind the sidebar. */
   onNavigate: (e: MouseEvent<HTMLAnchorElement>) => void;
+  /** Start inline-renaming this folder (the header swaps to an editor). */
+  onRename: () => void;
 }) {
   return (
     <div className="flex items-center">
-      <ProjectFolderMenu projectName={projectName} />
+      <ProjectFolderMenu projectName={projectName} onRename={onRename} />
       <Button
         asChild
         type="button"
@@ -2766,7 +2805,14 @@ function ProjectFolderActions({
  * disappears). Confirmation is required since it deletes sessions, not just the
  * grouping.
  */
-function ProjectFolderMenu({ projectName }: { projectName: string }) {
+function ProjectFolderMenu({
+  projectName,
+  onRename,
+}: {
+  projectName: string;
+  /** Trigger the folder's inline rename (owned by {@link ProjectFolder}). */
+  onRename: () => void;
+}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const deleteProject = useDeleteProject();
@@ -2788,6 +2834,18 @@ function ProjectFolderMenu({ projectName }: { projectName: string }) {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-40 [&_[role=menuitem]]:text-xs">
+          <DropdownMenuItem
+            data-testid="rename-project"
+            onSelect={() => {
+              // Close the menu, then start the header's inline editor. The
+              // edit + commit live in ProjectFolder (the title slot).
+              setMenuOpen(false);
+              onRename();
+            }}
+          >
+            <PencilIcon className="size-3.5" />
+            Rename project
+          </DropdownMenuItem>
           <DropdownMenuItem
             data-testid="delete-project"
             variant="destructive"
