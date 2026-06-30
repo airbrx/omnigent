@@ -119,6 +119,7 @@ resource "aws_instance" "app" {
     database_url  = var.database_url
     cookie_secret = var.cookie_secret
     base_url      = var.base_url
+    domain        = var.domain
   })
   # Replace the instance when the bootstrap changes (e.g. new branch).
   user_data_replace_on_change = true

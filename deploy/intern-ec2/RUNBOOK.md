@@ -11,6 +11,18 @@ The whole stack is codified in Terraform (`terraform/`) — that's the
 recommended path. The manual steps below explain what Terraform builds and
 serve as a fallback.
 
+> **Run method (2026-06-29 onward): NATIVE, not Docker.** The server runs
+> straight from the `/opt/omnigent` git checkout via a uv venv, started by a
+> systemd unit (`omnigent-server.service`) that launches
+> `deploy/docker/entrypoint.py` — the same boot logic the old Docker image
+> used (DB-URL normalization, `ARTIFACT_DIR`, migrations, full accounts
+> wiring), just minus Docker. The React SPA is **pulled** from a GitHub
+> Release (built off-box by `release-webui.sh`), so the `t3.small` never
+> builds the web UI. The authoritative bootstrap is
+> `terraform/modules/app/user_data.sh.tftpl`; the `## Updating` section below
+> reflects native. The older Docker-compose sections that follow are kept only
+> as historical context — `docker-compose.yaml` has been removed.
+
 > **Hostname:** this uses **`interns.airbrx.ai`** to match the `*.airbrx.ai`
 > ACM cert. (An earlier draft said `interns.airbrx.com`; a `*.airbrx.ai`
 > wildcard does not validate a `.com` name, so the host follows the cert.)
@@ -224,31 +236,46 @@ their machine.
 
 ---
 
-## Updating the server
+## Updating the server (native)
+
+The branch follows its OWN line — merge in whatever code you want to ship
+(it does NOT track `main`). Then **build + publish the SPA off-box** (the box
+can't), push, and roll the box.
 
 ```bash
 # on your workstation
 git checkout 2026-summer-internship
-git merge main            # bring in vetted customizations/fixes
+git merge <source>          # the code to ship, e.g. feat/admin-hosts
+OMNIGENT_RELEASE_REPO=airbrx/omnigent ./deploy/intern-ec2/release-webui.sh   # web/ → GitHub Release webui-<sha>
 git push
 ```
 
-Then roll the box. Under Terraform, bump the instance:
+Then roll the box. Under Terraform (replaces the instance; `user_data` does the
+full native bootstrap + pulls webui-<sha>):
 
 ```bash
-cd deploy/intern-ec2/terraform && terraform apply   # user_data rebuilds from the branch
+cd deploy/intern-ec2/terraform && terraform apply
 ```
 
-Or by hand on the box:
+Or by hand on the box (no rebuild — SSM in, as `ubuntu` unless noted):
 
 ```bash
-cd /opt/omnigent && git pull
-cd deploy/intern-ec2 && docker compose up -d --build
+cd /opt/omnigent && git fetch origin && git reset --hard origin/2026-summer-internship
+export PATH=$HOME/.local/bin:$PATH OMNIGENT_SKIP_WEB_UI=true
+uv sync && uv pip install 'psycopg[binary]'      # skips the web build; psycopg is pruned by uv sync
+SHA=$(git rev-parse --short HEAD)                 # pull the matching SPA
+curl -fsSL -o /tmp/w.tgz "https://github.com/airbrx/omnigent/releases/download/webui-$SHA/web-ui-$SHA.tar.gz"
+D=omnigent/server/static; rm -rf $D/web-ui && mkdir -p $D/web-ui && tar -C $D/web-ui --strip-components=1 -xzf /tmp/w.tgz
+sudo systemctl restart omnigent-server           # entrypoint.py runs migrations on boot
 ```
 
-Accounts and session history live in **RDS** and are untouched by a rebuild —
-the box is stateless except for its local artifact volume. The ALB health check
-flips the target healthy again once `/health` responds.
+Accounts and session history live in **RDS** and survive a rebuild. The local
+artifact store (`/data/artifacts`) is instance-local — a fresh `terraform
+apply` that replaces the instance starts with empty artifacts (and any agent
+bundles registered on the box are lost). This matched the old Docker volume's
+behavior; for durable artifacts across rebuilds, set `OMNIGENT_ARTIFACT_URI` to
+an `s3://…` bucket in the env (entrypoint.py then uses the S3 store). The ALB
+health check flips the target healthy once `/health` responds.
 
 ## Rotating / offboarding students
 

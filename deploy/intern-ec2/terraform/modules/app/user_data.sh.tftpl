@@ -1,15 +1,23 @@
 #!/bin/bash
-# EC2 first-boot bootstrap for the intern omnigent coordinator.
-# Rendered by Terraform's templatefile(): the percent-brace tokens below are
-# substituted at apply time. This script intentionally uses no shell variable
-# expansion, so every brace token is a Terraform value, not a bash one.
+# EC2 first-boot bootstrap for the intern omnigent coordinator — NATIVE
+# (non-Docker). Rendered by Terraform's templatefile(): the ${...} tokens are
+# substituted at apply time (Terraform values). Bash variables therefore use
+# bare $NAME / $(...) (never $${...}) so they are NOT mistaken for tokens.
+#
+# What it builds: the server runs straight from the /opt/omnigent git checkout
+# via a uv-managed venv, started by systemd. It launches deploy/docker's
+# entrypoint.py (the same boot logic the old Docker image used — it normalizes
+# DATABASE_URL to psycopg3, reads ARTIFACT_DIR, runs migrations, and wires the
+# full accounts app) so native == "the Docker server, minus Docker". The React
+# SPA is NOT built here (the t3.small can't); it's pulled from a GitHub Release
+# (build off-box first — see RUNBOOK "Updating"). TLS + the WS upgrade are
+# handled by the ALB; the box just serves plain HTTP on :8000.
 set -euxo pipefail
 exec > >(tee /var/log/omnigent-bootstrap.log) 2>&1
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y docker.io docker-compose-v2 git
-systemctl enable --now docker
+apt-get install -y git curl ca-certificates
 
 # Clone (or refresh) the repo and check out the intern branch.
 install -d -o root -g root /opt
@@ -21,17 +29,74 @@ cd omnigent
 git fetch --all --prune
 git checkout "${branch}"
 git pull --ff-only origin "${branch}" || true
+chown -R ubuntu:ubuntu /opt/omnigent
 
-# Write the runtime env consumed by deploy/intern-ec2/docker-compose.yaml.
-# Secrets land in a 0600 file owned by root.
-cd deploy/intern-ec2
+# uv + the Python venv. OMNIGENT_SKIP_WEB_UI=true skips the in-tree web-UI
+# build hook (no npm on the box — the SPA is pulled below). psycopg is the
+# Postgres driver SQLAlchemy needs and is installed outside the lockfile, so
+# `uv sync` prunes it — reinstall after.
+sudo -u ubuntu bash -lc 'command -v uv >/dev/null 2>&1 || (curl -LsSf https://astral.sh/uv/install.sh | sh)'
+sudo -u ubuntu bash -lc 'export PATH=$HOME/.local/bin:$PATH OMNIGENT_SKIP_WEB_UI=true; cd /opt/omnigent && uv sync && uv pip install "psycopg[binary]"'
+
+# Local artifact store + accounts scratch dir (cookie secret, admin-credentials).
+install -d -o ubuntu -g ubuntu /data
+
+# Pull the prebuilt SPA for this commit from a GitHub Release (web-ui-<sha>.tar.gz
+# → omnigent/server/static/web-ui). The operator builds + publishes it before
+# `terraform apply` (RUNBOOK). A miss leaves the server API-only until pulled.
+SHA=$(sudo -u ubuntu git -C /opt/omnigent rev-parse --short HEAD)
+RELBASE=$(printf '%s' "${repo_url}" | sed 's#\.git$##')
+DEST=/opt/omnigent/omnigent/server/static
+sudo -u ubuntu bash -c "set -e
+  curl -fsSL -o /tmp/web-ui.tgz \"$RELBASE/releases/download/webui-$SHA/web-ui-$SHA.tar.gz\"
+  rm -rf $DEST/web-ui.new && mkdir -p $DEST/web-ui.new
+  tar -C $DEST/web-ui.new -xzf /tmp/web-ui.tgz
+  CC=$DEST/web-ui.new/web-ui; [ -d \$CC ] || CC=$DEST/web-ui.new
+  test -f \$CC/index.html
+  rm -rf $DEST/web-ui && mv \$CC $DEST/web-ui && rm -rf $DEST/web-ui.new /tmp/web-ui.tgz" \
+  || echo 'WARN: SPA pull failed — API-only until pull-webui runs'
+
+# Runtime env (0600, root). entrypoint.py normalizes DATABASE_URL to psycopg3
+# and reads ARTIFACT_DIR, so the raw RDS URL is fine. OMNIGENT_CONFIG points at
+# the in-repo intern config so the declarative admins roster is loaded.
+# OMNIGENT_DOMAIN feeds the per-host install command; OMNIGENT_HOST_INSTALL_REPO
+# makes /install.sh serve the matching fork@sha build (not bare PyPI).
+install -d -m 0755 /etc/omnigent
 umask 077
-cat > .env <<ENVEOF
+cat > /etc/omnigent/server.env <<ENVEOF
 DATABASE_URL=${database_url}
+ARTIFACT_DIR=/data/artifacts
+OMNIGENT_CONFIG=/opt/omnigent/deploy/intern-ec2/config.yaml
+OMNIGENT_AUTH_ENABLED=1
 OMNIGENT_ACCOUNTS_COOKIE_SECRET=${cookie_secret}
 OMNIGENT_ACCOUNTS_BASE_URL=${base_url}
+OMNIGENT_ACCOUNTS_AUTO_OPEN=0
+OMNIGENT_ADMIN_CREDENTIALS_PATH=/data/admin-credentials
+OMNIGENT_DOMAIN=${domain}
+OMNIGENT_HOST_INSTALL_REPO=${repo_url}
 ENVEOF
 
-# Build from the branch and start. The ALB target stays unhealthy until the
-# build finishes and /health responds — expected on first boot.
-docker compose up -d --build
+# systemd service: run the Docker entrypoint natively (full app wiring + DB-URL
+# normalization + migrations). Binds 0.0.0.0:8000 — the ALB target. The target
+# stays unhealthy until /health responds (first boot does uv sync + SPA pull).
+cat > /etc/systemd/system/omnigent-server.service <<'UNITEOF'
+[Unit]
+Description=Omnigent server (native, intern coordinator)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/omnigent
+EnvironmentFile=/etc/omnigent/server.env
+ExecStart=/opt/omnigent/.venv/bin/python /opt/omnigent/deploy/docker/entrypoint.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+systemctl daemon-reload
+systemctl enable --now omnigent-server
