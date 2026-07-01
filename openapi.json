@@ -5161,6 +5161,20 @@
         "title": "SetCodexGoalRequest",
         "type": "object"
       },
+      "SetVisibilityRequest": {
+        "description": "Body for `POST /v1/hosts/{host_id}/visibility`.",
+        "properties": {
+          "visibility": {
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "visibility"
+        ],
+        "title": "SetVisibilityRequest",
+        "type": "object"
+      },
       "SkillSummary": {
         "description": "Safe subset of a discovered skill for API exposure.\n\nSurfaces the skill name and one-line description so clients\n(e.g. the web composer's slash-command menu) can list which\nskills the session has access to. The full skill `content`\nis intentionally omitted \u2014 it's only loaded server-side when\nthe harness invokes the skill, and it can be large.",
         "properties": {
@@ -6505,6 +6519,62 @@
           }
         },
         "summary": "Launch Runner",
+        "tags": [
+          "hosts"
+        ]
+      }
+    },
+    "/v1/hosts/{host_id}/visibility": {
+      "post": {
+        "description": "Set a host's reachability \u2014 **admin only**.\n\n`{\"visibility\": \"shared\"}` makes the host reachable (dispatch /\nview / browse) by any authenticated user; `\"private\"` restores\nowner-only. Admin-gated because relaxing reachability is a\nsecurity-boundary change. When auth is disabled (single-user local\nserver) there is no admin concept, so the toggle is allowed.\n\n**Returns:** The host's id/name/owner and new `visibility`.\n\n**Raises**\n\n- `HTTPException` \u2014 401 unauthenticated; 403 non-admin; 404 unknown host; 422 invalid visibility value.",
+        "operationId": "set_host_visibility_v1_hosts__host_id__visibility_post",
+        "parameters": [
+          {
+            "description": "Stable host id, e.g. `\"host_a1b2c3d4...\"`.",
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetVisibilityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Host Visibility V1 Hosts  Host Id  Visibility Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Host Visibility",
         "tags": [
           "hosts"
         ]

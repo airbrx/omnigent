@@ -78,6 +78,43 @@ class Host:
     version: str | None = None
     os: str | None = None
     login_token_expires_at: int | None = None
+    visibility: str | None = None
+    """Reachability: ``"shared"`` lets any authenticated user reach this host;
+    anything else (incl. ``None``) means owner-only. See
+    :func:`caller_can_reach_host`."""
+
+
+# The two visibility values persisted in ``hosts.visibility``. ``None`` in the
+# column is treated as ``VISIBILITY_PRIVATE`` (fail-safe default).
+VISIBILITY_PRIVATE = "private"
+VISIBILITY_SHARED = "shared"
+
+
+def caller_can_reach_host(host: Host, user_id: str | None) -> bool:
+    """
+    Whether a caller may *reach* a host — dispatch a session to it, view its
+    details, or browse its filesystem to pick a workspace.
+
+    This is the single reachability predicate shared by every host-access
+    route (``resolve_host_owner`` for launch + the workspace probe, and the
+    ``get_host`` / filesystem-browse endpoints), so the "shared" relaxation
+    can't drift between them. A host is reachable when:
+
+    - ``user_id`` is ``None`` — auth is disabled (single-user/local server);
+    - the caller **owns** the host; or
+    - the host is **shared** (``visibility == "shared"``) — any authenticated
+      user may reach it.
+
+    Reachability is deliberately NOT management: this does not authorize
+    deleting, re-owning, or re-registering a host (those keep their own
+    owner/registration checks), so marking a host shared never lets a
+    non-owner destroy or hijack it.
+
+    :param host: The host being accessed.
+    :param user_id: Authenticated caller, or ``None`` when auth is disabled.
+    :returns: ``True`` if the caller may reach the host.
+    """
+    return user_id is None or host.owner == user_id or host.visibility == VISIBILITY_SHARED
 
 
 def host_is_live(host: Host, now: int | None = None) -> bool:
@@ -149,6 +186,7 @@ def _row_to_host(row: SqlHost) -> Host:
         version=row.version,
         os=row.os,
         login_token_expires_at=row.login_token_expires_at,
+        visibility=row.visibility,
     )
 
 
@@ -540,6 +578,58 @@ class HostStore:
         with self._session() as session:
             rows = session.query(SqlHost).order_by(SqlHost.updated_at.desc()).all()
             return [_row_to_host(row) for row in rows]
+
+    def list_visible_hosts(self, owner: str) -> list[Host]:
+        """
+        List the hosts a user may reach: their own **plus** every shared host.
+
+        This backs the user-facing host picker (``GET /v1/hosts``) so a user
+        can target a shared, always-on host even when their own machine is
+        offline. A shared host the caller also owns matches both arms of the
+        ``OR`` but SQL returns each row once, so no de-dup is needed.
+
+        Kept separate from :meth:`list_hosts` (strict per-owner) on purpose:
+        the admin per-user view must stay precise and not attribute shared
+        hosts to every user.
+
+        :param owner: User ID to list reachable hosts for.
+        :returns: List of :class:`Host` entities, ``updated_at`` desc.
+        """
+        with self._session() as session:
+            rows = (
+                session.query(SqlHost)
+                .filter((SqlHost.owner == owner) | (SqlHost.visibility == VISIBILITY_SHARED))
+                .order_by(SqlHost.updated_at.desc())
+                .all()
+            )
+            return [_row_to_host(row) for row in rows]
+
+    def set_visibility(self, host_id: str, visibility: str) -> Host | None:
+        """
+        Set a host's reachability (``"private"`` | ``"shared"``).
+
+        Backs the admin-only visibility toggle. Addressed by the stable
+        ``host_id`` (the same id the host REST routes use), not the
+        ``(owner, name)`` PK. Idempotent; touches only the ``visibility``
+        column so a concurrent connect/heartbeat upsert is never clobbered.
+
+        :param host_id: Stable host id, e.g. ``"host_a1b2c3d4..."``.
+        :param visibility: ``VISIBILITY_PRIVATE`` or ``VISIBILITY_SHARED``.
+        :returns: The updated :class:`Host`, or ``None`` if no such host.
+        :raises ValueError: if ``visibility`` is not a known value.
+        """
+        if visibility not in (VISIBILITY_PRIVATE, VISIBILITY_SHARED):
+            raise ValueError(f"invalid visibility {visibility!r}")
+        with self._session() as session:
+            row = session.execute(
+                select(SqlHost).where(SqlHost.host_id == host_id)
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            row.visibility = visibility
+            session.commit()
+            session.refresh(row)
+            return _row_to_host(row)
 
     def get_host(self, host_id: str) -> Host | None:
         """

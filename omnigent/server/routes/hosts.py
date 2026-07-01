@@ -43,7 +43,11 @@ from omnigent.server.routes._auth_helpers import require_user
 from omnigent.server.routes._host_launch import resolve_host_launch
 from omnigent.server.schemas import SessionGitOptions
 from omnigent.stores import AgentStore, ConversationStore
-from omnigent.stores.host_store import HostStore, host_is_live
+from omnigent.stores.host_store import (
+    HostStore,
+    caller_can_reach_host,
+    host_is_live,
+)
 from omnigent.stores.permission_store import PermissionStore
 
 _logger = logging.getLogger(__name__)
@@ -282,6 +286,12 @@ async def _resolve_agent_harness(
     return canonicalize_harness(loaded.spec.executor.harness_kind)
 
 
+class SetVisibilityRequest(BaseModel):
+    """Body for ``POST /v1/hosts/{host_id}/visibility``."""
+
+    visibility: str  # "private" | "shared"
+
+
 def create_hosts_router(
     host_registry: HostRegistry,
     host_store: HostStore,
@@ -329,10 +339,13 @@ def create_hosts_router(
         # only when auth is disabled entirely — there the single-user
         # server's hosts are owned by the reserved "local" user.
         user_id = require_user(request, auth_provider)
+        # list_visible_hosts: the caller's own hosts PLUS every shared host,
+        # so a user can target a shared, always-on host when their own
+        # machine is offline. Auth disabled -> the reserved "local" owner.
         if user_id is None:
-            hosts = await asyncio.to_thread(host_store.list_hosts, "local")
+            hosts = await asyncio.to_thread(host_store.list_visible_hosts, "local")
         else:
-            hosts = await asyncio.to_thread(host_store.list_hosts, user_id)
+            hosts = await asyncio.to_thread(host_store.list_visible_hosts, user_id)
 
         # One clock for the whole batch so every host is classified
         # against a consistent "now" (host_is_live's documented idiom).
@@ -361,6 +374,11 @@ def create_hosts_router(
                     # user-connectable machines.
                     "sandbox_provider": host.sandbox_provider,
                     "configured_harnesses": host.configured_harnesses,
+                    # "shared" hosts show up for every user (not just the
+                    # owner); the picker badges them and flags the ones the
+                    # caller doesn't own so "whose host is this" is clear.
+                    "visibility": host.visibility or "private",
+                    "is_owner": user_id is None or host.owner == user_id,
                 }
             )
         return {"hosts": result}
@@ -384,7 +402,7 @@ def create_hosts_router(
         host = await asyncio.to_thread(host_store.get_host, host_id)
         if host is None:
             raise HTTPException(status_code=404, detail="host not found")
-        if user_id is not None and host.owner != user_id:
+        if not caller_can_reach_host(host, user_id):
             raise HTTPException(status_code=403, detail="not your host")
 
         # Status comes from the DB so the answer is consistent across
@@ -399,7 +417,51 @@ def create_hosts_router(
             # server-managed sandbox host (e.g. "modal").
             "sandbox_provider": host.sandbox_provider,
             "configured_harnesses": host.configured_harnesses,
+            "visibility": host.visibility or "private",
+            "is_owner": user_id is None or host.owner == user_id,
             "runners": [],
+        }
+
+    @router.post("/hosts/{host_id}/visibility")
+    async def set_host_visibility(
+        request: Request,
+        host_id: str,
+        body: SetVisibilityRequest,
+    ) -> dict[str, Any]:
+        """Set a host's reachability — **admin only**.
+
+        ``{"visibility": "shared"}`` makes the host reachable (dispatch /
+        view / browse) by any authenticated user; ``"private"`` restores
+        owner-only. Admin-gated because relaxing reachability is a
+        security-boundary change. When auth is disabled (single-user local
+        server) there is no admin concept, so the toggle is allowed.
+
+        :param host_id: Stable host id, e.g. ``"host_a1b2c3d4..."``.
+        :returns: The host's id/name/owner and new ``visibility``.
+        :raises HTTPException: 401 unauthenticated; 403 non-admin;
+            404 unknown host; 422 invalid visibility value.
+        """
+        user_id = require_user(request, auth_provider)
+        # Admin gate. user_id is None only when auth is disabled entirely,
+        # where the single-user server has no admin concept -> allow. When
+        # auth is on, require an is_admin caller (a missing permission_store
+        # under auth is a misconfiguration -> deny, fail-closed).
+        if user_id is not None:
+            is_admin = permission_store is not None and await asyncio.to_thread(
+                permission_store.is_admin, user_id
+            )
+            if not is_admin:
+                raise HTTPException(status_code=403, detail="admin only")
+        if body.visibility not in ("private", "shared"):
+            raise HTTPException(status_code=422, detail="visibility must be 'private' or 'shared'")
+        host = await asyncio.to_thread(host_store.set_visibility, host_id, body.visibility)
+        if host is None:
+            raise HTTPException(status_code=404, detail="host not found")
+        return {
+            "host_id": host.host_id,
+            "name": host.name,
+            "owner": host.owner,
+            "visibility": host.visibility or "private",
         }
 
     @router.post("/hosts/{host_id}/runners")
@@ -787,7 +849,7 @@ def create_hosts_router(
         host = await asyncio.to_thread(host_store.get_host, host_id)
         if host is None:
             raise HTTPException(status_code=404, detail="host not found")
-        if user_id is not None and host.owner != user_id:
+        if not caller_can_reach_host(host, user_id):
             raise HTTPException(status_code=403, detail="not your host")
 
         if "\x00" in path:
@@ -868,7 +930,7 @@ def create_hosts_router(
         host = await asyncio.to_thread(host_store.get_host, host_id)
         if host is None:
             raise HTTPException(status_code=404, detail="host not found")
-        if user_id is not None and host.owner != user_id:
+        if not caller_can_reach_host(host, user_id):
             raise HTTPException(status_code=403, detail="not your host")
 
         path = body.path

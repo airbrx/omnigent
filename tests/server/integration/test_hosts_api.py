@@ -1243,3 +1243,97 @@ async def test_runner_exited_invokes_callback_with_runner_and_error(
 
     # The callback got the exact runner id and error string off the frame.
     assert received == [("runner_x", "exited with code 1")]
+
+
+# --- shared / always-on hosts (visibility) ---------------------------------
+
+
+async def test_shared_host_listed_and_reachable_by_non_owner(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+) -> None:
+    """An admin marks alice's host shared; bob then sees and can view it,
+    while alice's private host stays hidden from bob.
+
+    This is the end-to-end unlock: a shared, always-on host is targetable by
+    any user, but private hosts remain owner-only.
+    """
+    app, _reg, host_store, _cs = multi_user_app
+    perm = app.state.permission_store
+    perm.ensure_user("admin@test.com", is_admin=True)
+    host_store.upsert_on_connect("host_shared", "alice-box", "alice@test.com")
+    host_store.upsert_on_connect("host_priv", "alice-laptop", "alice@test.com")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Admin flips host_shared to shared.
+        resp = await client.post(
+            "/v1/hosts/host_shared/visibility",
+            headers={"x-test-user": "admin@test.com"},
+            json={"visibility": "shared"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["visibility"] == "shared"
+
+        # Bob (not the owner) now sees the shared host but not the private one.
+        resp = await client.get("/v1/hosts", headers={"x-test-user": "bob@test.com"})
+        assert resp.status_code == 200
+        rows = {h["host_id"]: h for h in resp.json()["hosts"]}
+        assert "host_shared" in rows and "host_priv" not in rows
+        assert rows["host_shared"]["visibility"] == "shared"
+        assert rows["host_shared"]["is_owner"] is False
+
+        # Bob can read the shared host's details (200), still 403 on the private.
+        assert (
+            await client.get("/v1/hosts/host_shared", headers={"x-test-user": "bob@test.com"})
+        ).status_code == 200
+        assert (
+            await client.get("/v1/hosts/host_priv", headers={"x-test-user": "bob@test.com"})
+        ).status_code == 403
+
+
+async def test_visibility_toggle_requires_admin(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+) -> None:
+    """A non-admin cannot flip visibility (403), and the host stays private.
+
+    Sharing relaxes a security boundary, so it must be admin-only — a regular
+    user (even the host's owner) can't self-share.
+    """
+    app, _reg, host_store, _cs = multi_user_app
+    host_store.upsert_on_connect("host_x", "alice-box", "alice@test.com")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Alice owns it but is not an admin -> 403.
+        resp = await client.post(
+            "/v1/hosts/host_x/visibility",
+            headers={"x-test-user": "alice@test.com"},
+            json={"visibility": "shared"},
+        )
+        assert resp.status_code == 403, resp.text
+        # It really stayed private: bob still can't reach it.
+        assert (
+            await client.get("/v1/hosts/host_x", headers={"x-test-user": "bob@test.com"})
+        ).status_code == 403
+
+
+async def test_visibility_toggle_invalid_value_and_unknown_host(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+) -> None:
+    """Admin toggle rejects a bad value (422) and an unknown host (404)."""
+    app, _reg, host_store, _cs = multi_user_app
+    perm = app.state.permission_store
+    perm.ensure_user("admin@test.com", is_admin=True)
+    host_store.upsert_on_connect("host_y", "alice-box", "alice@test.com")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        bad = await client.post(
+            "/v1/hosts/host_y/visibility",
+            headers={"x-test-user": "admin@test.com"},
+            json={"visibility": "world-readable"},
+        )
+        assert bad.status_code == 422, bad.text
+        missing = await client.post(
+            "/v1/hosts/host_ghost/visibility",
+            headers={"x-test-user": "admin@test.com"},
+            json={"visibility": "shared"},
+        )
+        assert missing.status_code == 404, missing.text

@@ -741,6 +741,12 @@ class SqlHost(Base):
     version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     os: Mapped[str | None] = mapped_column(String(128), nullable=True)
     login_token_expires_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Host reachability: "private" (default) — only the owner may reach it;
+    # "shared" — any authenticated user may dispatch to / view / browse it.
+    # NULL is treated as "private" (fail-safe: a row must be explicitly
+    # "shared" to relax the ownership gate). Governs reachability only, never
+    # host management (delete/reassign) or registration (tunnel owner check).
+    visibility: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     __table_args__ = (
         CheckConstraint(

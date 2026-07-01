@@ -27,7 +27,7 @@ from omnigent.server.auth import LEVEL_OWNER
 from omnigent.server.host_registry import HostConnection, HostRegistry
 from omnigent.server.permissions import check_session_access
 from omnigent.stores import ConversationStore
-from omnigent.stores.host_store import Host, HostStore
+from omnigent.stores.host_store import Host, HostStore, caller_can_reach_host
 from omnigent.stores.permission_store import PermissionStore
 
 
@@ -53,28 +53,34 @@ def resolve_host_owner(
     host_store: HostStore,
 ) -> Host:
     """
-    Authorize that the caller owns a known host.
+    Authorize that the caller may *reach* a known host.
 
     Every route that reaches a host on the caller's behalf must pass
-    this first so the owner check can't drift between them: the runner
-    launch (via :func:`resolve_host_launch`) AND the session-create
+    this first so the reachability check can't drift between them: the
+    runner launch (via :func:`resolve_host_launch`) AND the session-create
     workspace probe, which sends a ``host.stat`` to the host. The
     original bug had that probe contacting another user's host before
-    any ownership check. When ``user_id`` is ``None`` (auth disabled)
-    the check is skipped, consistent with single-user/local behavior.
+    any ownership check.
+
+    Reachability (see :func:`caller_can_reach_host`) is broader than
+    ownership: the caller passes if auth is disabled (``user_id`` is
+    ``None``), if they own the host, OR if the host is **shared**
+    (``visibility == "shared"``) — a shared, always-on host any
+    authenticated user may target. It does NOT authorize host
+    management (delete/reassign), which keeps its own owner check.
 
     :param user_id: Authenticated caller, e.g. ``"alice@example.com"``,
         or ``None`` when auth is disabled.
     :param host_id: Target host id, e.g. ``"host_a1b2c3d4..."``.
     :param host_store: Persistent host registrations.
-    :returns: The host record owned by the caller.
+    :returns: The host record the caller may reach.
     :raises HTTPException: 404 if the host is unknown; 403 if it is
-        owned by a different user.
+        private and owned by a different user.
     """
     host = host_store.get_host(host_id)
     if host is None:
         raise HTTPException(status_code=404, detail="host not found")
-    if user_id is not None and host.owner != user_id:
+    if not caller_can_reach_host(host, user_id):
         raise HTTPException(status_code=403, detail="not your host")
     return host
 
