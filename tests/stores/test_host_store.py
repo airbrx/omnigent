@@ -1008,3 +1008,26 @@ def test_caller_can_reach_host_matrix() -> None:
     assert caller_can_reach_host(mk("alice@x", "shared"), "bob@x") is True
     # Auth disabled: reach anything.
     assert caller_can_reach_host(mk("alice@x", None), None) is True
+
+
+def test_workroot_jail_matrix() -> None:
+    """A non-owner on a shared host is jailed to workroot; owner is not."""
+    from omnigent.stores.host_store import workroot_jail
+
+    def mk(owner: str, visibility: str | None, workroot: str | None) -> Host:
+        return Host(
+            host_id="h",
+            name="n",
+            owner=owner,
+            status="online",
+            created_at=0,
+            updated_at=0,
+            visibility=visibility,
+            workroot=workroot,
+        )
+
+    assert workroot_jail(mk("a@x", "shared", "/w"), "a@x") is None  # owner: no jail
+    assert workroot_jail(mk("a@x", "shared", "/w"), "b@x") == "/w"  # non-owner: jailed
+    assert workroot_jail(mk("a@x", None, None), "b@x") is None  # private (403 earlier)
+    assert workroot_jail(mk("a@x", "shared", None), "b@x") is None  # shared w/o workroot
+    assert workroot_jail(mk("a@x", "shared", "/w"), None) is None  # auth disabled

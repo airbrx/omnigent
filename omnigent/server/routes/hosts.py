@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 from typing import Any
 
@@ -47,10 +48,37 @@ from omnigent.stores.host_store import (
     HostStore,
     caller_can_reach_host,
     host_is_live,
+    workroot_jail,
 )
 from omnigent.stores.permission_store import PermissionStore
 
 _logger = logging.getLogger(__name__)
+
+
+def _enforce_workroot(host: Any, user_id: str | None, path: str) -> None:
+    """
+    Reject a filesystem ``path`` that escapes a shared host's workroot.
+
+    A non-owner reaching a shared host is jailed to ``host.workroot`` (see
+    :func:`omnigent.stores.host_store.workroot_jail`). Owners and the
+    auth-disabled server are never jailed. Tilde paths expand on the host to
+    unknown locations, so a jailed caller must pass an absolute path under
+    workroot. This is a normpath prefix check (no host-side symlink
+    resolution) — the accepted, imperfect ``--shared`` confinement.
+
+    :raises HTTPException: 403 when a jailed caller's path is outside workroot.
+    """
+    jail = workroot_jail(host, user_id)
+    if jail is None:
+        return
+    root = os.path.normpath(jail)
+    norm = os.path.normpath(path)
+    if not path.startswith("/") or (norm != root and not norm.startswith(root + os.sep)):
+        raise HTTPException(
+            status_code=403,
+            detail=f"path is outside this shared host's workroot ({jail})",
+        )
+
 
 _LAUNCH_RESULT_TIMEOUT_S = 30.0
 # Per-call timeout for host.list_dir round-trips. Listing is a single
@@ -480,6 +508,8 @@ def create_hosts_router(
                     workspace=body.workspace,
                     spec_cwd=spec_cwd,
                     host_name_for_errors=target.host.name,
+                    # Shared-host jail: a non-owner is confined to workroot.
+                    extra_boundary=workroot_jail(target.host, user_id),
                 )
             except WorkspaceValidationError as exc:
                 raise HTTPException(status_code=400, detail=exc.message) from exc
@@ -803,6 +833,8 @@ def create_hosts_router(
             raise HTTPException(status_code=404, detail="host not found")
         if not caller_can_reach_host(host, user_id):
             raise HTTPException(status_code=403, detail="not your host")
+        # Shared-host jail: a non-owner may only browse under workroot.
+        _enforce_workroot(host, user_id, path)
 
         if "\x00" in path:
             raise HTTPException(
@@ -888,6 +920,8 @@ def create_hosts_router(
         path = body.path
         if not path.strip():
             raise HTTPException(status_code=400, detail="path must not be empty")
+        # Shared-host jail: a non-owner may only mkdir under workroot.
+        _enforce_workroot(host, user_id, path)
         if "\x00" in path:
             raise HTTPException(
                 status_code=400,

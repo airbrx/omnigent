@@ -855,6 +855,7 @@ async def test_launch_runner_validates_workspace_boundary(
         workspace: str,
         spec_cwd: str | None,
         host_name_for_errors: str | None = None,
+        extra_boundary: str | None = None,
     ) -> str:
         """Stand in for validate_workspace; record input and reject."""
         seen["workspace"] = workspace
@@ -1305,3 +1306,51 @@ async def test_no_admin_visibility_toggle_endpoint(
         assert (
             await client.get("/v1/hosts/host_x", headers={"x-test-user": "bob@test.com"})
         ).status_code == 403
+
+
+async def test_shared_host_confines_non_owner_to_workroot(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+) -> None:
+    """On a shared host, a non-owner's filesystem access is jailed to workroot.
+
+    A path outside workroot is rejected with 403 before the host is even
+    contacted; a path inside passes the jail (and then 409s only because the
+    test host has no live connection). The owner is never jailed.
+    """
+    app, _reg, host_store, _cs = multi_user_app
+    host_store.upsert_on_connect(
+        "host_sh", "alice-box", "alice@test.com", visibility="shared", workroot="/srv/work"
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Non-owner, mkdir OUTSIDE workroot -> 403 (jailed), host never contacted.
+        outside = await client.post(
+            "/v1/hosts/host_sh/directories",
+            headers={"x-test-user": "bob@test.com"},
+            json={"path": "/etc/evil"},
+        )
+        assert outside.status_code == 403, outside.text
+        assert "workroot" in outside.text
+
+        # Non-owner, browse OUTSIDE workroot -> 403 too.
+        browse_out = await client.get(
+            "/v1/hosts/host_sh/filesystem/etc/passwd",
+            headers={"x-test-user": "bob@test.com"},
+        )
+        assert browse_out.status_code == 403, browse_out.text
+
+        # Non-owner, INSIDE workroot -> passes the jail, then 409 (host offline).
+        inside = await client.post(
+            "/v1/hosts/host_sh/directories",
+            headers={"x-test-user": "bob@test.com"},
+            json={"path": "/srv/work/sub"},
+        )
+        assert inside.status_code == 409, inside.text
+
+        # Owner is NOT jailed: /etc passes the (absent) jail, 409 offline.
+        owner_out = await client.post(
+            "/v1/hosts/host_sh/directories",
+            headers={"x-test-user": "alice@test.com"},
+            json={"path": "/etc/mine"},
+        )
+        assert owner_out.status_code == 409, owner_out.text

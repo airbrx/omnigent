@@ -120,6 +120,30 @@ def caller_can_reach_host(host: Host, user_id: str | None) -> bool:
     return user_id is None or host.owner == user_id or host.visibility == VISIBILITY_SHARED
 
 
+def workroot_jail(host: Host, user_id: str | None) -> str | None:
+    """
+    The directory a caller is confined to on this host, or ``None`` for no
+    confinement.
+
+    A **non-owner** reaching a **shared** host is jailed to the host's
+    ``workroot`` — their session workspace and filesystem browse must stay
+    inside it. The owner (and the auth-disabled single-user server) are never
+    jailed. This is deliberately a workspace-level confinement (default cwd +
+    browse clamp), not a hard OS sandbox — the host owner opted in with
+    ``--shared`` knowing it isn't airtight.
+
+    :param host: The host being reached.
+    :param user_id: Authenticated caller, or ``None`` when auth is disabled.
+    :returns: The workroot to confine to, or ``None`` if the caller is the
+        owner / auth is disabled / the host isn't shared.
+    """
+    if user_id is None or host.owner == user_id:
+        return None
+    if host.visibility == VISIBILITY_SHARED and host.workroot:
+        return host.workroot
+    return None
+
+
 def host_is_live(host: Host, now: int | None = None) -> bool:
     """
     Return whether a :class:`Host` is online and recently seen.
