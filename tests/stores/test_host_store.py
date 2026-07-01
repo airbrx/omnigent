@@ -930,21 +930,27 @@ def test_upsert_defaults_visibility_none_private(host_store: HostStore) -> None:
     assert host_store.get_host("host_v0").visibility is None
 
 
-def test_set_visibility_roundtrip_and_validation(host_store: HostStore) -> None:
-    """``set_visibility`` flips the column and rejects unknown values."""
+def test_upsert_records_host_declared_sharing(host_store: HostStore) -> None:
+    """A host connecting with ``--shared`` records visibility + workroot;
+    reconnecting WITHOUT ``--shared`` un-shares it.
+
+    Consent is host-declared and re-evaluated on every connect, so an owner
+    revokes sharing simply by restarting the host normally.
+    """
+    host_store.upsert_on_connect(
+        host_id="host_v1",
+        name="box",
+        owner="alice@x",
+        visibility="shared",
+        workroot="/srv/work",
+    )
+    got = host_store.get_host("host_v1")
+    assert got.visibility == "shared" and got.workroot == "/srv/work"
+
+    # Reconnect without --shared -> back to private (NULL), workroot cleared.
     host_store.upsert_on_connect(host_id="host_v1", name="box", owner="alice@x")
-
-    shared = host_store.set_visibility("host_v1", "shared")
-    assert shared is not None and shared.visibility == "shared"
-    assert host_store.get_host("host_v1").visibility == "shared"
-
-    back = host_store.set_visibility("host_v1", "private")
-    assert back.visibility == "private"
-
-    # Unknown host -> None (not an error), unknown value -> ValueError.
-    assert host_store.set_visibility("host_missing", "shared") is None
-    with pytest.raises(ValueError):
-        host_store.set_visibility("host_v1", "world-readable")
+    back = host_store.get_host("host_v1")
+    assert back.visibility is None and back.workroot is None
 
 
 def test_list_visible_hosts_unions_own_and_shared(host_store: HostStore) -> None:
@@ -955,9 +961,14 @@ def test_list_visible_hosts_unions_own_and_shared(host_store: HostStore) -> None
     always-on box, but still never sees Alice's private laptop.
     """
     host_store.upsert_on_connect(host_id="host_alice_priv", name="a-laptop", owner="alice@x")
-    host_store.upsert_on_connect(host_id="host_alice_shared", name="a-box", owner="alice@x")
+    host_store.upsert_on_connect(
+        host_id="host_alice_shared",
+        name="a-box",
+        owner="alice@x",
+        visibility="shared",
+        workroot="/w",
+    )
     host_store.upsert_on_connect(host_id="host_bob_priv", name="b-laptop", owner="bob@x")
-    host_store.set_visibility("host_alice_shared", "shared")
 
     bob_visible = {h.host_id for h in host_store.list_visible_hosts("bob@x")}
     assert bob_visible == {"host_bob_priv", "host_alice_shared"}
@@ -969,8 +980,9 @@ def test_list_visible_hosts_unions_own_and_shared(host_store: HostStore) -> None
 
 def test_list_visible_hosts_no_duplicate_for_owner_of_shared(host_store: HostStore) -> None:
     """A shared host the caller *owns* matches both OR arms but appears once."""
-    host_store.upsert_on_connect(host_id="host_dup", name="mine", owner="alice@x")
-    host_store.set_visibility("host_dup", "shared")
+    host_store.upsert_on_connect(
+        host_id="host_dup", name="mine", owner="alice@x", visibility="shared", workroot="/w"
+    )
     ids = [h.host_id for h in host_store.list_visible_hosts("alice@x")]
     assert ids.count("host_dup") == 1
 

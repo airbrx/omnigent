@@ -6667,9 +6667,37 @@ def _prompt_stop_local_server() -> None:
         "lets the connected server install code on this machine."
     ),
 )
+@click.option(
+    "--shared",
+    "shared",
+    is_flag=True,
+    default=False,
+    help=(
+        "Open this host to ANY authenticated user of the server (not just "
+        "you). Their sessions are confined to --workroot and run without "
+        "shell/exec tools; your own sessions are unaffected. Opt-in consent "
+        "lives here — an admin cannot share your host for you. Prints a "
+        "warning on start; restart without --shared to stop sharing."
+    ),
+)
+@click.option(
+    "--workroot",
+    "workroot",
+    default=None,
+    help=(
+        "Directory a shared host's non-owner sessions are jailed to "
+        "(filesystem + runner cwd). Defaults to the current directory. "
+        "Only meaningful with --shared."
+    ),
+)
 @click.pass_context
 def host(
-    ctx: click.Context, server: str | None, non_interactive: bool, auto_upgrade: bool
+    ctx: click.Context,
+    server: str | None,
+    non_interactive: bool,
+    auto_upgrade: bool,
+    shared: bool,
+    workroot: str | None,
 ) -> None:
     """
     Register this machine as a host with a server.
@@ -6748,7 +6776,12 @@ def host(
         # (or a headless invocation) fails loud with the command to run.
         if remote_mode:
             _ensure_databricks_server_auth(server, non_interactive=non_interactive)
-        run_host_process(server_url=server, auto_upgrade=auto_upgrade)
+        run_host_process(
+            server_url=server,
+            auto_upgrade=auto_upgrade,
+            shared=shared,
+            workroot=workroot,
+        )
         stopped_cleanly = True
     except KeyboardInterrupt:
         # Ctrl-C is the normal way to stop the foreground daemon — swallow it

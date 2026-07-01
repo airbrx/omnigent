@@ -79,9 +79,12 @@ class Host:
     os: str | None = None
     login_token_expires_at: int | None = None
     visibility: str | None = None
-    """Reachability: ``"shared"`` lets any authenticated user reach this host;
-    anything else (incl. ``None``) means owner-only. See
-    :func:`caller_can_reach_host`."""
+    """Reachability: ``"shared"`` lets any authenticated user reach this host
+    (confined + shell-less); anything else (incl. ``None``) means owner-only.
+    Host-declared via ``--shared``. See :func:`caller_can_reach_host`."""
+    workroot: str | None = None
+    """When shared, the directory a non-owner's session is jailed to
+    (filesystem browse + runner cwd). ``None`` when private."""
 
 
 # The two visibility values persisted in ``hosts.visibility``. ``None`` in the
@@ -187,6 +190,7 @@ def _row_to_host(row: SqlHost) -> Host:
         os=row.os,
         login_token_expires_at=row.login_token_expires_at,
         visibility=row.visibility,
+        workroot=row.workroot,
     )
 
 
@@ -235,6 +239,8 @@ class HostStore:
         version: str | None = None,
         os: str | None = None,
         login_token_expires_at: int | None = None,
+        visibility: str | None = None,
+        workroot: str | None = None,
     ) -> Host:
         """
         Register or update a host on WebSocket connect.
@@ -274,6 +280,13 @@ class HostStore:
             Written on every connect — including ``None`` from an older
             host that doesn't report it, which correctly resets any
             stale value back to "unknown".
+        :param visibility: Host-declared reachability from the hello
+            frame — ``"shared"`` when the owner started it with
+            ``--shared``, else ``None`` (private). Written on EVERY
+            connect, so restarting a host without ``--shared`` un-shares
+            it. Consent lives with the owner, not an admin toggle.
+        :param workroot: The jail directory for non-owner sessions when
+            shared; ``None`` when private. Written on every connect.
         :returns: The upserted :class:`Host`.
         """
         now = now_epoch()
@@ -328,6 +341,11 @@ class HostStore:
                 # re-login), so overwrite unconditionally — including back to
                 # None when the host reports none.
                 row.login_token_expires_at = login_token_expires_at
+                # visibility/workroot are host-declared on every connect —
+                # overwrite unconditionally so restarting without --shared
+                # resets to private (NULL). This is how an owner un-shares.
+                row.visibility = visibility
+                row.workroot = workroot
             else:
                 row = SqlHost(
                     owner=owner,
@@ -340,6 +358,8 @@ class HostStore:
                     version=version,
                     os=os,
                     login_token_expires_at=login_token_expires_at,
+                    visibility=visibility,
+                    workroot=workroot,
                 )
                 session.add(row)
             return _row_to_host(row)
@@ -603,33 +623,6 @@ class HostStore:
                 .all()
             )
             return [_row_to_host(row) for row in rows]
-
-    def set_visibility(self, host_id: str, visibility: str) -> Host | None:
-        """
-        Set a host's reachability (``"private"`` | ``"shared"``).
-
-        Backs the admin-only visibility toggle. Addressed by the stable
-        ``host_id`` (the same id the host REST routes use), not the
-        ``(owner, name)`` PK. Idempotent; touches only the ``visibility``
-        column so a concurrent connect/heartbeat upsert is never clobbered.
-
-        :param host_id: Stable host id, e.g. ``"host_a1b2c3d4..."``.
-        :param visibility: ``VISIBILITY_PRIVATE`` or ``VISIBILITY_SHARED``.
-        :returns: The updated :class:`Host`, or ``None`` if no such host.
-        :raises ValueError: if ``visibility`` is not a known value.
-        """
-        if visibility not in (VISIBILITY_PRIVATE, VISIBILITY_SHARED):
-            raise ValueError(f"invalid visibility {visibility!r}")
-        with self._session() as session:
-            row = session.execute(
-                select(SqlHost).where(SqlHost.host_id == host_id)
-            ).scalar_one_or_none()
-            if row is None:
-                return None
-            row.visibility = visibility
-            session.commit()
-            session.refresh(row)
-            return _row_to_host(row)
 
     def get_host(self, host_id: str) -> Host | None:
         """
