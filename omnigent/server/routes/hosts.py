@@ -761,11 +761,11 @@ def create_hosts_router(
 
         Used by the Web UI's directory picker (and stat-style
         existence checks) to render the host's filesystem before
-        any runner exists. Owner-scoped: only the host owner can
-        browse. NOT scoped to a session — this endpoint exposes
-        the entire host filesystem to the authenticated host owner
-        per ``designs/SESSION_WORKSPACE_SELECTION.md`` "Security
-        surface".
+        any runner exists. Reach-scoped: the host owner sees the
+        whole filesystem; a non-owner on a shared host is confined
+        to the host's ``workroot`` (paths outside it are 403'd). NOT
+        scoped to a session. See ``designs/SESSION_WORKSPACE_SELECTION.md``
+        "Security surface".
 
         :param request: FastAPI request (for auth).
         :param host_id: Host identifier.
@@ -808,9 +808,10 @@ def create_hosts_router(
         """
         Shared implementation for the filesystem endpoints.
 
-        Authorizes (owner check), looks up the live host, validates
-        the path shape, sends ``host.list_dir``, and returns the
-        result in the runner-compatible response shape.
+        Authorizes (reach check — owner, or a shared host with the path
+        confined to its ``workroot`` for a non-owner), looks up the live
+        host, validates the path shape, sends ``host.list_dir``, and
+        returns the result in the runner-compatible response shape.
 
         :param request: FastAPI request (for auth).
         :param host_id: Host identifier.
@@ -822,12 +823,14 @@ def create_hosts_router(
         :raises HTTPException: See per-route docstrings for codes.
         """
         # require_user: unauthenticated callers 401 instead of slipping
-        # past the owner check below as None (see get_host above).
+        # past the reach check below as None (see get_host above).
         user_id = require_user(request, auth_provider)
 
-        # Owner check: load the host record, fail with 404 if it
-        # doesn't exist (don't leak existence to non-owners), fail
-        # with 403 only when an authenticated caller doesn't own it.
+        # Reach check: load the host record, fail with 404 if it doesn't
+        # exist (don't leak existence to non-owners), 403 when an
+        # authenticated caller can't reach it (not the owner and the host
+        # isn't shared). A non-owner on a shared host is then confined to
+        # workroot by _enforce_workroot below.
         host = await asyncio.to_thread(host_store.get_host, host_id)
         if host is None:
             raise HTTPException(status_code=404, detail="host not found")
@@ -890,25 +893,28 @@ def create_hosts_router(
 
         Backs the Web UI workspace picker's "New folder" action so a
         user can make a fresh directory to start a session in without
-        dropping to a terminal. Owner-scoped exactly like the
-        filesystem browse endpoints (``GET /v1/hosts/{id}/filesystem``):
-        only the host owner can create directories, and — like browse —
-        this is NOT scoped to a session. The workspace-boundary check
-        still runs at session-create time, so creating a directory here
-        does not by itself grant an agent access to it.
+        dropping to a terminal. Reach-scoped exactly like the filesystem
+        browse endpoints (``GET /v1/hosts/{id}/filesystem``): the owner,
+        or a non-owner on a shared host with the target path confined to
+        ``workroot``. Like browse, this is NOT scoped to a session. The
+        workspace-boundary check still runs at session-create time, so
+        creating a directory here does not by itself grant an agent
+        access to it.
 
         :param request: FastAPI request (for auth).
         :param host_id: Host identifier, e.g. ``"host_a1b2c3d4..."``.
         :param body: Request body carrying the absolute (or
             tilde-prefixed) ``path`` to create.
         :returns: ``{"object": "directory", "path": "<created abs path>"}``.
-        :raises HTTPException: 404 if host not found, 403 if not owned
-            by caller, 409 if host is offline or the directory could not
-            be created (already exists / permission denied), 400 on path
-            validation, 504 on host timeout, 502 on host I/O failure.
+        :raises HTTPException: 404 if host not found, 403 if the caller
+            can't reach it (private + not owner) or the path escapes a
+            shared host's workroot, 409 if host is offline or the
+            directory could not be created (already exists / permission
+            denied), 400 on path validation, 504 on host timeout, 502 on
+            host I/O failure.
         """
         # require_user: unauthenticated callers 401 instead of slipping
-        # past the owner check below as None.
+        # past the reach check below as None.
         user_id = require_user(request, auth_provider)
 
         host = await asyncio.to_thread(host_store.get_host, host_id)

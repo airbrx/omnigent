@@ -1,13 +1,17 @@
-"""Ownership-checked resolution for host runner launches.
+"""Reachability-checked resolution for host runner launches.
 
 Two routes spawn a runner subprocess on a user's host machine and
 bind it to a session: ``POST /v1/sessions`` (inline host launch) and
-``POST /v1/hosts/{host_id}/runners``. A runner executes arbitrary
-tools (shell, file I/O) on the host as that host's user, so a launch
-must be authorized against BOTH the host and the session:
+``POST /v1/hosts/{host_id}/runners``. A runner executes tools (shell,
+file I/O) on the host as that host's user, so a launch must be
+authorized against BOTH the host and the session:
 
-- the caller must own the target host (else they could run code on
-  another user's machine — cross-user RCE), and
+- the caller must be able to *reach* the target host — they own it,
+  OR the owner opted the host into sharing with ``--shared`` (in which
+  case a non-owner's session is confined to the host's ``workroot``;
+  see :func:`omnigent.stores.host_store.caller_can_reach_host` /
+  ``workroot_jail``). A private host stays owner-only (else a non-owner
+  could run code on another user's machine — cross-user RCE), and
 - the caller must own the target session (else they could bind their
   runner to another user's session, or another user's host to their
   session — cross-user hijack / data theft).
