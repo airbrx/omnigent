@@ -323,3 +323,15 @@ terminate the instance, then delete the RDS instance.
   image off-box and pull it.
 - **Student can't start a session.** They skipped `omnigent host`, or their
   `claude` CLI isn't logged in — both run on *their* laptop, not the server.
+
+## CI/CD (GitHub Actions)
+
+Every push to `2026-summer-internship` auto-deploys the box via
+`.github/workflows/deploy-interns.yml`: build SPA → publish `webui-<sha>`
+release → SSM (git reset to the pushed sha, `deploy/intern-ec2/pull-webui.sh`,
+regenerate `_build_info.py`, restart — `entrypoint.py` runs migrations on
+boot) → health-check https://interns.airbrx.ai. AWS auth is the OIDC role
+`omnigent-github-deploy` (branch-scoped, SendCommand-only — IAM is
+hand-managed, not Terraform). The manual "Updating" flow above remains valid
+as the fallback. CI never runs `uv sync` (psycopg-prune gotcha) — dependency
+changes need the manual venv steps first, then push.
