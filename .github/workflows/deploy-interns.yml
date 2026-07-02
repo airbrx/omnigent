@@ -40,9 +40,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+      # Repo composite: pins npm to the exact version that generated the
+      # lockfile (11.12.1) — stock node's npm 10.x fails `npm ci` validation.
+      - uses: ./.github/actions/setup-node
 
       - name: Build SPA and publish webui-<sha> release
         env:
