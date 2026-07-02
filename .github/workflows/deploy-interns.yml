@@ -64,7 +64,8 @@ jobs:
           # Assembled by AWS-RunShellScript into one root shell script on the
           # box; the checkout is ubuntu-owned, so git runs as ubuntu.
           cat > /tmp/remote.sh <<EOS
-          set -euo pipefail
+          # dash on the box (AWS-RunShellScript runs sh): no pipefail
+          set -eu
           sudo -u ubuntu git -C /opt/omnigent fetch origin --quiet
           sudo -u ubuntu git -C /opt/omnigent reset --hard ${FULL_SHA}
           sudo -u ubuntu /opt/omnigent/deploy/intern-ec2/pull-webui.sh webui-${SHORT_SHA}
