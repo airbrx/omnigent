@@ -128,3 +128,15 @@ ExecStart=/bin/bash -lc 'exec ~/.local/bin/omnigent host https://omnigent.airbrx
 ```
 
 
+
+## CI/CD (GitHub Actions)
+
+Every push to `omnigent-airbrx-server` auto-deploys the box via
+`.github/workflows/deploy-omnigent-airbrx.yml`: build SPA → publish
+`webui-<sha>` release → SSM (git reset to the pushed sha, `pull-webui.sh`,
+regenerate `_build_info.py`, restart) → health-check the public URL. AWS auth
+is the OIDC role `omnigent-github-deploy` (branch-scoped, SendCommand-only —
+IAM is hand-managed, not Terraform). The manual flow above remains valid as
+the fallback and is exactly what the workflow automates. CI never runs
+`uv sync` (psycopg-prune gotcha) — dependency changes need the manual venv
+steps first, then push.

@@ -1,0 +1,119 @@
+# CD for omnigent.airbrx.ai — every push to this deploy branch redeploys the
+# box. Mirrors the manual flow in deploy/omnigent-ec2/native/README.md:
+# build the SPA off-box and publish it as a webui-<sha> GitHub Release, then
+# over SSM: git reset to the pushed commit, pull the SPA bundle, regenerate
+# the _build_info.py version stamp, restart the systemd unit.
+#
+# AWS auth is OIDC (no stored keys): role omnigent-github-deploy trusts runs
+# from this repo on this branch only, and can only SendCommand to this box.
+#
+# Deliberately NOT run here: `uv sync` — it prunes psycopg (installed outside
+# the lockfile) and crash-loops the server. A dependency-changing deploy still
+# needs a manual `uv sync` + `uv pip install 'psycopg[binary]>=3.1,<4'` on the
+# box first (see README gotchas).
+name: Deploy omnigent.airbrx.ai
+
+on:
+  push:
+    branches: [omnigent-airbrx-server]
+  workflow_dispatch: {}
+
+# One deploy at a time; queue (don't cancel) so every pushed sha lands.
+concurrency:
+  group: deploy-omnigent-airbrx
+  cancel-in-progress: false
+
+permissions:
+  contents: write # publish the webui-<sha> release asset
+  id-token: write # mint the OIDC token for the AWS role
+
+env:
+  AWS_REGION: us-east-1
+  INSTANCE_ID: i-02eb2f52439574844
+  HEALTH_URL: https://omnigent.airbrx.ai
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build SPA and publish webui-<sha> release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./deploy/omnigent-ec2/native/release-webui.sh
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::724412576111:role/omnigent-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy on box via SSM
+        run: |
+          set -euo pipefail
+          FULL_SHA="${GITHUB_SHA}"
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+
+          # Assembled by AWS-RunShellScript into one root shell script on the
+          # box; the checkout is ubuntu-owned, so git runs as ubuntu.
+          cat > /tmp/remote.sh <<EOS
+          set -euo pipefail
+          sudo -u ubuntu git -C /opt/omnigent fetch origin --quiet
+          sudo -u ubuntu git -C /opt/omnigent reset --hard ${FULL_SHA}
+          sudo -u ubuntu /opt/omnigent/deploy/omnigent-ec2/native/pull-webui.sh webui-${SHORT_SHA}
+          sudo -u ubuntu /opt/omnigent/.venv/bin/python - <<'PY'
+          import time, subprocess, pathlib
+          sha = subprocess.run(["git", "-C", "/opt/omnigent", "rev-parse", "HEAD"],
+                               capture_output=True, text=True).stdout.strip()
+          pathlib.Path("/opt/omnigent/omnigent/_build_info.py").write_text(
+              "from __future__ import annotations\n\n"
+              f"BUILD_TIME_EPOCH: int = {int(time.time())}\n"
+              f"COMMIT_SHA: str = {sha!r}\n")
+          PY
+          systemctl restart omnigent-server
+          echo "DEPLOYED_HEAD=\$(sudo -u ubuntu git -C /opt/omnigent rev-parse HEAD)"
+          EOS
+
+          CID=$(aws ssm send-command \
+            --instance-ids "${INSTANCE_ID}" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy ${SHORT_SHA} (GitHub Actions run ${GITHUB_RUN_ID})" \
+            --parameters "$(jq -n --rawfile s /tmp/remote.sh '{commands: ($s | split("\n"))}')" \
+            --query Command.CommandId --output text)
+          echo "SSM command: ${CID}"
+
+          STATUS=Pending
+          for _ in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation --command-id "${CID}" \
+              --instance-id "${INSTANCE_ID}" --query Status --output text 2>/dev/null || echo Pending)
+            case "${STATUS}" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 5
+          done
+
+          echo "=== status: ${STATUS} ==="
+          aws ssm get-command-invocation --command-id "${CID}" --instance-id "${INSTANCE_ID}" \
+            --query StandardOutputContent --output text | tee /tmp/remote.out
+          aws ssm get-command-invocation --command-id "${CID}" --instance-id "${INSTANCE_ID}" \
+            --query StandardErrorContent --output text >&2
+
+          [ "${STATUS}" = "Success" ]
+          grep -q "DEPLOYED_HEAD=${FULL_SHA}" /tmp/remote.out
+
+      - name: Health check
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            if curl -fsS -o /dev/null --max-time 10 "${HEALTH_URL}"; then
+              echo "healthy: ${HEALTH_URL}"
+              exit 0
+            fi
+            sleep 4
+          done
+          echo "server did not come back healthy after deploy" >&2
+          exit 1
