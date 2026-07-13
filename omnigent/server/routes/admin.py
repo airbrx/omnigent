@@ -175,12 +175,12 @@ def create_admin_router(
             out: list[dict[str, object]] = []
             hidden = 0
             for u in permission_store.list_users():
-                totals = conversation_store.usage_totals_for_user(u.user_id)
+                totals = conversation_store.usage_totals_for_user(u.id)
                 # Hide invite-only phantoms: own nothing, hold only invite
                 # grants, not an admin. Skip the grant lookup for users who
                 # already own a session (the common case).
                 if not u.is_admin and totals.session_count == 0:
-                    grants = permission_store.list_for_user(u.user_id)
+                    grants = permission_store.list_for_user(u.id)
                     owns = any(g.level >= LEVEL_OWNER for g in grants)
                     invited = any(g.level < LEVEL_OWNER for g in grants)
                     if not owns and invited:
@@ -188,7 +188,7 @@ def create_admin_router(
                         continue
                 # Per-user host inventory (cheap at admin-list scale; the
                 # online subset reuses the same liveness gate as the sidebar).
-                hosts = host_store.list_hosts(u.user_id) if host_store is not None else []
+                hosts = host_store.list_hosts(u.id) if host_store is not None else []
                 online = (
                     host_store.online_host_ids([h.host_id for h in hosts])
                     if host_store is not None and hosts
@@ -196,7 +196,7 @@ def create_admin_router(
                 )
                 out.append(
                     {
-                        "user_id": u.user_id,
+                        "user_id": u.id,
                         "is_admin": u.is_admin,
                         "cost_usd": totals.cost_usd,
                         "total_tokens": totals.total_tokens,

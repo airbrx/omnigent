@@ -12,7 +12,15 @@ export const CLAUDE_NATIVE_MODELS = [
   // Ordered by capability tier, most powerful first.
   { id: "fable", label: "Fable" },
   { id: "opus", label: "Opus" },
-  { id: "sonnet", label: "Sonnet" },
+  // The "sonnet" alias stays pinned to the workspace's existing default
+  // Sonnet (4.6); relabelled from the bare "Sonnet" only so it reads
+  // unambiguously next to the opt-in row below. Its model binding is
+  // unchanged — picking this row resolves exactly as it did before.
+  { id: "sonnet", label: "Sonnet 4.6" },
+  // Newer Sonnet, offered as an explicit opt-in via Claude Code's one
+  // custom /model slot (ANTHROPIC_CUSTOM_MODEL_OPTION) — not a family
+  // alias, and it does NOT change the default "sonnet" binding above.
+  { id: "sonnet_5", label: "Sonnet 5" },
   { id: "haiku", label: "Haiku" },
 ] as const;
 
