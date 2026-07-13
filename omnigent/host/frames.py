@@ -51,6 +51,8 @@ class HostFrameKind(str, Enum):
     CREATE_WORKTREE_RESULT = "host.create_worktree_result"
     REMOVE_WORKTREE = "host.remove_worktree"
     REMOVE_WORKTREE_RESULT = "host.remove_worktree_result"
+    LIST_WORKTREES = "host.list_worktrees"
+    LIST_WORKTREES_RESULT = "host.list_worktrees_result"
     CREATE_DIR = "host.create_dir"
     CREATE_DIR_RESULT = "host.create_dir_result"
 
@@ -101,6 +103,7 @@ class HostHelloFrame:
     login_token_expires_at: float | None = None
     shared: bool = False
     workroot: str | None = None
+    telemetry_opt_out: bool = False
 
 
 @dataclass
@@ -115,6 +118,9 @@ class HostLaunchRunnerFrame:
     :param workspace: Absolute path on the host machine to use
         as the runner's working directory, e.g.
         ``"/Users/corey/projects/frontend"``.
+    :param session_id: Conversation/session ID the runner is being
+        launched for, e.g. ``"conv_abc123"``. ``None`` means an older
+        server did not include it.
     :param harness: Canonical harness the session will run, e.g.
         ``"claude-sdk"``. The host checks it is configured before
         spawning and refuses with
@@ -126,6 +132,7 @@ class HostLaunchRunnerFrame:
     request_id: str
     binding_token: str
     workspace: str
+    session_id: str | None = None
     harness: str | None = None
 
 
@@ -448,6 +455,44 @@ class HostRemoveWorktreeResultFrame:
 
 
 @dataclass
+class HostListWorktreesFrame:
+    """Server → host: list the git worktrees of a repository.
+
+    Backs ``GET /v1/hosts/{id}/worktrees``, used by the Web UI's
+    new-session worktree picker to show worktrees a session can start
+    in directly. Read-only; the host derives the main work tree from
+    ``repo_path`` (so a linked worktree resolves the same list).
+
+    :param request_id: Correlates the result, e.g. ``"req_wt_ls_1"``.
+    :param repo_path: Absolute path inside the repo (the picked dir or
+        a subdir), e.g. ``"/Users/alice/myrepo"``.
+    """
+
+    request_id: str
+    repo_path: str
+
+
+@dataclass
+class HostListWorktreesResultFrame:
+    """Host → server: outcome of a list-worktrees request.
+
+    :param request_id: Correlates to the
+        :class:`HostListWorktreesFrame`, e.g. ``"req_wt_ls_1"``.
+    :param status: ``"ok"`` or ``"failed"``.
+    :param worktrees: One dict per worktree with keys ``path`` (str),
+        ``branch`` (str | None), ``is_main`` (bool), ``detached``
+        (bool), main first. ``None`` on failure.
+    :param error: Error message when ``status`` is ``"failed"``, e.g.
+        ``"not a git repository"``. ``None`` on success.
+    """
+
+    request_id: str
+    status: str
+    worktrees: list[dict[str, Any]] | None = None
+    error: str | None = None
+
+
+@dataclass
 class HostCreateDirFrame:
     """Server → host: create a new directory on the host.
 
@@ -506,6 +551,8 @@ HostFrame = (
     | HostCreateWorktreeResultFrame
     | HostRemoveWorktreeFrame
     | HostRemoveWorktreeResultFrame
+    | HostListWorktreesFrame
+    | HostListWorktreesResultFrame
     | HostCreateDirFrame
     | HostCreateDirResultFrame
 )
@@ -558,6 +605,7 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "login_token_expires_at": frame.login_token_expires_at,
                 "shared": frame.shared,
                 "workroot": frame.workroot,
+                "telemetry_opt_out": frame.telemetry_opt_out,
             }
         )
     if isinstance(frame, HostLaunchRunnerFrame):
@@ -567,6 +615,7 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "request_id": frame.request_id,
                 "binding_token": frame.binding_token,
                 "workspace": frame.workspace,
+                "session_id": frame.session_id,
                 "harness": frame.harness,
             }
         )
@@ -697,6 +746,24 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "error": frame.error,
             }
         )
+    if isinstance(frame, HostListWorktreesFrame):
+        return _encode_payload(
+            {
+                "kind": HostFrameKind.LIST_WORKTREES.value,
+                "request_id": frame.request_id,
+                "repo_path": frame.repo_path,
+            }
+        )
+    if isinstance(frame, HostListWorktreesResultFrame):
+        return _encode_payload(
+            {
+                "kind": HostFrameKind.LIST_WORKTREES_RESULT.value,
+                "request_id": frame.request_id,
+                "status": frame.status,
+                "worktrees": frame.worktrees,
+                "error": frame.error,
+            }
+        )
     if isinstance(frame, HostCreateDirFrame):
         return _encode_payload(
             {
@@ -803,6 +870,10 @@ def _decode_known_host_frame(
             return _decode_remove_worktree(msg)
         case HostFrameKind.REMOVE_WORKTREE_RESULT:
             return _decode_remove_worktree_result(msg)
+        case HostFrameKind.LIST_WORKTREES:
+            return _decode_list_worktrees(msg)
+        case HostFrameKind.LIST_WORKTREES_RESULT:
+            return _decode_list_worktrees_result(msg)
         case HostFrameKind.CREATE_DIR:
             return _decode_create_dir(msg)
         case HostFrameKind.CREATE_DIR_RESULT:
@@ -832,6 +903,7 @@ def _decode_host_hello(msg: dict[str, Any]) -> HostHelloFrame:
         # with an unbounded jail).
         shared=bool(msg.get("shared")) and isinstance(raw_workroot, str),
         workroot=raw_workroot if isinstance(raw_workroot, str) else None,
+        telemetry_opt_out=bool(msg.get("telemetry_opt_out", False)),
     )
 
 
@@ -845,6 +917,7 @@ def _decode_launch_runner(msg: dict[str, Any]) -> HostLaunchRunnerFrame:
         request_id=_required_str(msg, "request_id"),
         binding_token=_required_str(msg, "binding_token"),
         workspace=_required_str(msg, "workspace"),
+        session_id=_optional_nullable_str(msg, "session_id"),
         harness=_optional_nullable_str(msg, "harness"),
     )
 
@@ -1059,6 +1132,41 @@ def _decode_remove_worktree_result(
     return HostRemoveWorktreeResultFrame(
         request_id=_required_str(msg, "request_id"),
         status=_required_str(msg, "status"),
+        error=_optional_nullable_str(msg, "error"),
+    )
+
+
+def _decode_list_worktrees(msg: dict[str, Any]) -> HostListWorktreesFrame:
+    """Decode a host.list_worktrees request frame.
+
+    :param msg: Decoded frame object.
+    :returns: Typed host.list_worktrees frame.
+    """
+    return HostListWorktreesFrame(
+        request_id=_required_str(msg, "request_id"),
+        repo_path=_required_str(msg, "repo_path"),
+    )
+
+
+def _decode_list_worktrees_result(
+    msg: dict[str, Any],
+) -> HostListWorktreesResultFrame:
+    """Decode a host.list_worktrees_result frame.
+
+    :param msg: Decoded frame object.
+    :returns: Typed host.list_worktrees_result frame.
+    """
+    raw = msg.get("worktrees")
+    if raw is not None:
+        if not isinstance(raw, list):
+            raise ValueError("frame field must be a list or null: 'worktrees'")
+        for entry in raw:
+            if not isinstance(entry, dict):
+                raise ValueError("each entry in 'worktrees' must be a JSON object")
+    return HostListWorktreesResultFrame(
+        request_id=_required_str(msg, "request_id"),
+        status=_required_str(msg, "status"),
+        worktrees=raw,
         error=_optional_nullable_str(msg, "error"),
     )
 

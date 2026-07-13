@@ -1,4 +1,4 @@
-"""Tests for the ``hosts.visibility`` column and its migration (r1a2b3c4d5e6).
+"""Tests for the ``hosts.visibility`` column and its migration (abx4e2f3a4b5).
 
 Shared/always-on hosts: ``visibility`` is ``"shared"`` (any authenticated user
 may reach the host) or private otherwise. The column is nullable with no
@@ -54,7 +54,7 @@ def test_visibility_defaults_null_on_insert(tmp_path: Path) -> None:
                 sa.text(
                     "INSERT INTO hosts (owner, name, host_id, status, "
                     "created_at, updated_at) VALUES "
-                    "('alice@x', 'laptop', 'host_z', 'online', 1, 1)"
+                    "('alice@x', 'laptop', 'host_z', 1, 1, 1)"
                 )
             )
         with engine.connect() as conn:
