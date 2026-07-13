@@ -8,10 +8,10 @@
 # AWS auth is OIDC (no stored keys): role omnigent-github-deploy trusts runs
 # from this repo on this branch only, and can only SendCommand to this box.
 #
-# Deliberately NOT run here: `uv sync` — it prunes psycopg (installed outside
-# the lockfile) and crash-loops the server. A dependency-changing deploy still
-# needs a manual `uv sync` (with OMNIGENT_SKIP_WEB_UI=true) + psycopg
-# reinstall on the box first (see RUNBOOK gotchas).
+# Dependencies: the remote script runs `uv sync` against the pushed lockfile
+# (upstream adds runtime deps — zstandard took the site down on 2026-07-13
+# when sync was skipped) and immediately reinstalls psycopg, which uv sync
+# prunes because it lives outside the lockfile.
 name: Deploy interns.airbrx.ai
 
 on:
@@ -68,6 +68,11 @@ jobs:
           set -eu
           sudo -u ubuntu git -C /opt/omnigent fetch origin --quiet
           sudo -u ubuntu git -C /opt/omnigent reset --hard ${FULL_SHA}
+          # Sync the venv to the pushed lockfile (new upstream deps must land
+          # before restart — boot imports them). uv sync prunes psycopg (it's
+          # outside the lockfile), so reinstall it in the same breath.
+          sudo -u ubuntu env HOME=/home/ubuntu OMNIGENT_SKIP_WEB_UI=true /home/ubuntu/.local/bin/uv sync --directory /opt/omnigent
+          sudo -u ubuntu env HOME=/home/ubuntu /home/ubuntu/.local/bin/uv pip install --python /opt/omnigent/.venv/bin/python 'psycopg[binary]>=3.1,<4'
           sudo -u ubuntu /opt/omnigent/deploy/intern-ec2/pull-webui.sh webui-${SHORT_SHA}
           sudo -u ubuntu /opt/omnigent/.venv/bin/python - <<'PY'
           import time, subprocess, pathlib
@@ -91,7 +96,7 @@ jobs:
           echo "SSM command: ${CID}"
 
           STATUS=Pending
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 120); do
             STATUS=$(aws ssm get-command-invocation --command-id "${CID}" \
               --instance-id "${INSTANCE_ID}" --query Status --output text 2>/dev/null || echo Pending)
             case "${STATUS}" in Success|Failed|Cancelled|TimedOut) break ;; esac
@@ -110,12 +115,14 @@ jobs:
       - name: Health check
         run: |
           set -euo pipefail
-          for _ in $(seq 1 30); do
+          # Generous window: a schema-migration boot can hold the server at
+          # 502 for several minutes before it binds.
+          for _ in $(seq 1 75); do
             if curl -fsS -o /dev/null --max-time 10 "${HEALTH_URL}"; then
               echo "healthy: ${HEALTH_URL}"
               exit 0
             fi
-            sleep 4
+            sleep 8
           done
           echo "server did not come back healthy after deploy" >&2
           exit 1

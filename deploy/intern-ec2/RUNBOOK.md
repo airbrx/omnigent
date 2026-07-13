@@ -333,5 +333,7 @@ regenerate `_build_info.py`, restart — `entrypoint.py` runs migrations on
 boot) → health-check https://interns.airbrx.ai. AWS auth is the OIDC role
 `omnigent-github-deploy` (branch-scoped, SendCommand-only — IAM is
 hand-managed, not Terraform). The manual "Updating" flow above remains valid
-as the fallback. CI never runs `uv sync` (psycopg-prune gotcha) — dependency
-changes need the manual venv steps first, then push.
+as the fallback. CI also runs `uv sync` (with `OMNIGENT_SKIP_WEB_UI=true`)
+against the pushed lockfile and immediately reinstalls psycopg — added after
+a missing `zstandard` dep crash-looped the 2026-07-13 deploy — so
+dependency-changing pushes deploy hands-off.
