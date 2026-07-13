@@ -272,8 +272,6 @@ function showArchivedToast() {
 }
 
 export function Sidebar({ open, onClose, dragProgress = null, onOpenSearch }: SidebarProps) {
-  const [searchQuery, setSearchQuery] = useState("");
-  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   // Admin gate for the Admin nav link. Seeded from the cached identity
   // (already resolved on boot in most cases) and refreshed once the
   // /v1/me probe settles. Server enforces too — this is just chrome.
