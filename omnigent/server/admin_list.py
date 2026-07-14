@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -241,3 +242,89 @@ def promote_if_listed(admin_list: AdminList, store: AdminFlagStore, user_id: str
     store.set_admin(user_id, True)
     logger.info("admin_list: promoted %s to admin", user_id)
     return True
+
+
+def evaluate_admin_claim(
+    claims: Mapping[str, object],
+    claim: str,
+    expected: str | None,
+) -> bool | None:
+    """Decide the admin flag from an IdP ``id_token`` claim.
+
+    The verdict is authoritative when reached (``True`` promotes,
+    ``False`` demotes), so every undecidable shape returns ``None``
+    (no-op) rather than ``False`` — a misconfigured IdP app or claim
+    mapping must never mass-demote existing admins:
+
+    - claim absent from the token, or JSON ``null`` → ``None``
+    - list value → *expected* must be set; ``True`` iff any element
+      stringifies to it (the groups/roles case)
+    - bool value → the bool itself when *expected* is unset, else
+      compared against ``"true"``/``"false"`` case-insensitively
+    - any other scalar → *expected* must be set; compared as strings
+
+    :param claims: The validated ``id_token`` claims.
+    :param claim: The claim name to consult, e.g. ``"groups"``.
+    :param expected: The value that grants admin, e.g.
+        ``"omnigent-admins"``; ``None`` only makes sense for a
+        boolean claim.
+    :returns: ``True``/``False`` when the claim yields a verdict,
+        ``None`` when the token carries no usable signal.
+    """
+    if claim not in claims:
+        return None
+    value = claims[claim]
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        if expected is None:
+            return value
+        return str(value).lower() == expected.strip().lower()
+    if expected is None:
+        logger.warning(
+            "admin claim %r has a non-boolean value but no expected "
+            "value is configured (OMNIGENT_OIDC_ADMIN_VALUE); ignoring",
+            claim,
+        )
+        return None
+    if isinstance(value, (list, tuple)):
+        return any(str(item) == expected for item in value)
+    return str(value) == expected
+
+
+def sync_admin_claim(
+    store: AdminFlagStore,
+    user_id: str,
+    claims: Mapping[str, object],
+    claim: str,
+    expected: str | None,
+) -> bool | None:
+    """Make the store's admin flag match the IdP claim's verdict.
+
+    Unlike :func:`promote_if_listed`, this is authoritative in both
+    directions: a matching claim promotes and a present-but-unmatching
+    claim demotes. When the token carries no usable signal (claim
+    absent/null — see :func:`evaluate_admin_claim`) the flag is left
+    untouched, so an IdP that stops sending the claim can't demote
+    everyone. Callers should apply :func:`promote_if_listed` *after*
+    this so the file-backed list stays a break-glass override.
+
+    :param store: The store backing ``users.is_admin``.
+    :param user_id: The just-authenticated identity (row must exist).
+    :param claims: The validated ``id_token`` claims.
+    :param claim: The claim name to consult.
+    :param expected: The value that grants admin, or ``None``.
+    :returns: The verdict applied, or ``None`` if no-op.
+    """
+    verdict = evaluate_admin_claim(claims, claim, expected)
+    if verdict is None:
+        return None
+    if store.is_admin(user_id) != verdict:
+        store.set_admin(user_id, verdict)
+        logger.info(
+            "admin claim %r %s %s",
+            claim,
+            "promoted" if verdict else "demoted",
+            user_id,
+        )
+    return verdict
