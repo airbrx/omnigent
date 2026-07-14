@@ -101,6 +101,10 @@ services:
       # without API Access Management) that omit the claim for
       # directory-provisioned users. Off unless set; see .env.example.
       OMNIGENT_OIDC_SKIP_EMAIL_VERIFICATION: "${OMNIGENT_OIDC_SKIP_EMAIL_VERIFICATION:-}"
+      # IdP-driven admin management: this id_token claim is authoritative
+      # for the admin flag at every login. Off unless set; see .env.example.
+      OMNIGENT_OIDC_ADMIN_CLAIM: "${OMNIGENT_OIDC_ADMIN_CLAIM:-}"
+      OMNIGENT_OIDC_ADMIN_VALUE: "${OMNIGENT_OIDC_ADMIN_VALUE:-}"
       # Opt-in OIDC invites (admin pre-authorizes one off-domain email).
       # Off unless set. The admin list (/data/admins) and the optional
       # allowed-domains file (/data/allowed_domains) need no env var —
