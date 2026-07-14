@@ -44,7 +44,11 @@ _ISSUER = "https://accounts.google.com"
 _CLIENT_ID = "cid"
 
 
-def _oidc_config(skip_email_verification: bool = False) -> OIDCConfig:
+def _oidc_config(
+    skip_email_verification: bool = False,
+    admin_claim: str | None = None,
+    admin_value: str | None = None,
+) -> OIDCConfig:
     """Build a generic-OIDC config over plain HTTP (so TestClient cookies stick).
 
     ``allowed_domains=None`` means admit-all, so the test isolates the
@@ -52,6 +56,10 @@ def _oidc_config(skip_email_verification: bool = False) -> OIDCConfig:
 
     :param skip_email_verification: Waive the ``email_verified`` gate,
         as ``OMNIGENT_OIDC_SKIP_EMAIL_VERIFICATION`` would.
+    :param admin_claim: Claim name driving the admin flag, as
+        ``OMNIGENT_OIDC_ADMIN_CLAIM`` would.
+    :param admin_value: Claim value that grants admin, as
+        ``OMNIGENT_OIDC_ADMIN_VALUE`` would.
     """
     return OIDCConfig(
         issuer=_ISSUER,
@@ -70,6 +78,8 @@ def _oidc_config(skip_email_verification: bool = False) -> OIDCConfig:
         userinfo_endpoint=None,
         allow_invites=False,
         skip_email_verification=skip_email_verification,
+        admin_claim=admin_claim,
+        admin_value=admin_value,
     )
 
 
@@ -124,15 +134,21 @@ def callback_client(
     ``post`` — exposed on ``app.state.pending_id_token`` so ``_do_callback``
     can set the signed token the IdP should return.
 
-    Indirect parametrization (``request.param``, default ``False``) sets
-    the config's ``skip_email_verification`` flag.
+    Indirect parametrization (``request.param``): a bool sets the
+    config's ``skip_email_verification`` flag; a dict is passed to
+    ``_oidc_config`` as keyword arguments (the admin-claim tests use
+    this for ``admin_claim`` / ``admin_value``).
     """
     keys = _IdpKeys()
     perm_store = SqlAlchemyPermissionStore(db_uri)
     admins = tmp_path / "admins"
     admins.write_text("")
 
-    config = _oidc_config(skip_email_verification=getattr(request, "param", False))
+    param = getattr(request, "param", False)
+    if isinstance(param, dict):
+        config = _oidc_config(**param)
+    else:
+        config = _oidc_config(skip_email_verification=bool(param))
     provider = UnifiedAuthProvider(source="oidc", oidc_config=config)
 
     # The signed id_token the mocked token endpoint will return. Each
@@ -166,6 +182,10 @@ def callback_client(
         prefix="/auth",
     )
     app.state.pending_id_token = pending_id_token
+    # Exposed for the admin-claim tests: assert the flag after login and
+    # seed the break-glass admins file.
+    app.state.perm_store = perm_store
+    app.state.admins_path = admins
 
     with TestClient(app) as client:
         yield client, keys
@@ -313,3 +333,107 @@ def test_callback_accepts_boolean_and_string_true(
     # Accepted as a verified identity → redirect + session.
     assert resp.status_code == 302, resp.text
     assert resp.cookies.get("ap_session") is not None
+
+
+# ── OMNIGENT_OIDC_ADMIN_CLAIM: IdP-driven admin flag ─────────────────
+
+_ADMIN_CLAIM_CFG = {"admin_claim": "roles", "admin_value": "omnigent-admin"}
+
+
+@pytest.mark.parametrize("callback_client", [_ADMIN_CLAIM_CFG], indirect=True)
+def test_callback_admin_claim_promotes(
+    callback_client: tuple[TestClient, _IdpKeys],
+) -> None:
+    """A login whose token carries the configured claim value promotes."""
+    client, keys = callback_client
+    token = keys.sign_id_token(
+        {
+            "email": "alice@example.com",
+            "email_verified": True,
+            "roles": ["dev", "omnigent-admin"],
+        }
+    )
+
+    resp = _do_callback(client, token)
+
+    assert resp.status_code == 302, resp.text
+    assert client.app.state.perm_store.is_admin("alice@example.com") is True
+
+
+@pytest.mark.parametrize("callback_client", [_ADMIN_CLAIM_CFG], indirect=True)
+def test_callback_admin_claim_demotes_on_next_login(
+    callback_client: tuple[TestClient, _IdpKeys],
+) -> None:
+    """The claim is authoritative: losing the value demotes at login."""
+    client, keys = callback_client
+    store = client.app.state.perm_store
+    store.ensure_user("alice@example.com", is_admin=True)
+
+    token = keys.sign_id_token(
+        {"email": "alice@example.com", "email_verified": True, "roles": ["dev"]}
+    )
+    resp = _do_callback(client, token)
+
+    assert resp.status_code == 302, resp.text
+    assert store.is_admin("alice@example.com") is False
+
+
+@pytest.mark.parametrize("callback_client", [_ADMIN_CLAIM_CFG], indirect=True)
+def test_callback_admin_claim_absent_leaves_flag_untouched(
+    callback_client: tuple[TestClient, _IdpKeys],
+) -> None:
+    """Fail-safe: a token WITHOUT the claim never demotes.
+
+    An SSO app that stops sending the claim (misconfiguration, IdP
+    change) must not strip every admin at their next login.
+    """
+    client, keys = callback_client
+    store = client.app.state.perm_store
+    store.ensure_user("alice@example.com", is_admin=True)
+
+    token = keys.sign_id_token({"email": "alice@example.com", "email_verified": True})
+    resp = _do_callback(client, token)
+
+    assert resp.status_code == 302, resp.text
+    assert store.is_admin("alice@example.com") is True
+
+
+@pytest.mark.parametrize("callback_client", [_ADMIN_CLAIM_CFG], indirect=True)
+def test_callback_admin_list_is_break_glass_over_claim_demotion(
+    callback_client: tuple[TestClient, _IdpKeys],
+) -> None:
+    """The file-backed admin list re-promotes after a claim demotion.
+
+    promote_if_listed runs after sync_admin_claim precisely so an
+    operator listed in the file keeps admin even when the IdP claim
+    says otherwise — the recovery path for a wrong claim mapping.
+    """
+    client, keys = callback_client
+    store = client.app.state.perm_store
+    store.ensure_user("alice@example.com", is_admin=True)
+    client.app.state.admins_path.write_text("alice@example.com\n")
+
+    token = keys.sign_id_token(
+        {"email": "alice@example.com", "email_verified": True, "roles": ["dev"]}
+    )
+    resp = _do_callback(client, token)
+
+    assert resp.status_code == 302, resp.text
+    assert store.is_admin("alice@example.com") is True
+
+
+def test_callback_without_admin_claim_config_never_touches_flag(
+    callback_client: tuple[TestClient, _IdpKeys],
+) -> None:
+    """Default config (no admin claim): a roles claim in the token is inert."""
+    client, keys = callback_client
+    store = client.app.state.perm_store
+    store.ensure_user("alice@example.com", is_admin=True)
+
+    token = keys.sign_id_token(
+        {"email": "alice@example.com", "email_verified": True, "roles": ["dev"]}
+    )
+    resp = _do_callback(client, token)
+
+    assert resp.status_code == 302, resp.text
+    assert store.is_admin("alice@example.com") is True

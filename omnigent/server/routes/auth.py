@@ -24,7 +24,7 @@ from fastapi import APIRouter, Request
 from starlette.responses import RedirectResponse, Response
 
 from omnigent.server.accounts_store import SqlAlchemyAccountStore
-from omnigent.server.admin_list import AdminList, promote_if_listed
+from omnigent.server.admin_list import AdminList, promote_if_listed, sync_admin_claim
 from omnigent.server.auth import (
     _RESERVED_USERS,
     UnifiedAuthProvider,
@@ -281,11 +281,13 @@ def create_auth_router(
 
             token_json = token_resp.json()
 
-            # Extract user email.
+            # Extract user email (and, for generic OIDC, the validated
+            # id_token claims — the admin-claim sync below reads them).
+            id_claims: dict[str, object] = {}
             if config.provider_type == "github":
                 email = await _resolve_github_email(client, token_json.get("access_token", ""))
             else:
-                email = _resolve_oidc_email(token_json, config)
+                email, id_claims = _resolve_oidc_identity(token_json, config)
 
         if not email:
             return JSONResponse(
@@ -327,13 +329,23 @@ def create_auth_router(
                 content={"error": f"Reserved user name {email!r}"},
             )
 
-        # Ensure user exists in the permission store, then apply the
-        # file-backed admin list. Promotion is additive (never demotes)
-        # and is OIDC's only path to admin — the IdP doesn't tell us
-        # who is an operator. ensure_user must run first so the
-        # set_admin UPDATE inside promote_if_listed matches a row.
+        # Ensure the user row exists, then derive the admin flag.
+        # ensure_user must run first so the set_admin UPDATEs below
+        # match a row. Order matters after that: the IdP claim (when
+        # configured) is authoritative and may demote, but the
+        # file-backed admin list runs LAST as a break-glass override
+        # that still promotes — so an operator can always recover
+        # admin access even when the IdP claim mapping is wrong.
         if permission_store is not None:
             permission_store.ensure_user(email)
+            if config.admin_claim:
+                sync_admin_claim(
+                    permission_store,
+                    email,
+                    id_claims,
+                    config.admin_claim,
+                    config.admin_value,
+                )
             promote_if_listed(admin_list, permission_store, email)
 
         # Mint session cookie.
@@ -739,11 +751,11 @@ def _claim_is_verified_true(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower() == "true"
 
 
-def _resolve_oidc_email(
+def _resolve_oidc_identity(
     token_json: dict,
     config: OIDCConfig,
-) -> str | None:
-    """Extract the verified email from the OIDC ``id_token``.
+) -> tuple[str | None, dict[str, object]]:
+    """Extract the verified email + validated claims from the ``id_token``.
 
     Validates the JWT signature against the IdP's JWKS, verifies
     ``iss`` and ``aud`` claims, and returns the ``email`` claim
@@ -765,14 +777,15 @@ def _resolve_oidc_email(
         ``id_token``.
     :param config: The OIDC configuration with JWKS URI and
         expected issuer/audience.
-    :returns: The user's email from the ``id_token`` when present and
-        marked verified; ``None`` if the token is missing/invalid,
-        the email claim is absent, or ``email_verified`` is not
-        truthy (and verification is not skipped via config).
+    :returns: ``(email, claims)`` — the email from the ``id_token``
+        when present and marked verified (else ``None``), and the
+        full validated claims dict (``{}`` when the token is
+        missing/invalid). Claims are only ever non-empty when the
+        signature and ``iss``/``aud`` checks passed.
     """
     id_token = token_json.get("id_token")
     if not id_token:
-        return None
+        return None, {}
 
     try:
         jwks_client = jwt.PyJWKClient(config.jwks_uri)
@@ -786,11 +799,11 @@ def _resolve_oidc_email(
         )
     except jwt.InvalidTokenError as exc:
         _logger.warning("id_token validation failed: %s", exc)
-        return None
+        return None, {}
 
     email = claims.get("email")
     if not email:
-        return None
+        return None, {}
 
     # Reject unless the IdP affirmatively verified the email. A signed
     # token only proves IdP provenance, not mailbox ownership.
@@ -804,14 +817,14 @@ def _resolve_oidc_email(
                 "(OMNIGENT_OIDC_SKIP_EMAIL_VERIFICATION is set)",
                 email,
             )
-            return email
+            return email, claims
         _logger.warning(
             "Rejecting id_token: email %r present but email_verified is not true",
             email,
         )
-        return None
+        return None, {}
 
-    return email
+    return email, claims
 
 
 # Forward ref for type annotation.

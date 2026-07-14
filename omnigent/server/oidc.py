@@ -163,6 +163,13 @@ class OIDCConfig:
         ``id_token`` email claim without requiring
         ``email_verified``. Only affects the generic-OIDC path;
         GitHub always requires a verified primary email.
+    :param admin_claim: Optional ``id_token`` claim name that drives
+        the admin flag at every login (e.g. ``"groups"``). ``None``
+        disables IdP-driven admin management. See
+        :func:`omnigent.server.admin_list.sync_admin_claim` for the
+        authoritative-with-fail-safe semantics.
+    :param admin_value: The claim value that grants admin (e.g. a
+        group name). Optional only for a boolean claim.
     """
 
     issuer: str
@@ -181,6 +188,8 @@ class OIDCConfig:
     userinfo_endpoint: str | None
     allow_invites: bool
     skip_email_verification: bool = False
+    admin_claim: str | None = None
+    admin_value: str | None = None
 
     @property
     def base_url(self) -> str:
@@ -306,6 +315,25 @@ class OIDCConfig:
                 issuer,
             )
 
+        # IdP-driven admin management: the named id_token claim becomes
+        # authoritative for the admin flag at every login (promotes AND
+        # demotes; a token without the claim is a no-op, and the
+        # file-backed admin list still promotes afterwards as the
+        # break-glass override).
+        admin_claim = os.environ.get("OMNIGENT_OIDC_ADMIN_CLAIM", "").strip() or None
+        admin_value = os.environ.get("OMNIGENT_OIDC_ADMIN_VALUE", "").strip() or None
+        if admin_value and not admin_claim:
+            raise RuntimeError(
+                "OMNIGENT_OIDC_ADMIN_VALUE requires OMNIGENT_OIDC_ADMIN_CLAIM to be set"
+            )
+        if admin_claim:
+            _logger.info(
+                "OIDC admin management enabled: id_token claim %r "
+                "(expected value: %s) is authoritative for the admin flag",
+                admin_claim,
+                admin_value if admin_value is not None else "<boolean claim>",
+            )
+
         # Determine provider type and resolve endpoints.
         is_github = issuer.rstrip("/") == _GITHUB_ISSUER
 
@@ -329,6 +357,8 @@ class OIDCConfig:
                 userinfo_endpoint=_GITHUB_USERINFO_ENDPOINT,
                 allow_invites=allow_invites,
                 skip_email_verification=skip_email_verification,
+                admin_claim=admin_claim,
+                admin_value=admin_value,
             )
 
         # Standard OIDC: fetch discovery document.
@@ -371,4 +401,6 @@ class OIDCConfig:
             userinfo_endpoint=doc.get("userinfo_endpoint"),
             allow_invites=allow_invites,
             skip_email_verification=skip_email_verification,
+            admin_claim=admin_claim,
+            admin_value=admin_value,
         )

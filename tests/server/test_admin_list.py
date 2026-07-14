@@ -34,10 +34,12 @@ from omnigent.server.accounts_store import SqlAlchemyAccountStore
 from omnigent.server.admin_list import (
     AdminList,
     MtimeCachedIdentitySet,
+    evaluate_admin_claim,
     load_admin_list,
     promote_if_listed,
     resolve_admin_list_path,
     resolve_data_dir,
+    sync_admin_claim,
 )
 from omnigent.server.auth import UnifiedAuthProvider
 from omnigent.server.passwords import hash_password
@@ -382,3 +384,75 @@ def test_login_unlisted_user_stays_member_end_to_end(
     assert resp.status_code == 200
     assert resp.json()["user"]["is_admin"] is False
     assert account_store.is_admin("erin") is False
+
+
+# ── evaluate_admin_claim: verdict semantics ──────────────────────────
+
+
+class _FlagStore:
+    """In-memory AdminFlagStore capturing set_admin calls."""
+
+    def __init__(self, admins: set[str] | None = None) -> None:
+        self.admins = admins or set()
+        self.calls: list[tuple[str, bool]] = []
+
+    def is_admin(self, user_id: str) -> bool:
+        return user_id in self.admins
+
+    def set_admin(self, user_id: str, is_admin: bool) -> None:
+        self.calls.append((user_id, is_admin))
+        (self.admins.add if is_admin else self.admins.discard)(user_id)
+
+
+@pytest.mark.parametrize(
+    ("claims", "expected_value", "verdict"),
+    [
+        # List claims (the groups/roles case).
+        ({"groups": ["dev", "omnigent-admins"]}, "omnigent-admins", True),
+        ({"groups": ["dev"]}, "omnigent-admins", False),
+        ({"groups": []}, "omnigent-admins", False),
+        # Scalar string claim.
+        ({"role": "admin"}, "admin", True),
+        ({"role": "member"}, "admin", False),
+        # Boolean claim: expected optional.
+        ({"is_operator": True}, None, True),
+        ({"is_operator": False}, None, False),
+        ({"is_operator": True}, "true", True),
+        ({"is_operator": True}, "false", False),
+        # Non-string list elements stringify.
+        ({"groups": [1, 2]}, "2", True),
+        # Fail-safe no-ops: absent or null claim, or a non-boolean
+        # claim with no expected value configured.
+        ({}, "omnigent-admins", None),
+        ({"groups": None}, "omnigent-admins", None),
+        ({"groups": ["dev"]}, None, None),
+        ({"role": "admin"}, None, None),
+    ],
+)
+def test_evaluate_admin_claim_verdicts(
+    claims: dict[str, object],
+    expected_value: str | None,
+    verdict: bool | None,
+) -> None:
+    """Table of claim shapes vs verdicts; None means leave-untouched."""
+    claim = next(iter(claims), "groups")
+    assert evaluate_admin_claim(claims, claim, expected_value) is verdict
+
+
+def test_sync_admin_claim_promotes_demotes_and_noops() -> None:
+    """sync applies True/False verdicts and skips the store on None."""
+    store = _FlagStore()
+
+    # Promote.
+    assert sync_admin_claim(store, "a@x", {"g": ["adm"]}, "g", "adm") is True
+    assert store.is_admin("a@x")
+    # Idempotent: matching verdict again writes nothing new.
+    sync_admin_claim(store, "a@x", {"g": ["adm"]}, "g", "adm")
+    assert store.calls == [("a@x", True)]
+    # Demote when the claim is present without the value.
+    assert sync_admin_claim(store, "a@x", {"g": ["dev"]}, "g", "adm") is False
+    assert not store.is_admin("a@x")
+    # Claim absent: verdict None, flag untouched.
+    store.admins.add("a@x")
+    assert sync_admin_claim(store, "a@x", {}, "g", "adm") is None
+    assert store.is_admin("a@x")
