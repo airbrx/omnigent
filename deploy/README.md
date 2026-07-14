@@ -419,6 +419,13 @@ admins: [you@yourcompany.com]         # who can manage members
 ```
 
 > [!TIP]
+> Prefer to manage admins in your IdP? Set `OMNIGENT_OIDC_ADMIN_CLAIM` (e.g.
+> `groups`) and `OMNIGENT_OIDC_ADMIN_VALUE` (the group/role that grants admin).
+> Membership becomes the source of truth — matching users are promoted on
+> login and losing the claim demotes them. The `admins:` list stays as a
+> break-glass override that only ever promotes.
+
+> [!TIP]
 > Need to let in one outsider, say a contractor on a personal account? Set
 > `OMNIGENT_OIDC_ALLOW_INVITES=1` and send them a one-time invite link,
 > instead of opening up the whole allowlist.
