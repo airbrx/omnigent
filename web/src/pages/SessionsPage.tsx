@@ -1,9 +1,10 @@
 /**
- * Admin → Sessions (``/admin/sessions``).
+ * Settings → Admin → Sessions (``/settings/sessions``).
  *
- * Sessions across all users. Filters come from the URL so the Users/Hosts
+ * Sessions across all users. Filters come from the URL so the Members/Hosts
  * cross-links are linkable: ``?user=`` (a user's sessions), ``?host=`` (a
  * host's sessions), ``?q=`` (title search). Rows open the normal chat view.
+ * The is_admin gate + page chrome are provided by AdminSettingsSection.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -12,7 +13,7 @@ import { useNavigate, useSearchParams } from "@/lib/routing";
 import { type AdminSession, listSessions } from "@/lib/adminApi";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { formatEpoch, formatTokens, formatUsd } from "./format";
+import { formatEpoch, formatTokens, formatUsd } from "@/lib/adminFormat";
 
 export function SessionsPage() {
   const [params, setParams] = useSearchParams();

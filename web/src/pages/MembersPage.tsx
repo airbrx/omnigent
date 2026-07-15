@@ -2,7 +2,10 @@
  * Admin members management page (``/settings/members``; the legacy
  * ``/members`` path redirects here). Rendered as a Settings sub-category.
  *
- * Lists every account on the server and lets admins:
+ * Lists every account on the server with a per-user usage rollup (owned
+ * sessions, hosts, tokens, cost — joined from ``/v1/admin/users``, with the
+ * counts as drill-down links into the Sessions / Hosts sections) and lets
+ * admins:
  *
  * - Mint a single-use invite URL to share out-of-band.
  * - Reset a member's password (server generates a fresh random
@@ -46,6 +49,9 @@ import {
   listUsers,
   resetUserPassword,
 } from "@/lib/accountsApi";
+import { type AdminUser, listAllUsers } from "@/lib/adminApi";
+import { formatHosts, formatTokens, formatUsd } from "@/lib/adminFormat";
+import { Link } from "@/lib/routing";
 import { getCurrentIsAdmin, resolveIdentity } from "@/lib/identity";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
 
@@ -67,6 +73,12 @@ export function MembersPage() {
   const [meId, setMeId] = useState<string | null>(null);
   const [users, setUsers] = useState<AccountListEntry[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Per-user usage rollup (owned sessions, hosts, tokens, cost), joined onto
+  // the member rows by id from the admin analytics endpoint. Best-effort: if
+  // it fails or is empty, the table still renders with the management columns
+  // only. Accounts the analytics endpoint omits (invite-only phantoms that own
+  // nothing) still appear here — they're real members — with "—" usage cells.
+  const [usage, setUsage] = useState<Map<string, AdminUser>>(new Map());
 
   // Modal state (only one open at a time — keeps the render simple).
   const [inviteResult, setInviteResult] = useState<InviteCreated | null>(null);
@@ -78,7 +90,10 @@ export function MembersPage() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const list = await listUsers();
+    // Members list (management source of truth) + the admin usage rollup, in
+    // parallel. The rollup is keyed by user id and joined onto each row; a
+    // null rollup (e.g. a transient error) just leaves the usage cells blank.
+    const [list, analytics] = await Promise.all([listUsers(), listAllUsers()]);
     if (list === null) {
       setLoadError(
         "Could not load members. You may not have admin permission, or the server is unreachable.",
@@ -88,6 +103,9 @@ export function MembersPage() {
     }
     setLoadError(null);
     setUsers(list);
+    if (analytics !== null) {
+      setUsage(new Map(analytics.users.map((u) => [u.user_id, u])));
+    }
   }, []);
 
   // Initial load: identity probe + members list. Skipped in single-user
@@ -225,56 +243,101 @@ export function MembersPage() {
               <tr>
                 <th className="px-3 py-2 font-medium">Username</th>
                 <th className="px-3 py-2 font-medium">Role</th>
+                <th className="px-3 py-2 text-right font-medium">Owned</th>
+                <th className="px-3 py-2 text-right font-medium">Hosts</th>
+                <th className="px-3 py-2 text-right font-medium">Tokens</th>
+                <th className="px-3 py-2 text-right font-medium">Cost</th>
                 <th className="px-3 py-2 font-medium">Last login</th>
                 {manageable && <th className="px-3 py-2 text-right font-medium">Actions</th>}
               </tr>
             </thead>
             <tbody>
-              {users.map((u) => (
-                <tr key={u.id} className="border-t border-border">
-                  <td className="px-3 py-2 align-middle">
-                    <span className="font-medium">{u.id}</span>
-                    {u.id === meId && (
-                      <span className="ml-2 text-xs text-muted-foreground">(you)</span>
-                    )}
-                    {!u.has_password && (
-                      <Badge variant="outline" className="ml-2">
-                        External
-                      </Badge>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 align-middle">
-                    {u.is_admin ? <Badge>Admin</Badge> : <Badge variant="secondary">Member</Badge>}
-                  </td>
-                  <td className="px-3 py-2 align-middle text-muted-foreground">
-                    {formatEpoch(u.last_login_at)}
-                  </td>
-                  {manageable && (
-                    <td className="px-3 py-2 text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          title="Reset password"
-                          onClick={() => void onResetPassword(u.id)}
-                          disabled={pendingAction || !u.has_password}
-                        >
-                          <KeyRoundIcon /> Reset
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          title="Remove user"
-                          onClick={() => setDeleteCandidate(u.id)}
-                          disabled={pendingAction || u.id === meId}
-                        >
-                          <Trash2Icon /> Remove
-                        </Button>
-                      </div>
+              {users.map((u) => {
+                // Usage rollup for this member (undefined if the analytics
+                // endpoint hid them as invite-only, or didn't load).
+                const a = usage.get(u.id);
+                return (
+                  <tr key={u.id} data-testid="member-row" className="border-t border-border">
+                    <td className="px-3 py-2 align-middle">
+                      <span className="font-medium">{u.id}</span>
+                      {u.id === meId && (
+                        <span className="ml-2 text-xs text-muted-foreground">(you)</span>
+                      )}
+                      {!u.has_password && (
+                        <Badge variant="outline" className="ml-2">
+                          External
+                        </Badge>
+                      )}
                     </td>
-                  )}
-                </tr>
-              ))}
+                    <td className="px-3 py-2 align-middle">
+                      {u.is_admin ? (
+                        <Badge>Admin</Badge>
+                      ) : (
+                        <Badge variant="secondary">Member</Badge>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right align-middle tabular-nums">
+                      {a ? (
+                        <Link
+                          to={`/settings/sessions?user=${encodeURIComponent(u.id)}`}
+                          className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                          title="View this user's sessions"
+                        >
+                          {a.session_count}
+                        </Link>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right align-middle tabular-nums">
+                      {a ? (
+                        <Link
+                          to={`/settings/hosts?user=${encodeURIComponent(u.id)}`}
+                          className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                          title="View this user's hosts"
+                        >
+                          {formatHosts(a.host_count, a.online_host_count)}
+                        </Link>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right align-middle tabular-nums text-muted-foreground">
+                      {a ? formatTokens(a.total_tokens) : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right align-middle tabular-nums font-medium">
+                      {a ? formatUsd(a.cost_usd) : "—"}
+                    </td>
+                    <td className="px-3 py-2 align-middle text-muted-foreground">
+                      {formatEpoch(u.last_login_at)}
+                    </td>
+                    {manageable && (
+                      <td className="px-3 py-2 text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            title="Reset password"
+                            onClick={() => void onResetPassword(u.id)}
+                            disabled={pendingAction || !u.has_password}
+                          >
+                            <KeyRoundIcon /> Reset
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            title="Remove user"
+                            onClick={() => setDeleteCandidate(u.id)}
+                            disabled={pendingAction || u.id === meId}
+                          >
+                            <Trash2Icon /> Remove
+                          </Button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -1,5 +1,6 @@
-// Tests for Admin → Sessions: URL-driven ?user filter, host column, and
-// the filter chip's clear action.
+// Tests for the Sessions settings section: URL-driven ?user filter, host
+// column, and the filter chip's clear action. The is_admin gate lives in
+// AdminSettingsSection (tested separately); this exercises the bare table.
 
 import { cleanup, render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -43,7 +44,7 @@ describe("SessionsPage", () => {
   afterEach(cleanup);
 
   it("loads with the ?user filter and renders the session + host", async () => {
-    renderPage("/admin/sessions?user=alice@example.com");
+    renderPage("/settings/sessions?user=alice@example.com");
     await waitFor(() =>
       expect(adminApi.listSessions).toHaveBeenCalledWith(
         expect.objectContaining({ user: "alice@example.com" }),
@@ -58,7 +59,7 @@ describe("SessionsPage", () => {
   });
 
   it("clearing the user chip drops the filter and reloads", async () => {
-    renderPage("/admin/sessions?user=alice@example.com");
+    renderPage("/settings/sessions?user=alice@example.com");
     await waitFor(() => expect(screen.getByText("Alice's session")).toBeTruthy());
     fireEvent.click(screen.getByLabelText("Clear user filter"));
     await waitFor(() =>

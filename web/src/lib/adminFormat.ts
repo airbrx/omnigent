@@ -1,4 +1,4 @@
-/** Shared formatters for the admin surface (Users / Sessions / Hosts). */
+/** Shared formatters for the admin settings surfaces (Members / Sessions / Hosts). */
 
 /** A local date-time string from Unix epoch seconds. */
 export function formatEpoch(epoch: number): string {

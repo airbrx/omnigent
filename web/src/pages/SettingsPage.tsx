@@ -132,6 +132,7 @@ import {
 import { useIsEmbedded } from "@/lib/embedded";
 import { type CliStatus, getCliStatus, isElectronShell, resetCliPath } from "@/lib/nativeBridge";
 import { cn } from "@/lib/utils";
+import { AdminSettingsSection } from "@/pages/AdminSettingsSection";
 
 // Admin-only management surfaces, rendered as the Members / Policies settings
 // sub-categories. Visible to admins in all modes (accounts, OIDC, single-user).
@@ -145,6 +146,13 @@ const PoliciesPage = lazy(() =>
 const SharingPage = lazy(() =>
   import("@/pages/SharingPage").then((m) => ({ default: m.SharingPage })),
 );
+// Admin discovery views moved out of the standalone /admin surface into
+// Settings. They're plain tables, so the is_admin gate + page chrome come from
+// AdminSettingsSection (imported eagerly — it's tiny and owns the gate).
+const SessionsPage = lazy(() =>
+  import("@/pages/SessionsPage").then((m) => ({ default: m.SessionsPage })),
+);
+const HostsPage = lazy(() => import("@/pages/HostsPage").then((m) => ({ default: m.HostsPage })));
 
 /**
  * Settings content panel. The section nav lives in the sidebar card
@@ -160,22 +168,36 @@ export function SettingsPage() {
   const hasAuthSession = info !== "loading" && info.login_url !== null;
   const { section } = useSettingsRoute();
 
-  // Members / Policies are admin-only management surfaces that own their full
-  // layout (their own PageScroll + admin gating), so they render directly —
-  // NOT inside the shared section PageScroll below, which would nest two
-  // scroll containers. Both self-gate to admins server-side and client-side.
-  // Rendered in ANY multi-user mode (accounts AND OIDC), not gated on
-  // `accountsEnabled` — the nav + pages handle admin gating, and Members runs
-  // read-only under OIDC (no password actions).
-  if (section === "members" || section === "policies" || section === "sharing") {
+  // Admin-only surfaces own their full layout (their own PageScroll + admin
+  // gating), so they render directly — NOT inside the shared section PageScroll
+  // below, which would nest two scroll containers. Members / Policies / Sharing
+  // self-gate; Sessions / Hosts are plain tables wrapped in AdminSettingsSection
+  // for the gate + chrome. Rendered in ANY multi-user mode (accounts AND OIDC),
+  // not gated on `accountsEnabled` — the nav + pages handle admin gating, and
+  // Members runs read-only under OIDC (no password actions).
+  if (
+    section === "members" ||
+    section === "policies" ||
+    section === "sharing" ||
+    section === "sessions" ||
+    section === "hosts"
+  ) {
     return (
       <Suspense fallback={null}>
         {section === "members" ? (
           <MembersPage />
         ) : section === "policies" ? (
           <PoliciesPage />
-        ) : (
+        ) : section === "sharing" ? (
           <SharingPage />
+        ) : section === "sessions" ? (
+          <AdminSettingsSection title="Sessions">
+            <SessionsPage />
+          </AdminSettingsSection>
+        ) : (
+          <AdminSettingsSection title="Hosts">
+            <HostsPage />
+          </AdminSettingsSection>
         )}
       </Suspense>
     );

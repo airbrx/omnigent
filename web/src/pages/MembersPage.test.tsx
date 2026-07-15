@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MembersPage } from "./MembersPage";
 import type { AccountListEntry } from "@/lib/accountsApi";
 import * as accountsApi from "@/lib/accountsApi";
+import * as adminApi from "@/lib/adminApi";
 import * as identity from "@/lib/identity";
 
 const mocks = vi.hoisted(() => ({
@@ -38,6 +39,9 @@ vi.mock("@/lib/accountsApi", () => ({
   resetUserPassword: vi.fn(),
   deleteUser: vi.fn(),
 }));
+// The usage rollup (owned sessions / hosts / tokens / cost) is joined from the
+// admin analytics endpoint; default to empty so existing tests are unaffected.
+vi.mock("@/lib/adminApi", () => ({ listAllUsers: vi.fn() }));
 
 function user(overrides: Partial<AccountListEntry> = {}): AccountListEntry {
   return {
@@ -78,6 +82,7 @@ beforeEach(() => {
     new_password: "fresh-pw-123",
   });
   vi.mocked(accountsApi.deleteUser).mockResolvedValue({ ok: true });
+  vi.mocked(adminApi.listAllUsers).mockResolvedValue({ users: [], hidden: 0 });
 });
 
 afterEach(() => {
@@ -146,6 +151,41 @@ describe("MembersPage table", () => {
 
     const extRow = screen.getByText("ext").closest("tr")!;
     expect(within(extRow).getByRole("button", { name: /Reset/ })).toBeDisabled();
+  });
+
+  it("joins the usage rollup onto rows with drill-down links, blanking members with no analytics", async () => {
+    vi.mocked(accountsApi.listUsers).mockResolvedValue([
+      user({ id: "alice@example.com" }),
+      user({ id: "ghost@example.com" }), // invite-only: present here, absent from analytics
+    ]);
+    vi.mocked(adminApi.listAllUsers).mockResolvedValue({
+      users: [
+        {
+          user_id: "alice@example.com",
+          is_admin: false,
+          cost_usd: 4.1,
+          total_tokens: 1_200_000,
+          session_count: 12,
+          host_count: 3,
+          online_host_count: 2,
+        },
+      ],
+      hidden: 1,
+    });
+    renderPage();
+
+    const aliceRow = (await screen.findByText("alice@example.com")).closest("tr")!;
+    // Owned + Hosts are drill-down links into the Sessions / Hosts sections.
+    const owned = within(aliceRow).getByRole("link", { name: "12" });
+    expect(owned.getAttribute("href")).toContain("/settings/sessions?user=alice%40example.com");
+    const hosts = within(aliceRow).getByRole("link", { name: "3 · 2 online" });
+    expect(hosts.getAttribute("href")).toContain("/settings/hosts?user=alice%40example.com");
+    expect(within(aliceRow).getByText("1.2M")).toBeInTheDocument();
+    expect(within(aliceRow).getByText("$4.10")).toBeInTheDocument();
+
+    // The member with no analytics still lists, with "—" usage cells (no links).
+    const ghostRow = screen.getByText("ghost@example.com").closest("tr")!;
+    expect(within(ghostRow).queryByRole("link")).toBeNull();
   });
 });
 

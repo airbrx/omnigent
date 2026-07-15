@@ -25,22 +25,6 @@ const InboxPage = lazy(() => import("@/pages/InboxPage").then((m) => ({ default:
 const SettingsPage = lazy(() =>
   import("@/pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
 );
-// Admin surface (Users / Sessions / Hosts). Unlike the accounts Members
-// page, this is NOT gated on accounts_enabled — it must work under
-// OIDC/SSO. The routes are always registered; the layout and the server
-// both gate on the caller's is_admin flag.
-const AdminLayout = lazy(() =>
-  import("@/pages/admin/AdminLayout").then((m) => ({ default: m.AdminLayout })),
-);
-const AdminUsersPage = lazy(() =>
-  import("@/pages/admin/UsersPage").then((m) => ({ default: m.UsersPage })),
-);
-const AdminSessionsPage = lazy(() =>
-  import("@/pages/admin/SessionsPage").then((m) => ({ default: m.SessionsPage })),
-);
-const AdminHostsPage = lazy(() =>
-  import("@/pages/admin/HostsPage").then((m) => ({ default: m.HostsPage })),
-);
 
 interface AppProps {
   /**
@@ -142,15 +126,28 @@ function App({ basename }: AppProps = {}) {
               defaults to Appearance. */}
           <Route path={`${prefix}/settings`} element={<SettingsPage />} />
           <Route path={`${prefix}/settings/:section`} element={<SettingsPage />} />
-          {/* Admin: registered in every mode (incl. OIDC). The layout renders
-              a "no access" state for non-admins; the server 403s regardless.
-              Three tabs (Users / Sessions / Hosts) share the layout. */}
-          <Route path={`${prefix}/admin`} element={<AdminLayout />}>
-            <Route index element={<Navigate to="users" replace />} />
-            <Route path="users" element={<AdminUsersPage />} />
-            <Route path="sessions" element={<AdminSessionsPage />} />
-            <Route path="hosts" element={<AdminHostsPage />} />
-          </Route>
+          {/* The standalone /admin surface was folded into Settings ▸ Admin
+              (Members / Sessions / Hosts), so entering it keeps the settings
+              sidebar nav instead of a separate tabbed page. Redirect the old
+              paths so existing bookmarks / links land in the right section —
+              Users → Members (the user list now lives there, with the usage
+              rollup). The sections self-gate to admins; the server 403s. */}
+          <Route
+            path={`${prefix}/admin`}
+            element={<Navigate to={`${prefix}/settings/members`} replace />}
+          />
+          <Route
+            path={`${prefix}/admin/users`}
+            element={<Navigate to={`${prefix}/settings/members`} replace />}
+          />
+          <Route
+            path={`${prefix}/admin/sessions`}
+            element={<Navigate to={`${prefix}/settings/sessions`} replace />}
+          />
+          <Route
+            path={`${prefix}/admin/hosts`}
+            element={<Navigate to={`${prefix}/settings/hosts`} replace />}
+          />
           {/* Members / Policies are now settings sub-categories
               (/settings/members, /settings/policies) so entering them
               keeps the settings sidebar nav instead of dropping back to

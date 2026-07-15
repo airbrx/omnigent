@@ -38,7 +38,6 @@ import {
   PlusIcon,
   SearchIcon,
   SettingsIcon,
-  ShieldIcon,
   ShareIcon,
   SquareIcon,
   SquareCheckIcon,
@@ -61,7 +60,6 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/routing";
-import { getCurrentIsAdmin, resolveIdentity } from "@/lib/identity";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -208,18 +206,15 @@ interface SidebarProps {
 function useActiveNavItem(): {
   isNewChatPage: boolean;
   isInboxPage: boolean;
-  isAdminPage: boolean;
 } {
   const { conversationId: activeConversationId } = useParams<{ conversationId: string }>();
   const segments = useLocation().pathname.split("/").filter(Boolean);
   const lastSegment = segments.at(-1);
   const isInboxPage = lastSegment === "inbox";
-  // Any /admin/* tab (users/sessions/hosts), not just a bare /admin.
-  const isAdminPage = segments.includes("admin");
-  // Exclude inbox/admin: they also have no `:conversationId`, so they would
-  // otherwise light up the "New session" button.
-  const isNewChatPage = activeConversationId == null && !isInboxPage && !isAdminPage;
-  return { isNewChatPage, isInboxPage, isAdminPage };
+  // Exclude inbox: it also has no `:conversationId`, so it would otherwise
+  // light up the "New session" button.
+  const isNewChatPage = activeConversationId == null && !isInboxPage;
+  return { isNewChatPage, isInboxPage };
 }
 
 /**
@@ -272,19 +267,6 @@ function showArchivedToast() {
 }
 
 export function Sidebar({ open, onClose, dragProgress = null, onOpenSearch }: SidebarProps) {
-  // Admin gate for the Admin nav link. Seeded from the cached identity
-  // (already resolved on boot in most cases) and refreshed once the
-  // /v1/me probe settles. Server enforces too — this is just chrome.
-  const [isAdmin, setIsAdmin] = useState(getCurrentIsAdmin);
-  useEffect(() => {
-    let alive = true;
-    void resolveIdentity().then(() => {
-      if (alive) setIsAdmin(getCurrentIsAdmin());
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
   const [pinnedConversationIds, setPinnedConversationIds] = useState(readPinnedConversationIds);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -380,7 +362,7 @@ export function Sidebar({ open, onClose, dragProgress = null, onOpenSearch }: Si
   }
 
   // Which top-level nav button to highlight for the current route.
-  const { isNewChatPage, isInboxPage, isAdminPage } = useActiveNavItem();
+  const { isNewChatPage, isInboxPage } = useActiveNavItem();
 
   // On /settings the card keeps its chrome but swaps the conversation list
   // for the settings section nav (see settingsNav.tsx) — entering settings
@@ -580,25 +562,6 @@ export function Sidebar({ open, onClose, dragProgress = null, onOpenSearch }: Si
                 New session
               </Link>
             </Button>
-            {/* Admin lives here as a full-width nav button (gated on
-            is_admin). Inbox moved to the top icon row upstream; Admin is
-            a page, so it stays a labelled button below "New session". */}
-            {isAdmin && (
-              <Button
-                asChild
-                className={cn(
-                  "w-full justify-start gap-2 text-sm",
-                  isAdminPage && "bg-muted font-semibold",
-                )}
-                variant="ghost"
-                data-testid="admin-button"
-              >
-                <Link to="/admin/users" onClick={onNavClick}>
-                  <ShieldIcon className="size-4" />
-                  Admin
-                </Link>
-              </Button>
-            )}
             {selectionMode ? (
               <BulkActionBar
                 selectedIds={selectedIds}
