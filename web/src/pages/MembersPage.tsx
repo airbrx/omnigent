@@ -207,7 +207,7 @@ export function MembersPage() {
   }
 
   return (
-    <PageScroll contentClassName="px-6">
+    <PageScroll contentClassName="px-6" maxWidthClassName="max-w-[1400px]">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Members</h1>
         {/* Invite mints a password-backed account — accounts mode only.

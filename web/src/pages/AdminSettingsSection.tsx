@@ -48,8 +48,11 @@ export function AdminSettingsSection({ title, children }: { title: string; child
     );
   }
 
+  // Wide column: these are dense multi-column tables (host/owner/status/
+  // version/os…), not prose — the default max-w-3xl squeezes them into a
+  // horizontal scroll while the page sits half-empty.
   return (
-    <PageScroll contentClassName="px-6">
+    <PageScroll contentClassName="px-6" maxWidthClassName="max-w-[1400px]">
       <h1 className="mb-6 text-2xl font-semibold">{title}</h1>
       {children}
     </PageScroll>
