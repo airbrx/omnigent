@@ -4589,6 +4589,7 @@ def test_list_conversations_owned_by_excludes_shared_sessions(
     }
     assert ids == {mine.id}
 
+
 # ── usage_totals_for_user ─────────────────────────────
 
 

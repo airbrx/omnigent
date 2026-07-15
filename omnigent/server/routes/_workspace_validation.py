@@ -185,6 +185,7 @@ async def validate_workspace(
     workspace: str,
     spec_cwd: str | None,
     host_name_for_errors: str | None = None,
+    extra_boundary: str | None = None,
 ) -> str:
     """
     Run all session-create validation steps and return the
@@ -302,6 +303,28 @@ async def validate_workspace(
         if not subdir_stat.get("exists"):
             raise WorkspaceValidationError(
                 f"agent expects subdirectory '{subdir}' which is not present at {workspace}"
+            )
+
+    # Shared-host jail: a non-owner reaching a shared host is confined to the
+    # host's workroot (passed as extra_boundary). Canonicalize the workroot on
+    # the host so the comparison is realpath-vs-realpath, then require the
+    # workspace to fall inside it. Independent of, and stricter than, the
+    # agent's os_env boundary above.
+    if extra_boundary is not None:
+        jail_stat = await _ask_host_stat(
+            host_registry=host_registry,
+            host_conn=host_conn,
+            path=extra_boundary,
+        )
+        canonical_jail = jail_stat.get("canonical_path")
+        if not jail_stat.get("exists") or not isinstance(canonical_jail, str):
+            raise WorkspaceValidationError(
+                f"this host's shared workroot '{extra_boundary}' is unavailable"
+            )
+        if not _is_subpath_of(canonical_workspace, canonical_jail):
+            raise WorkspaceValidationError(
+                f"workspace '{workspace}' is outside this shared host's workroot; "
+                f"pick a directory under '{extra_boundary}'"
             )
 
     return canonical_workspace

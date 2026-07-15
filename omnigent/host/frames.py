@@ -83,6 +83,15 @@ class HostHelloFrame:
         ``"Darwin 23.5.0 (arm64)"``. ``None`` from an older host that
         doesn't report it. Optional/defaulted so the field is
         backward-compatible — no protocol-major bump.
+    :param shared: Whether the owner started this host with
+        ``--shared`` — it may be reached (confined, shell-less) by any
+        authenticated user, not just the owner. Host-declared consent:
+        an admin cannot share a host the owner didn't opt into. Defaults
+        ``False`` (older hosts, and hosts started normally, are private).
+    :param workroot: When ``shared``, the directory a non-owner's session
+        is jailed to (filesystem browse + runner cwd). Defaults to the
+        host's launch cwd when ``--shared`` is given without
+        ``--workroot``. ``None`` when not shared.
     """
 
     version: str
@@ -92,6 +101,8 @@ class HostHelloFrame:
     configured_harnesses: dict[str, HarnessAvailability] | None = None
     os: str | None = None
     login_token_expires_at: float | None = None
+    shared: bool = False
+    workroot: str | None = None
     telemetry_opt_out: bool = False
 
 
@@ -592,6 +603,8 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "configured_harnesses": frame.configured_harnesses,
                 "os": frame.os,
                 "login_token_expires_at": frame.login_token_expires_at,
+                "shared": frame.shared,
+                "workroot": frame.workroot,
                 "telemetry_opt_out": frame.telemetry_opt_out,
             }
         )
@@ -876,6 +889,7 @@ def _decode_host_hello(msg: dict[str, Any]) -> HostHelloFrame:
     """
     raw_os = msg.get("os")
     raw_exp = msg.get("login_token_expires_at")
+    raw_workroot = msg.get("workroot")
     return HostHelloFrame(
         version=_required_str(msg, "version"),
         frame_protocol_version=_required_int(msg, "frame_protocol_version"),
@@ -884,6 +898,11 @@ def _decode_host_hello(msg: dict[str, Any]) -> HostHelloFrame:
         configured_harnesses=_optional_str_availability_map(msg, "configured_harnesses"),
         os=raw_os if isinstance(raw_os, str) else None,
         login_token_expires_at=raw_exp if isinstance(raw_exp, (int, float)) else None,
+        # A shared host must send workroot too; treat a missing/invalid
+        # workroot as not-shared (fail-safe — never expose a shared host
+        # with an unbounded jail).
+        shared=bool(msg.get("shared")) and isinstance(raw_workroot, str),
+        workroot=raw_workroot if isinstance(raw_workroot, str) else None,
         telemetry_opt_out=bool(msg.get("telemetry_opt_out", False)),
     )
 

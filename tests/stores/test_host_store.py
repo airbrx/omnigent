@@ -914,3 +914,120 @@ def test_register_managed_host_refuses_cross_owner_recredential(db_uri: str) -> 
     assert resolved.owner == "alice@example.com"
     assert resolved.sandbox_id == "sb-m7"
     assert store.resolve_launch_token("bob-token-7") is None
+
+
+# --- shared / always-on hosts (visibility) ---------------------------------
+
+
+def test_upsert_defaults_visibility_none_private(host_store: HostStore) -> None:
+    """A freshly registered host has no visibility set (NULL == private).
+
+    New hosts must never come up shared by accident — the ownership gate
+    treats NULL as private, so a host is owner-only until an admin flips it.
+    """
+    host = host_store.upsert_on_connect(host_id="host_v0", name="laptop", owner="alice@x")
+    assert host.visibility is None
+    assert host_store.get_host("host_v0").visibility is None
+
+
+def test_upsert_records_host_declared_sharing(host_store: HostStore) -> None:
+    """A host connecting with ``--shared`` records visibility + workroot;
+    reconnecting WITHOUT ``--shared`` un-shares it.
+
+    Consent is host-declared and re-evaluated on every connect, so an owner
+    revokes sharing simply by restarting the host normally.
+    """
+    host_store.upsert_on_connect(
+        host_id="host_v1",
+        name="box",
+        owner="alice@x",
+        visibility="shared",
+        workroot="/srv/work",
+    )
+    got = host_store.get_host("host_v1")
+    assert got.visibility == "shared" and got.workroot == "/srv/work"
+
+    # Reconnect without --shared -> back to private (NULL), workroot cleared.
+    host_store.upsert_on_connect(host_id="host_v1", name="box", owner="alice@x")
+    back = host_store.get_host("host_v1")
+    assert back.visibility is None and back.workroot is None
+
+
+def test_list_visible_hosts_unions_own_and_shared(host_store: HostStore) -> None:
+    """A caller sees their own hosts plus every shared host, and no other
+    user's private host.
+
+    This is the whole point of the feature: Bob can target Alice's shared,
+    always-on box, but still never sees Alice's private laptop.
+    """
+    host_store.upsert_on_connect(host_id="host_alice_priv", name="a-laptop", owner="alice@x")
+    host_store.upsert_on_connect(
+        host_id="host_alice_shared",
+        name="a-box",
+        owner="alice@x",
+        visibility="shared",
+        workroot="/w",
+    )
+    host_store.upsert_on_connect(host_id="host_bob_priv", name="b-laptop", owner="bob@x")
+
+    bob_visible = {h.host_id for h in host_store.list_visible_hosts("bob@x")}
+    assert bob_visible == {"host_bob_priv", "host_alice_shared"}
+    assert "host_alice_priv" not in bob_visible
+
+    # list_hosts (per-owner, used by the admin view) stays strict.
+    assert {h.host_id for h in host_store.list_hosts("bob@x")} == {"host_bob_priv"}
+
+
+def test_list_visible_hosts_no_duplicate_for_owner_of_shared(host_store: HostStore) -> None:
+    """A shared host the caller *owns* matches both OR arms but appears once."""
+    host_store.upsert_on_connect(
+        host_id="host_dup", name="mine", owner="alice@x", visibility="shared", workroot="/w"
+    )
+    ids = [h.host_id for h in host_store.list_visible_hosts("alice@x")]
+    assert ids.count("host_dup") == 1
+
+
+def test_caller_can_reach_host_matrix() -> None:
+    """The single reachability predicate: owner OR shared OR auth-disabled."""
+    from omnigent.stores.host_store import caller_can_reach_host
+
+    def mk(owner: str, visibility: str | None) -> Host:
+        return Host(
+            host_id="h",
+            name="n",
+            owner=owner,
+            status="online",
+            created_at=0,
+            updated_at=0,
+            visibility=visibility,
+        )
+
+    assert caller_can_reach_host(mk("alice@x", None), "alice@x") is True
+    assert caller_can_reach_host(mk("alice@x", None), "bob@x") is False
+    assert caller_can_reach_host(mk("alice@x", "private"), "bob@x") is False
+    assert caller_can_reach_host(mk("alice@x", "shared"), "bob@x") is True
+    # Auth disabled: reach anything.
+    assert caller_can_reach_host(mk("alice@x", None), None) is True
+
+
+def test_workroot_jail_matrix() -> None:
+    """A non-owner on a shared host is jailed to workroot; owner is not."""
+    from omnigent.stores.host_store import workroot_jail
+
+    def mk(owner: str, visibility: str | None, workroot: str | None) -> Host:
+        return Host(
+            host_id="h",
+            name="n",
+            owner=owner,
+            status="online",
+            created_at=0,
+            updated_at=0,
+            visibility=visibility,
+            workroot=workroot,
+        )
+
+    assert workroot_jail(mk("a@x", "shared", "/w"), "a@x") is None  # owner: no jail
+    assert workroot_jail(mk("a@x", "shared", "/w"), "b@x") == "/w"  # non-owner: jailed
+    assert workroot_jail(mk("a@x", None, None), "b@x") is None  # private (403 earlier)
+    assert workroot_jail(mk("a@x", "shared", None), "b@x") is None  # shared w/o workroot
+    assert workroot_jail(mk("a@x", "shared", "/w"), None) is None  # auth disabled

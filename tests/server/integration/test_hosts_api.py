@@ -855,6 +855,7 @@ async def test_launch_runner_validates_workspace_boundary(
         workspace: str,
         spec_cwd: str | None,
         host_name_for_errors: str | None = None,
+        extra_boundary: str | None = None,
     ) -> str:
         """Stand in for validate_workspace; record input and reject."""
         seen["workspace"] = workspace
@@ -1243,3 +1244,113 @@ async def test_runner_exited_invokes_callback_with_runner_and_error(
 
     # The callback got the exact runner id and error string off the frame.
     assert received == [("runner_x", "exited with code 1")]
+
+
+# --- shared / always-on hosts (visibility) ---------------------------------
+
+
+async def test_host_declared_shared_listed_and_reachable_by_non_owner(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+) -> None:
+    """A host that connected with ``--shared`` (recorded on its hello frame)
+    is listed + viewable by a non-owner; alice's private host stays hidden.
+
+    Sharing is host-owner-declared, not an admin toggle — the store records
+    visibility from the hello frame. This is the end-to-end unlock: a shared,
+    always-on host is targetable by any user; private hosts stay owner-only.
+    """
+    app, _reg, host_store, _cs = multi_user_app
+    # host_shared connected with --shared --workroot /srv/work; host_priv did not.
+    host_store.upsert_on_connect(
+        "host_shared", "alice-box", "alice@test.com", visibility="shared", workroot="/srv/work"
+    )
+    host_store.upsert_on_connect("host_priv", "alice-laptop", "alice@test.com")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Bob (not the owner) sees the shared host but not the private one.
+        resp = await client.get("/v1/hosts", headers={"x-test-user": "bob@test.com"})
+        assert resp.status_code == 200
+        rows = {h["host_id"]: h for h in resp.json()["hosts"]}
+        assert "host_shared" in rows and "host_priv" not in rows
+        assert rows["host_shared"]["visibility"] == "shared"
+        assert rows["host_shared"]["is_owner"] is False
+
+        # Bob can read the shared host's details (200), still 403 on the private.
+        assert (
+            await client.get("/v1/hosts/host_shared", headers={"x-test-user": "bob@test.com"})
+        ).status_code == 200
+        assert (
+            await client.get("/v1/hosts/host_priv", headers={"x-test-user": "bob@test.com"})
+        ).status_code == 403
+
+
+async def test_no_admin_visibility_toggle_endpoint(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+) -> None:
+    """The admin visibility toggle is gone — sharing is host-declared only, so
+    an admin cannot share a host the owner didn't opt into."""
+    app, _reg, host_store, _cs = multi_user_app
+    perm = app.state.permission_store
+    perm.ensure_user("admin@test.com", is_admin=True)
+    host_store.upsert_on_connect("host_x", "alice-box", "alice@test.com")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/hosts/host_x/visibility",
+            headers={"x-test-user": "admin@test.com"},
+            json={"visibility": "shared"},
+        )
+        # Route no longer exists.
+        assert resp.status_code == 404, resp.text
+        # And the host is still private: bob can't reach it.
+        assert (
+            await client.get("/v1/hosts/host_x", headers={"x-test-user": "bob@test.com"})
+        ).status_code == 403
+
+
+async def test_shared_host_confines_non_owner_to_workroot(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+) -> None:
+    """On a shared host, a non-owner's filesystem access is jailed to workroot.
+
+    A path outside workroot is rejected with 403 before the host is even
+    contacted; a path inside passes the jail (and then 409s only because the
+    test host has no live connection). The owner is never jailed.
+    """
+    app, _reg, host_store, _cs = multi_user_app
+    host_store.upsert_on_connect(
+        "host_sh", "alice-box", "alice@test.com", visibility="shared", workroot="/srv/work"
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Non-owner, mkdir OUTSIDE workroot -> 403 (jailed), host never contacted.
+        outside = await client.post(
+            "/v1/hosts/host_sh/directories",
+            headers={"x-test-user": "bob@test.com"},
+            json={"path": "/etc/evil"},
+        )
+        assert outside.status_code == 403, outside.text
+        assert "workroot" in outside.text
+
+        # Non-owner, browse OUTSIDE workroot -> 403 too.
+        browse_out = await client.get(
+            "/v1/hosts/host_sh/filesystem/etc/passwd",
+            headers={"x-test-user": "bob@test.com"},
+        )
+        assert browse_out.status_code == 403, browse_out.text
+
+        # Non-owner, INSIDE workroot -> passes the jail, then 409 (host offline).
+        inside = await client.post(
+            "/v1/hosts/host_sh/directories",
+            headers={"x-test-user": "bob@test.com"},
+            json={"path": "/srv/work/sub"},
+        )
+        assert inside.status_code == 409, inside.text
+
+        # Owner is NOT jailed: /etc passes the (absent) jail, 409 offline.
+        owner_out = await client.post(
+            "/v1/hosts/host_sh/directories",
+            headers={"x-test-user": "alice@test.com"},
+            json={"path": "/etc/mine"},
+        )
+        assert owner_out.status_code == 409, owner_out.text

@@ -1,10 +1,11 @@
 /**
- * Admin → Hosts (``/admin/hosts``).
+ * Settings → Admin → Hosts (``/settings/hosts``).
  *
  * Every host across users, with owner, online state, last-known version,
  * configured harnesses, and last-seen. Filters: ``?user=`` (chip from the
- * Users cross-link), ``?status=`` online/offline, ``?version=``. A row links
- * to that host's sessions (``/admin/sessions?host=``).
+ * Members cross-link), ``?status=`` online/offline, ``?version=``. A row links
+ * to that host's sessions (``/settings/sessions?host=``). The is_admin gate +
+ * page chrome are provided by AdminSettingsSection.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -25,7 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { formatEpoch } from "./format";
+import { formatEpoch } from "@/lib/adminFormat";
 
 const STATUSES = [
   { key: "", label: "All" },
@@ -157,7 +158,9 @@ export function HostsPage() {
                   key={h.host_id}
                   data-testid="admin-host-row"
                   className="cursor-pointer border-t border-border hover:bg-muted/40"
-                  onClick={() => navigate(`/admin/sessions?host=${encodeURIComponent(h.host_id)}`)}
+                  onClick={() =>
+                    navigate(`/settings/sessions?host=${encodeURIComponent(h.host_id)}`)
+                  }
                   title="View this host's sessions"
                 >
                   <td className="whitespace-nowrap px-3 py-2 align-middle font-medium">{h.name}</td>

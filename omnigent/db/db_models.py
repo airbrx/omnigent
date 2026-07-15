@@ -1003,11 +1003,26 @@ class SqlHost(Base):
     version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     os: Mapped[str | None] = mapped_column(String(128), nullable=True)
     login_token_expires_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Host reachability, host-declared via `omnigent host --shared`:
+    # "private" (default) — only the owner may reach it; "shared" — any
+    # authenticated user may reach it, but confined to `workroot` and with
+    # shell/exec tools stripped. NULL is treated as "private" (fail-safe: a
+    # row must be explicitly "shared" to relax the ownership gate). Governs
+    # reachability only, never host management (delete/reassign) or
+    # registration (tunnel owner check).
+    visibility: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # When shared, the directory a non-owner's session is jailed to
+    # (filesystem browse + runner cwd). NULL when private.
+    workroot: Mapped[str | None] = mapped_column(String(4096), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
             "status IN (1, 2)",
             name="ck_hosts_status",
+        ),
+        CheckConstraint(
+            "visibility IS NULL OR visibility IN ('private', 'shared')",
+            name="ck_hosts_visibility",
         ),
         # (workspace_id, owner, name) was the old PK; keep it unique so the
         # upsert-on-connect logic (look up by owner+name to detect host_id

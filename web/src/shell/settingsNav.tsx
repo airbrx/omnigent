@@ -12,8 +12,10 @@ import {
   ArrowLeftIcon,
   GitBranchIcon,
   KeyboardIcon,
+  MessagesSquareIcon,
   PaletteIcon,
   PanelRightOpenIcon,
+  ServerIcon,
   Share2Icon,
   ShieldCheckIcon,
   TerminalIcon,
@@ -34,6 +36,8 @@ export type SettingsSectionId =
   | "shortcuts"
   | "account"
   | "members"
+  | "sessions"
+  | "hosts"
   | "policies"
   | "sharing"
   | "archived"
@@ -45,6 +49,8 @@ const SECTION_IDS: readonly SettingsSectionId[] = [
   "shortcuts",
   "account",
   "members",
+  "sessions",
+  "hosts",
   "policies",
   "sharing",
   "archived",
@@ -68,10 +74,11 @@ interface SettingsNavGroup {
  * Nav groups for the current deploy. The Account section appears whenever the
  * deploy has a login session (accounts OR OIDC/SSO — i.e. a `login_url`
  * exists), so an SSO user can see who they're signed in as and sign out; it's
- * absent only in header single-user mode. The Admin group (Members / Policies)
- * appears for admins in ANY multi-user mode since both accounts and OIDC share
- * the `users.is_admin` flag and the server enforces admin on every route; the
- * Desktop group (Local CLI) appears only in the Electron shell.
+ * absent only in header single-user mode. The Admin group (Members, Sessions,
+ * Hosts, Policies, Sharing) appears for admins in ANY multi-user mode since
+ * both accounts and OIDC share the `users.is_admin` flag and the server
+ * enforces admin on every route; the Desktop group (Local CLI) appears only in
+ * the Electron shell.
  */
 export function settingsNavGroups(
   hasAuthSession: boolean,
@@ -110,6 +117,8 @@ export function settingsNavGroups(
       title: "Admin",
       items: [
         { id: "members", label: "Members", icon: UsersIcon },
+        { id: "sessions", label: "Sessions", icon: MessagesSquareIcon },
+        { id: "hosts", label: "Hosts", icon: ServerIcon },
         { id: "policies", label: "Policies", icon: ShieldCheckIcon },
         { id: "sharing", label: "Sharing", icon: Share2Icon },
       ],

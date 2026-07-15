@@ -6204,6 +6204,7 @@ async def _validate_session_workspace(
     from omnigent.server.routes._host_launch import resolve_host_owner
 
     host_name: str | None = None
+    extra_boundary: str | None = None
     host_store_inst = getattr(request.app.state, "host_store", None)
     if host_store_inst is not None:
         host = await asyncio.to_thread(
@@ -6213,6 +6214,11 @@ async def _validate_session_workspace(
             host_store=host_store_inst,
         )
         host_name = host.name
+        # Shared-host jail: a non-owner picking a workspace on a shared host
+        # is confined to its workroot (in addition to the agent's boundary).
+        from omnigent.stores.host_store import workroot_jail
+
+        extra_boundary = workroot_jail(host, user_id)
 
     # Read the agent's os_env.cwd — None when the spec has no
     # os_env block (headless agents). Headless agents have no
@@ -6243,6 +6249,7 @@ async def _validate_session_workspace(
             workspace=workspace,
             spec_cwd=spec_cwd,
             host_name_for_errors=host_name,
+            extra_boundary=extra_boundary,
         )
     except WorkspaceValidationError as exc:
         raise OmnigentError(

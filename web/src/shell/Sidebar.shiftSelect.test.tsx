@@ -142,7 +142,6 @@ function mockConversations(convs: Conversation[]) {
   );
 }
 
-
 // Fork: ConversationRow's title attribute is a multi-line tooltip
 // ("<title>\nHost: …\nAgent: …"). testing-library's default normalizer
 // collapses that newline to a space, so match rows on the first word.

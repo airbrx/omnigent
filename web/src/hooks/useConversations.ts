@@ -861,9 +861,7 @@ export function useRenameProject() {
   return useMutation({
     mutationFn: async ({ from, to }: { from: string; to: string }) => {
       const ids = await fetchAllProjectSessionIds(from);
-      const results = await Promise.allSettled(
-        ids.map((id) => moveConversationToProject(id, to)),
-      );
+      const results = await Promise.allSettled(ids.map((id) => moveConversationToProject(id, to)));
       const succeeded: string[] = [];
       const failed: string[] = [];
       for (let i = 0; i < results.length; i++) {
