@@ -30,7 +30,7 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from omnigent._platform import IS_WINDOWS, resolve_repo_symlink
+from omnigent._platform import IS_LINUX, IS_WINDOWS, resolve_repo_symlink
 from omnigent._startup_profile import StartupProfiler
 from omnigent.cli_sandbox import lakebox as _lakebox_alias_group
 from omnigent.cli_sandbox import sandbox as _sandbox_group
@@ -6981,6 +6981,51 @@ def _prompt_stop_local_server() -> None:
         click.echo(f"Left the local server running at {url}.")
 
 
+def _host_runtime_options(func: Callable) -> Callable:
+    """Share --auto-upgrade/--shared/--workroot across ``host`` and ``host install``.
+
+    These describe how the host runs, so the supervised invocation written by
+    ``install`` cannot drift from what ``omnigent host`` would do by hand.
+    Applied innermost-first so the rendered ``--help`` order stays
+    auto-upgrade, shared, workroot.
+    """
+    func = click.option(
+        "--workroot",
+        "workroot",
+        default=None,
+        help=(
+            "Directory a shared host's non-owner sessions are jailed to "
+            "(filesystem + runner cwd). Defaults to the current directory. "
+            "Only meaningful with --shared."
+        ),
+    )(func)
+    func = click.option(
+        "--shared",
+        "shared",
+        is_flag=True,
+        default=False,
+        help=(
+            "Open this host to ANY authenticated user of the server (not just "
+            "you). Their sessions are confined to --workroot and run without "
+            "shell/exec tools; your own sessions are unaffected. Opt-in consent "
+            "lives here — an admin cannot share your host for you. Prints a "
+            "warning on start; restart without --shared to stop sharing."
+        ),
+    )(func)
+    return click.option(
+        "--auto-upgrade",
+        "auto_upgrade",
+        is_flag=True,
+        default=False,
+        help=(
+            "Keep this host in sync with the server's build: when the host is "
+            "idle (no live runners) and the server runs a different version, "
+            "install it (via the server's installer) and restart. Opt-in — it "
+            "lets the connected server install code on this machine."
+        ),
+    )(func)
+
+
 @cli.group("host", cls=_HostGroup, invoke_without_command=True)
 @click.option("--server", default=None, help="Remote omnigent server URL.")
 @click.option(
@@ -6994,41 +7039,7 @@ def _prompt_stop_local_server() -> None:
         "launching the browser login flow. Use this in scripts and CI."
     ),
 )
-@click.option(
-    "--auto-upgrade",
-    "auto_upgrade",
-    is_flag=True,
-    default=False,
-    help=(
-        "Keep this host in sync with the server's build: when the host is "
-        "idle (no live runners) and the server runs a different version, "
-        "install it (via the server's installer) and restart. Opt-in — it "
-        "lets the connected server install code on this machine."
-    ),
-)
-@click.option(
-    "--shared",
-    "shared",
-    is_flag=True,
-    default=False,
-    help=(
-        "Open this host to ANY authenticated user of the server (not just "
-        "you). Their sessions are confined to --workroot and run without "
-        "shell/exec tools; your own sessions are unaffected. Opt-in consent "
-        "lives here — an admin cannot share your host for you. Prints a "
-        "warning on start; restart without --shared to stop sharing."
-    ),
-)
-@click.option(
-    "--workroot",
-    "workroot",
-    default=None,
-    help=(
-        "Directory a shared host's non-owner sessions are jailed to "
-        "(filesystem + runner cwd). Defaults to the current directory. "
-        "Only meaningful with --shared."
-    ),
-)
+@_host_runtime_options
 @click.pass_context
 def host(
     ctx: click.Context,
@@ -8101,6 +8112,101 @@ def host_stop_session(
             click.echo(f"Failed to stop session {session_id!r}.", err=True)
             continue
         click.echo(f"Stopped session {session_id}.")
+
+
+@host.command("install")
+@click.option("--server", default=None, help="Remote omnigent server URL to supervise.")
+@_host_runtime_options
+@click.option(
+    "--no-linger",
+    is_flag=True,
+    default=False,
+    help="Linux: skip `loginctl enable-linger` (service then stops at logout).",
+)
+@click.option(
+    "--restart-sec",
+    type=int,
+    default=5,
+    show_default=True,
+    help="Seconds a crashed host waits before the supervisor relaunches it.",
+)
+@click.pass_context
+def host_install(
+    ctx: click.Context,
+    server: str | None,
+    auto_upgrade: bool,
+    shared: bool,
+    workroot: str | None,
+    no_linger: bool,
+    restart_sec: int,
+) -> None:
+    """
+    Install this host as a user-scoped, self-restarting service.
+
+    Writes a systemd ``--user`` unit (Linux) or launchd LaunchAgent (macOS) that
+    supervises ``omnigent host --server ... --non-interactive`` and relaunches it
+    on crash. User-scoped so the host keeps the user's ``$HOME`` (``~/.claude`` /
+    ``~/.codex`` credentials). v1 supervises remote (``--server``) hosts only.
+
+    :param ctx: Click context carrying group-level options.
+    :param server: Remote server URL to supervise. Falls back to the group
+        ``--server`` / config.
+    :param auto_upgrade: Bake ``--auto-upgrade`` into the supervised host.
+    :param shared: Bake ``--shared`` in — requires an explicit ``--workroot``.
+    :param workroot: Jail dir for a shared host (required with ``--shared``).
+    :param no_linger: Linux — skip ``loginctl enable-linger``.
+    :param restart_sec: Seconds before relaunching a crashed host.
+    """
+    from omnigent.host import service as host_service
+
+    if server is None:
+        server = _host_group_option(ctx, "server")
+    resolved = _resolve_host_server(server)
+    if not resolved:
+        raise click.ClickException(
+            "`host install` requires a remote --server URL (local-mode installs "
+            "are not supported in v1)."
+        )
+    try:
+        config = host_service.HostServiceConfig(
+            server_url=resolved,
+            exec_path=host_service.resolve_omnigent_bin(),
+            auto_upgrade=auto_upgrade,
+            shared=shared,
+            workroot=(str(Path(workroot).expanduser().resolve()) if workroot else None),
+            environment=_build_host_daemon_env(server_url=resolved),
+            restart_sec=restart_sec,
+        )
+        result = host_service.install_service(config, enable_linger=not no_linger)
+    except host_service.HostServiceError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Installed self-restarting host service → {result.unit_path}")
+    if not no_linger and not result.linger_enabled and IS_LINUX:
+        click.echo(
+            "  note: could not enable linger; the service stops at logout. "
+            "Run `loginctl enable-linger` manually to keep it running.",
+            err=True,
+        )
+    click.echo(f"  check: {result.status_cmd}")
+    click.echo(f"  stop:  {result.stop_cmd}")
+
+
+@host.command("uninstall")
+def host_uninstall() -> None:
+    """
+    Remove the self-restarting host service installed by ``host install``.
+
+    Stops and deletes the unit/plist, and drops ``enable-linger`` only if
+    ``install`` set it.
+    """
+    from omnigent.host import service as host_service
+
+    try:
+        removed = host_service.uninstall_service()
+    except host_service.HostServiceError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo("Removed the host service." if removed else "No host service was installed.")
 
 
 @cli.command(hidden=True)
