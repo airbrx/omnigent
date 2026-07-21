@@ -1,9 +1,21 @@
 import { lazy, Suspense } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { ChatPage } from "@/pages/ChatPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
 import { AppShell } from "@/shell/AppShell";
+
+/**
+ * Redirect a legacy path to `to`, carrying the query string along.
+ *
+ * A bare `<Navigate to="/settings/sessions">` drops the query, so an old
+ * deep-link like `/admin/sessions?user=alice@x` would land on the unfiltered
+ * list. Preserving `location.search` keeps the filter that made the link useful.
+ */
+function LegacyRedirect({ to }: { to: string }) {
+  const { search } = useLocation();
+  return <Navigate to={{ pathname: to, search }} replace />;
+}
 
 // Lazy-load the accounts pages so the bundle a header / OIDC
 // deploy ships (where accounts is off) doesn't include them in the
@@ -134,19 +146,19 @@ function App({ basename }: AppProps = {}) {
               rollup). The sections self-gate to admins; the server 403s. */}
           <Route
             path={`${prefix}/admin`}
-            element={<Navigate to={`${prefix}/settings/members`} replace />}
+            element={<LegacyRedirect to={`${prefix}/settings/members`} />}
           />
           <Route
             path={`${prefix}/admin/users`}
-            element={<Navigate to={`${prefix}/settings/members`} replace />}
+            element={<LegacyRedirect to={`${prefix}/settings/members`} />}
           />
           <Route
             path={`${prefix}/admin/sessions`}
-            element={<Navigate to={`${prefix}/settings/sessions`} replace />}
+            element={<LegacyRedirect to={`${prefix}/settings/sessions`} />}
           />
           <Route
             path={`${prefix}/admin/hosts`}
-            element={<Navigate to={`${prefix}/settings/hosts`} replace />}
+            element={<LegacyRedirect to={`${prefix}/settings/hosts`} />}
           />
           {/* Members / Policies are now settings sub-categories
               (/settings/members, /settings/policies) so entering them

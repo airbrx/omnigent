@@ -106,13 +106,18 @@ def test_admin_three_views(
     try:
         page = ctx.new_page()
 
-        # Users: the member shows up with one owned session + one online host.
+        # Users: the admin surface now lives under Settings ▸ Admin, so
+        # /admin/users redirects to /settings/members. The member shows up with
+        # one owned session + one online host (the usage rollup — "1 · 1 online"
+        # renders in the Hosts column).
         page.goto(f"{live_server}/admin/users")
-        member_row = page.get_by_test_id("admin-user-row").filter(has_text=member)
+        member_row = page.get_by_test_id("member-row").filter(has_text=member)
         expect(member_row).to_be_visible(timeout=20_000)
         expect(member_row).to_contain_text("1 · 1 online")
 
         # Sessions filtered by the member: the host-bound session, with its host.
+        # The legacy /admin/sessions?user= path must carry the ?user= filter
+        # through the redirect to /settings/sessions.
         page.goto(f"{live_server}/admin/sessions?user={member}")
         session_row = page.get_by_test_id("admin-session-row").filter(
             has_text=admin_scenario.session_title
