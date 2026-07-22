@@ -80,6 +80,70 @@ class Host:
     version: str | None = None
     os: str | None = None
     login_token_expires_at: int | None = None
+    visibility: str | None = None
+    """Reachability: ``"shared"`` lets any authenticated user reach this host
+    (confined + shell-less); anything else (incl. ``None``) means owner-only.
+    Host-declared via ``--shared``. See :func:`caller_can_reach_host`."""
+    workroot: str | None = None
+    """When shared, the directory a non-owner's session is jailed to
+    (filesystem browse + runner cwd). ``None`` when private."""
+
+
+# The two visibility values persisted in ``hosts.visibility``. ``None`` in the
+# column is treated as ``VISIBILITY_PRIVATE`` (fail-safe default).
+VISIBILITY_PRIVATE = "private"
+VISIBILITY_SHARED = "shared"
+
+
+def caller_can_reach_host(host: Host, user_id: str | None) -> bool:
+    """
+    Whether a caller may *reach* a host — dispatch a session to it, view its
+    details, or browse its filesystem to pick a workspace.
+
+    This is the single reachability predicate shared by every host-access
+    route (``resolve_host_owner`` for launch + the workspace probe, and the
+    ``get_host`` / filesystem-browse endpoints), so the "shared" relaxation
+    can't drift between them. A host is reachable when:
+
+    - ``user_id`` is ``None`` — auth is disabled (single-user/local server);
+    - the caller **owns** the host; or
+    - the host is **shared** (``visibility == "shared"``) — any authenticated
+      user may reach it.
+
+    Reachability is deliberately NOT management: this does not authorize
+    deleting, re-owning, or re-registering a host (those keep their own
+    owner/registration checks), so marking a host shared never lets a
+    non-owner destroy or hijack it.
+
+    :param host: The host being accessed.
+    :param user_id: Authenticated caller, or ``None`` when auth is disabled.
+    :returns: ``True`` if the caller may reach the host.
+    """
+    return user_id is None or host.owner == user_id or host.visibility == VISIBILITY_SHARED
+
+
+def workroot_jail(host: Host, user_id: str | None) -> str | None:
+    """
+    The directory a caller is confined to on this host, or ``None`` for no
+    confinement.
+
+    A **non-owner** reaching a **shared** host is jailed to the host's
+    ``workroot`` — their session workspace and filesystem browse must stay
+    inside it. The owner (and the auth-disabled single-user server) are never
+    jailed. This is deliberately a workspace-level confinement (default cwd +
+    browse clamp), not a hard OS sandbox — the host owner opted in with
+    ``--shared`` knowing it isn't airtight.
+
+    :param host: The host being reached.
+    :param user_id: Authenticated caller, or ``None`` when auth is disabled.
+    :returns: The workroot to confine to, or ``None`` if the caller is the
+        owner / auth is disabled / the host isn't shared.
+    """
+    if user_id is None or host.owner == user_id:
+        return None
+    if host.visibility == VISIBILITY_SHARED and host.workroot:
+        return host.workroot
+    return None
 
 
 def host_is_live(host: Host, now: int | None = None) -> bool:
@@ -151,6 +215,8 @@ def _row_to_host(row: SqlHost) -> Host:
         version=row.version,
         os=row.os,
         login_token_expires_at=row.login_token_expires_at,
+        visibility=row.visibility,
+        workroot=row.workroot,
     )
 
 
@@ -199,6 +265,8 @@ class HostStore:
         version: str | None = None,
         os: str | None = None,
         login_token_expires_at: int | None = None,
+        visibility: str | None = None,
+        workroot: str | None = None,
     ) -> Host:
         """
         Register or update a host on WebSocket connect.
@@ -244,6 +312,13 @@ class HostStore:
             ``None`` from an older host.
         :param login_token_expires_at: Expiry (unix epoch) of the host's
             login token, or ``None`` when the host reports none.
+        :param visibility: Host-declared reachability from the hello
+            frame — ``"shared"`` when the owner started it with
+            ``--shared``, else ``None`` (private). Written on EVERY
+            connect, so restarting a host without ``--shared`` un-shares
+            it. Consent lives with the owner, not an admin toggle.
+        :param workroot: The jail directory for non-owner sessions when
+            shared; ``None`` when private. Written on every connect.
         :returns: The upserted :class:`Host`.
         """
         now = now_epoch()
@@ -281,6 +356,11 @@ class HostStore:
                 # advances on re-login), so overwrite unconditionally —
                 # including back to None when the host reports none.
                 row.login_token_expires_at = login_token_expires_at
+                # visibility/workroot are host-declared on every connect —
+                # overwrite unconditionally so restarting without --shared
+                # resets to private (NULL). This is how an owner un-shares.
+                row.visibility = visibility
+                row.workroot = workroot
                 return _row_to_host(row)
 
             # host_id is new — check whether (workspace_id, owner, name)
@@ -317,6 +397,8 @@ class HostStore:
                 if os is not None:
                     row.os = os
                 row.login_token_expires_at = login_token_expires_at
+                row.visibility = visibility
+                row.workroot = workroot
                 return _row_to_host(row)
 
             # Genuinely new host: plain INSERT.
@@ -331,6 +413,8 @@ class HostStore:
                 version=version,
                 os=os,
                 login_token_expires_at=login_token_expires_at,
+                visibility=visibility,
+                workroot=workroot,
             )
             session.add(row)
             return _row_to_host(row)
@@ -643,6 +727,31 @@ class HostStore:
         """
         with self._session() as session:
             rows = session.query(SqlHost).order_by(SqlHost.updated_at.desc()).all()
+            return [_row_to_host(row) for row in rows]
+
+    def list_visible_hosts(self, owner: str) -> list[Host]:
+        """
+        List the hosts a user may reach: their own **plus** every shared host.
+
+        This backs the user-facing host picker (``GET /v1/hosts``) so a user
+        can target a shared, always-on host even when their own machine is
+        offline. A shared host the caller also owns matches both arms of the
+        ``OR`` but SQL returns each row once, so no de-dup is needed.
+
+        Kept separate from :meth:`list_hosts` (strict per-owner) on purpose:
+        the admin per-user view must stay precise and not attribute shared
+        hosts to every user.
+
+        :param owner: User ID to list reachable hosts for.
+        :returns: List of :class:`Host` entities, ``updated_at`` desc.
+        """
+        with self._session() as session:
+            rows = (
+                session.query(SqlHost)
+                .filter((SqlHost.owner == owner) | (SqlHost.visibility == VISIBILITY_SHARED))
+                .order_by(SqlHost.updated_at.desc())
+                .all()
+            )
             return [_row_to_host(row) for row in rows]
 
     def get_host(self, host_id: str) -> Host | None:

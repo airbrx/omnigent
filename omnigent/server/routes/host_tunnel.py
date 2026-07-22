@@ -237,6 +237,12 @@ def create_host_tunnel_router(
                     if frame.login_token_expires_at is not None
                     else None
                 ),
+                # Host-declared sharing: the owner opted in with `--shared`,
+                # reported on the hello frame. The decoder only sets
+                # frame.shared when a valid workroot came with it, so a
+                # shared host always carries its jail dir.
+                visibility="shared" if frame.shared else None,
+                workroot=frame.workroot if frame.shared else None,
             )
 
             conn = host_registry.register(

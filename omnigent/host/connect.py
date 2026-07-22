@@ -85,11 +85,11 @@ from omnigent.runner.transports.ws_tunnel.frames import (
     decode_frame,
     encode_frame,
 )
-from omnigent.update_check import version_label
 from omnigent.runner.transports.ws_tunnel.limits import (
     TUNNEL_KEEPALIVE_PING_INTERVAL_S,
     TUNNEL_KEEPALIVE_PING_TIMEOUT_S,
 )
+from omnigent.update_check import version_label
 
 _logger = logging.getLogger(__name__)
 
@@ -855,6 +855,8 @@ class HostProcess:
         server_url: str,
         *,
         auto_upgrade: bool = False,
+        shared: bool = False,
+        workroot: str | None = None,
     ) -> None:
         """Initialize the host process.
 
@@ -862,10 +864,18 @@ class HostProcess:
         :param server_url: Server URL to connect to.
         :param auto_upgrade: When True, keep this host in sync with the
             server's build — see :meth:`_maybe_auto_upgrade`.
+        :param shared: When True, declare this host reachable (confined +
+            shell-less) by any authenticated user, reported on the hello
+            frame. Requires ``workroot``.
+        :param workroot: The jail dir for non-owner sessions when shared.
         """
         self._identity = identity
         self._server_url = server_url.rstrip("/")
         self._auto_upgrade = auto_upgrade
+        # Only advertise shared when a workroot is actually set — matches the
+        # frame decoder's fail-safe (no shared host without a jail dir).
+        self._shared = bool(shared and workroot)
+        self._workroot = workroot if self._shared else None
         # The version label we last tried to upgrade TO — a loop guard so a
         # failed install (version never advances) can't re-exec forever.
         self._last_upgrade_attempt: str | None = None
@@ -2142,6 +2152,8 @@ class HostProcess:
             configured_harnesses=await asyncio.to_thread(configured_harness_map),
             os=_host_os_string(),
             login_token_expires_at=_stored_token_expiry(self._server_url),
+            shared=self._shared,
+            workroot=self._workroot,
             telemetry_opt_out=_tel_opt_out,
         )
         await ws.send(encode_host_frame(hello))
@@ -2257,6 +2269,8 @@ def run_host_process(
     config_path: Path | None = None,
     *,
     auto_upgrade: bool = False,
+    shared: bool = False,
+    workroot: str | None = None,
 ) -> None:
     """Entry point for ``omnigent host``.
 
@@ -2267,6 +2281,12 @@ def run_host_process(
         ``"https://omnigent-app.databricksapps.com"``.
     :param config_path: Optional path to ``config.yaml``.
         Defaults to ``~/.omnigent/config.yaml``.
+    :param shared: When ``True`` (``--shared``), any authenticated user of
+        the server may reach this host — confined to ``workroot`` and with
+        shell/exec tools stripped. Owner opt-in for a shared, always-on box.
+    :param workroot: Directory a non-owner session is jailed to. Defaults to
+        the current working directory when ``shared`` and no ``--workroot``
+        is given. Ignored when not shared.
     :raises SystemExit: With code 1 when the tunnel fails permanently
         (auth / authorization / outdated server). The
         actionable cause is printed to stderr first.
@@ -2305,7 +2325,29 @@ def run_host_process(
     if _cli_log is not None and _cli_log != host_log_path:
         print(f"CLI diagnostics: {_display_log_path(_cli_log)}")
 
-    host = HostProcess(identity, server_url, auto_upgrade=auto_upgrade)
+    # --shared opts this host into being reachable by any authenticated user
+    # of the server. Resolve the jail dir now (default = cwd) and warn LOUDLY
+    # on stderr so the owner sees exactly what they exposed. Non-owner
+    # sessions are confined to workroot and run without shell/exec tools.
+    resolved_workroot: str | None = None
+    if shared:
+        resolved_workroot = str(Path(workroot).expanduser().resolve()) if workroot else os.getcwd()
+        print(
+            "\n"
+            "  ⚠  SHARED HOST: any user of this server can run sessions here.\n"
+            f"     They are confined to: {resolved_workroot}\n"
+            "     and cannot use shell/exec tools (agent runs, no arbitrary commands).\n"
+            "     Your own sessions are unaffected. Restart without --shared to stop.\n",
+            file=sys.stderr,
+            flush=True,
+        )
+    host = HostProcess(
+        identity,
+        server_url,
+        auto_upgrade=auto_upgrade,
+        shared=shared,
+        workroot=resolved_workroot,
+    )
     try:
         asyncio.run(host.run())
     except HostConnectError as exc:

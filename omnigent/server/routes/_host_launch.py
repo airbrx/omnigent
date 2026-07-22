@@ -1,13 +1,17 @@
-"""Ownership-checked resolution for host runner launches.
+"""Reachability-checked resolution for host runner launches.
 
 Two routes spawn a runner subprocess on a user's host machine and
 bind it to a session: ``POST /v1/sessions`` (inline host launch) and
-``POST /v1/hosts/{host_id}/runners``. A runner executes arbitrary
-tools (shell, file I/O) on the host as that host's user, so a launch
-must be authorized against BOTH the host and the session:
+``POST /v1/hosts/{host_id}/runners``. A runner executes tools (shell,
+file I/O) on the host as that host's user, so a launch must be
+authorized against BOTH the host and the session:
 
-- the caller must own the target host (else they could run code on
-  another user's machine — cross-user RCE), and
+- the caller must be able to *reach* the target host — they own it,
+  OR the owner opted the host into sharing with ``--shared`` (in which
+  case a non-owner's session is confined to the host's ``workroot``;
+  see :func:`omnigent.stores.host_store.caller_can_reach_host` /
+  ``workroot_jail``). A private host stays owner-only (else a non-owner
+  could run code on another user's machine — cross-user RCE), and
 - the caller must own the target session (else they could bind their
   runner to another user's session, or another user's host to their
   session — cross-user hijack / data theft).
@@ -27,7 +31,7 @@ from omnigent.server.auth import LEVEL_OWNER
 from omnigent.server.host_registry import HostConnection, HostRegistry
 from omnigent.server.permissions import check_session_access
 from omnigent.stores import ConversationStore
-from omnigent.stores.host_store import Host, HostStore
+from omnigent.stores.host_store import Host, HostStore, caller_can_reach_host
 from omnigent.stores.permission_store import PermissionStore
 
 
@@ -53,28 +57,34 @@ def resolve_host_owner(
     host_store: HostStore,
 ) -> Host:
     """
-    Authorize that the caller owns a known host.
+    Authorize that the caller may *reach* a known host.
 
     Every route that reaches a host on the caller's behalf must pass
-    this first so the owner check can't drift between them: the runner
-    launch (via :func:`resolve_host_launch`) AND the session-create
+    this first so the reachability check can't drift between them: the
+    runner launch (via :func:`resolve_host_launch`) AND the session-create
     workspace probe, which sends a ``host.stat`` to the host. The
     original bug had that probe contacting another user's host before
-    any ownership check. When ``user_id`` is ``None`` (auth disabled)
-    the check is skipped, consistent with single-user/local behavior.
+    any ownership check.
+
+    Reachability (see :func:`caller_can_reach_host`) is broader than
+    ownership: the caller passes if auth is disabled (``user_id`` is
+    ``None``), if they own the host, OR if the host is **shared**
+    (``visibility == "shared"``) — a shared, always-on host any
+    authenticated user may target. It does NOT authorize host
+    management (delete/reassign), which keeps its own owner check.
 
     :param user_id: Authenticated caller, e.g. ``"alice@example.com"``,
         or ``None`` when auth is disabled.
     :param host_id: Target host id, e.g. ``"host_a1b2c3d4..."``.
     :param host_store: Persistent host registrations.
-    :returns: The host record owned by the caller.
+    :returns: The host record the caller may reach.
     :raises HTTPException: 404 if the host is unknown; 403 if it is
-        owned by a different user.
+        private and owned by a different user.
     """
     host = host_store.get_host(host_id)
     if host is None:
         raise HTTPException(status_code=404, detail="host not found")
-    if user_id is not None and host.owner != user_id:
+    if not caller_can_reach_host(host, user_id):
         raise HTTPException(status_code=403, detail="not your host")
     return host
 

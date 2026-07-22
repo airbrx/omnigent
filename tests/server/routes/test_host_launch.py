@@ -23,6 +23,7 @@ class _FakeHost:
     host_id: str = "host_1"
     name: str = "test-host"
     owner: str = "alice"
+    visibility: str | None = None
 
 
 @dataclass
@@ -77,6 +78,22 @@ class TestResolveHostOwner:
         store = _FakeHostStore(hosts={"host_1": host})
         result = resolve_host_owner(user_id=None, host_id="host_1", host_store=store)
         assert result.host_id == "host_1"
+
+    def test_non_owner_reaches_shared_host(self) -> None:
+        # The feature: a non-owner may dispatch to a shared host.
+        host = _FakeHost(host_id="host_1", owner="bob", visibility="shared")
+        store = _FakeHostStore(hosts={"host_1": host})
+        result = resolve_host_owner(user_id="alice", host_id="host_1", host_store=store)
+        assert result.host_id == "host_1"
+
+    def test_non_owner_still_403_on_private(self) -> None:
+        # Explicit "private" and NULL both stay owner-only for a non-owner.
+        for vis in ("private", None):
+            host = _FakeHost(host_id="host_1", owner="bob", visibility=vis)
+            store = _FakeHostStore(hosts={"host_1": host})
+            with pytest.raises(HTTPException) as exc_info:
+                resolve_host_owner(user_id="alice", host_id="host_1", host_store=store)
+            assert exc_info.value.status_code == 403
 
 
 # ── resolve_host_launch ──────────────────────────────────────────────

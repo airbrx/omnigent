@@ -1,5 +1,7 @@
-// Tests for Admin → Hosts: version + online state, harness summary, the
-// status filter, and the row link into a host's sessions.
+// Tests for the Hosts settings section: version + online state, harness
+// summary, the status filter, and the row link into a host's sessions.
+// The is_admin gate lives in AdminSettingsSection (tested separately); this
+// exercises the bare table component.
 
 import { cleanup, render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -14,7 +16,7 @@ vi.mock("@/lib/routing", async () => {
 });
 vi.mock("@/lib/adminApi", () => ({ listAdminHosts: vi.fn(), getServerInfo: vi.fn() }));
 
-function renderPage(initial = "/admin/hosts") {
+function renderPage(initial = "/settings/hosts") {
   return render(
     <MemoryRouter initialEntries={[initial]}>
       <HostsPage />
@@ -65,7 +67,7 @@ describe("HostsPage", () => {
     renderPage();
     await waitFor(() => expect(screen.getByText("alice-laptop")).toBeTruthy());
     fireEvent.click(screen.getByTestId("admin-host-row"));
-    expect(navigate).toHaveBeenCalledWith("/admin/sessions?host=host_a1");
+    expect(navigate).toHaveBeenCalledWith("/settings/sessions?host=host_a1");
   });
 
   it("clicking the version opens a popup with the upgrade command", async () => {
