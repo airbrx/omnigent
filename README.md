@@ -307,6 +307,33 @@ omnigent host  https://your-host    # new sessions can now run on this machine
 > On your own network you don't need a deploy. Open your machine's LAN
 > address on your phone (e.g. `http://192.168.x.x:6767`).
 
+#### Keep a host running (self-restart)
+
+`omnigent host` runs in the foreground and dies with its terminal. To keep a
+machine registered across crashes, logout, and reboot, install it as a
+user-scoped service (systemd `--user` on Linux, launchd LaunchAgent on macOS):
+
+```bash
+omnigent login https://your-host           # make sure credentials are valid first
+omnigent host install --server https://your-host --auto-upgrade
+omnigent host uninstall                     # stop supervising and remove the unit
+```
+
+The service supervises the same `omnigent host` command and relaunches it a few
+seconds after a crash. It runs as **you** (never root) so it keeps your
+`~/.claude` / `~/.codex` credentials and the shell environment captured at
+install time.
+
+> [!IMPORTANT]
+> - Re-run `omnigent host install` after your login token expires — a headless
+>   service can't do an interactive browser sign-in, so it will restart-loop
+>   until credentials are valid again (visible in `journalctl --user` /
+>   `~/Library/Logs/omnigent-host.log`).
+> - `omnigent host stop` only signals the process; the supervisor restarts it.
+>   Use `omnigent host uninstall` to actually stop a supervised host.
+> - A shared install must name its jail explicitly:
+>   `omnigent host install --server ... --shared --workroot <dir>`.
+
 ### 5. Collaborate with your team
 
 Omnigent supports **multi-user accounts**, controlled by one environment
