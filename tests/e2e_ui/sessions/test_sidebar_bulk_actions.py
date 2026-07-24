@@ -22,19 +22,18 @@ from playwright.sync_api import Locator, Page, expect
 
 
 def _row_link(page: Page, title: str) -> Locator:
-    """Locate the sidebar row link by its unique *title* attribute.
+    """Locate the sidebar row link by its unique accessible name (the title).
 
-    Keying on the title (which is ``conversation.title`` and stays stable
-    in both normal and selection mode) is required rather than the href:
-    in selection mode every row's ``Link`` ``to`` becomes ``"#"``, which
-    react-router resolves against the active ``/c/{id}`` route, so *all*
-    rows collapse to the same href. An ``a[href="/c/{id}"]`` locator is
-    therefore non-unique the moment the sidebar holds more than one
-    session (e.g. leftover fork/clone sessions on the shared CI server),
-    triggering a Playwright strict-mode violation. The per-test title is
-    unique, so it identifies exactly one row.
+    Keying on the accessible name — the row's visible ``conversation.title``,
+    stable in both normal and selection mode — rather than the href: in
+    selection mode every row's ``Link`` ``to`` becomes ``"#"``, which
+    react-router resolves against the active ``/c/{id}`` route, so *all* rows
+    collapse to the same href and an ``a[href="/c/{id}"]`` locator is
+    non-unique. It also can't key on the ``title`` attribute: that now carries
+    a multi-line ``title / Host: … / Agent: …`` tooltip, not the bare title.
+    The per-test title is unique, so the accessible name identifies one row.
     """
-    return page.locator(f'a[title="{title}"]')
+    return page.get_by_role("link", name=title, exact=True)
 
 
 def _set_title(base_url: str, session_id: str, title: str) -> None:
