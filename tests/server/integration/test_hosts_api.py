@@ -1274,25 +1274,40 @@ async def test_host_declared_shared_listed_and_reachable_by_non_owner(
     app, _reg, host_store, _cs = multi_user_app
     # host_shared connected with --shared --workroot /srv/work; host_priv did not.
     host_store.upsert_on_connect(
-        "host_shared", "alice-box", "alice@test.com", visibility="shared", workroot="/srv/work"
+        "b180e8a80fdea3f857c0679aec845b47",
+        "alice-box",
+        "alice@test.com",
+        visibility="shared",
+        workroot="/srv/work",
     )
-    host_store.upsert_on_connect("host_priv", "alice-laptop", "alice@test.com")
+    host_store.upsert_on_connect(
+        "409f5650aaee1b075450668037bc3fbd", "alice-laptop", "alice@test.com"
+    )
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # Bob (not the owner) sees the shared host but not the private one.
         resp = await client.get("/v1/hosts", headers={"x-test-user": "bob@test.com"})
         assert resp.status_code == 200
         rows = {h["host_id"]: h for h in resp.json()["hosts"]}
-        assert "host_shared" in rows and "host_priv" not in rows
-        assert rows["host_shared"]["visibility"] == "shared"
-        assert rows["host_shared"]["is_owner"] is False
+        assert (
+            "b180e8a80fdea3f857c0679aec845b47" in rows
+            and "409f5650aaee1b075450668037bc3fbd" not in rows
+        )
+        assert rows["b180e8a80fdea3f857c0679aec845b47"]["visibility"] == "shared"
+        assert rows["b180e8a80fdea3f857c0679aec845b47"]["is_owner"] is False
 
         # Bob can read the shared host's details (200), still 403 on the private.
         assert (
-            await client.get("/v1/hosts/host_shared", headers={"x-test-user": "bob@test.com"})
+            await client.get(
+                "/v1/hosts/b180e8a80fdea3f857c0679aec845b47",
+                headers={"x-test-user": "bob@test.com"},
+            )
         ).status_code == 200
         assert (
-            await client.get("/v1/hosts/host_priv", headers={"x-test-user": "bob@test.com"})
+            await client.get(
+                "/v1/hosts/409f5650aaee1b075450668037bc3fbd",
+                headers={"x-test-user": "bob@test.com"},
+            )
         ).status_code == 403
 
 
@@ -1304,11 +1319,11 @@ async def test_no_admin_visibility_toggle_endpoint(
     app, _reg, host_store, _cs = multi_user_app
     perm = app.state.permission_store
     perm.ensure_user("admin@test.com", is_admin=True)
-    host_store.upsert_on_connect("host_x", "alice-box", "alice@test.com")
+    host_store.upsert_on_connect("5d23e459b50e20479abf5d3fa8e2f936", "alice-box", "alice@test.com")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
-            "/v1/hosts/host_x/visibility",
+            "/v1/hosts/5d23e459b50e20479abf5d3fa8e2f936/visibility",
             headers={"x-test-user": "admin@test.com"},
             json={"visibility": "shared"},
         )
@@ -1316,7 +1331,10 @@ async def test_no_admin_visibility_toggle_endpoint(
         assert resp.status_code == 404, resp.text
         # And the host is still private: bob can't reach it.
         assert (
-            await client.get("/v1/hosts/host_x", headers={"x-test-user": "bob@test.com"})
+            await client.get(
+                "/v1/hosts/5d23e459b50e20479abf5d3fa8e2f936",
+                headers={"x-test-user": "bob@test.com"},
+            )
         ).status_code == 403
 
 
@@ -1331,13 +1349,17 @@ async def test_shared_host_confines_non_owner_to_workroot(
     """
     app, _reg, host_store, _cs = multi_user_app
     host_store.upsert_on_connect(
-        "host_sh", "alice-box", "alice@test.com", visibility="shared", workroot="/srv/work"
+        "e796741f1db43f1a80d4c39e7f07c0a3",
+        "alice-box",
+        "alice@test.com",
+        visibility="shared",
+        workroot="/srv/work",
     )
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # Non-owner, mkdir OUTSIDE workroot -> 403 (jailed), host never contacted.
         outside = await client.post(
-            "/v1/hosts/host_sh/directories",
+            "/v1/hosts/e796741f1db43f1a80d4c39e7f07c0a3/directories",
             headers={"x-test-user": "bob@test.com"},
             json={"path": "/etc/evil"},
         )
@@ -1346,14 +1368,14 @@ async def test_shared_host_confines_non_owner_to_workroot(
 
         # Non-owner, browse OUTSIDE workroot -> 403 too.
         browse_out = await client.get(
-            "/v1/hosts/host_sh/filesystem/etc/passwd",
+            "/v1/hosts/e796741f1db43f1a80d4c39e7f07c0a3/filesystem/etc/passwd",
             headers={"x-test-user": "bob@test.com"},
         )
         assert browse_out.status_code == 403, browse_out.text
 
         # Non-owner, INSIDE workroot -> passes the jail, then 409 (host offline).
         inside = await client.post(
-            "/v1/hosts/host_sh/directories",
+            "/v1/hosts/e796741f1db43f1a80d4c39e7f07c0a3/directories",
             headers={"x-test-user": "bob@test.com"},
             json={"path": "/srv/work/sub"},
         )
@@ -1361,7 +1383,7 @@ async def test_shared_host_confines_non_owner_to_workroot(
 
         # Owner is NOT jailed: /etc passes the (absent) jail, 409 offline.
         owner_out = await client.post(
-            "/v1/hosts/host_sh/directories",
+            "/v1/hosts/e796741f1db43f1a80d4c39e7f07c0a3/directories",
             headers={"x-test-user": "alice@test.com"},
             json={"path": "/etc/mine"},
         )

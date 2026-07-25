@@ -2997,15 +2997,36 @@ class SqlAlchemyConversationStore(ConversationStore):
         :returns: List of :class:`Conversation` entities.
         """
         with self._session() as session:
-            rows = (
-                session.query(SqlConversation)
-                .filter(
-                    SqlConversation.workspace_id == current_workspace_id(),
-                    SqlConversation.host_id == host_id,
+            meta_rows = (
+                session.execute(
+                    select(SqlConversationMetadata).where(
+                        SqlConversationMetadata.workspace_id == current_workspace_id(),
+                        SqlConversationMetadata.host_id == host_id,
+                    )
                 )
+                .scalars()
                 .all()
             )
-            return [_to_conversation(row) for row in rows]
+        if not meta_rows:
+            return []
+        conv_ids = [m.id for m in meta_rows]
+        meta_by_id = {m.id: m for m in meta_rows}
+        with self._conv_session() as ap_sess:
+            ap_rows = (
+                ap_sess.execute(
+                    select(SqlConversation).where(
+                        SqlConversation.workspace_id == current_workspace_id(),
+                        SqlConversation.id.in_(conv_ids),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            labels_by_conv = _fetch_labels_bulk(ap_sess, conv_ids)
+        return [
+            _to_conversation(r, meta_by_id.get(r.id), labels_by_conv.get(r.id, {}))
+            for r in ap_rows
+        ]
 
     def list_conversations_by_runner_id(
         self,
