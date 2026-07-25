@@ -20,7 +20,7 @@ from urllib.parse import urlencode
 
 import httpx
 import jwt
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from starlette.responses import RedirectResponse, Response
 
 from omnigent.server.accounts_store import SqlAlchemyAccountStore
@@ -568,7 +568,10 @@ def create_auth_router(
     # ── Admin: read-only user list ────────────────────────────────
 
     @router.get("/users")
-    async def list_users(request: Request) -> Response:
+    async def list_users(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=1000),
+    ) -> Response:
         """List all users (admin only).
 
         The OIDC analog of the accounts provider's ``GET /auth/users``
@@ -599,7 +602,7 @@ def create_auth_router(
         if not is_admin:
             return JSONResponse(status_code=403, content={"error": "admin only"})
 
-        users = permission_store.list_users() if permission_store is not None else []
+        users = permission_store.list_users(limit=limit) if permission_store is not None else []
         return JSONResponse(
             status_code=200,
             content={
@@ -773,15 +776,22 @@ def _resolve_oidc_identity(
     IdPs that omit the claim for directory-managed users (e.g. Okta
     without custom API Access Management).
 
+    ``config.email_claim`` (from ``OMNIGENT_OIDC_EMAIL_CLAIM``) names
+    the claim that carries the email identity, for IdPs that omit
+    ``email`` (Microsoft Entra ID commonly issues only
+    ``preferred_username``). ``email_verified`` refers to the ``email``
+    claim, so a custom claim always needs the verification opt-out too.
+
     :param token_json: The token endpoint response JSON containing
         ``id_token``.
     :param config: The OIDC configuration with JWKS URI and
         expected issuer/audience.
-    :returns: ``(email, claims)`` — the email from the ``id_token``
-        when present and marked verified (else ``None``), and the
-        full validated claims dict (``{}`` when the token is
-        missing/invalid). Claims are only ever non-empty when the
-        signature and ``iss``/``aud`` checks passed.
+    :returns: ``(email, claims)`` — the email identity from the
+        configured ``email_claim`` when present and marked verified
+        (else ``None``), and the full validated claims dict (``{}``
+        when the token is missing/invalid or the identity is rejected).
+        Claims are only ever non-empty when the signature and
+        ``iss``/``aud`` checks passed.
     """
     id_token = token_json.get("id_token")
     if not id_token:
@@ -801,8 +811,40 @@ def _resolve_oidc_identity(
         _logger.warning("id_token validation failed: %s", exc)
         return None, {}
 
-    email = claims.get("email")
-    if not email:
+    email = claims.get(config.email_claim)
+    if not isinstance(email, str) or not email.strip():
+        _logger.warning(
+            "Rejecting id_token: %r claim is missing or not a non-empty string "
+            "(claims present: %s). "
+            "IdPs that use a different claim for the email identity "
+            "can set OMNIGENT_OIDC_EMAIL_CLAIM.",
+            config.email_claim,
+            sorted(claims.keys()),
+        )
+        return None, {}
+    email = email.strip()
+
+    # ``email_verified`` refers to the ``email`` claim (OIDC core), so
+    # it vouches nothing about a custom identity claim — a token can
+    # carry ``email_verified: true`` for a *different* address than the
+    # one being minted. A custom claim therefore always requires the
+    # explicit opt-out, regardless of ``email_verified``.
+    if config.email_claim != "email":
+        if config.skip_email_verification:
+            _logger.info(
+                "Accepting id_token %s %r; the claim has no verified "
+                "marker (OMNIGENT_OIDC_SKIP_EMAIL_VERIFICATION is set)",
+                config.email_claim,
+                email,
+            )
+            return email, claims
+        _logger.warning(
+            "Rejecting id_token: %s %r has no email_verified marker "
+            "(email_verified refers to the email claim); set "
+            "OMNIGENT_OIDC_SKIP_EMAIL_VERIFICATION to accept it",
+            config.email_claim,
+            email,
+        )
         return None, {}
 
     # Reject unless the IdP affirmatively verified the email. A signed

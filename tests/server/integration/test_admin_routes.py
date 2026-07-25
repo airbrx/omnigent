@@ -211,10 +211,14 @@ async def test_list_users_includes_host_counts(
     _make_user(db_uri, "alice@example.com")
     hosts = HostStore(db_uri)
     # upsert_on_connect registers a fresh, online host.
-    hosts.upsert_on_connect("host_a1", "alice-laptop", "alice@example.com")
-    hosts.upsert_on_connect("host_a2", "alice-desktop", "alice@example.com")
+    hosts.upsert_on_connect(
+        "2af665017b2de6c88bfb8ec9cb4602d7", "alice-laptop", "alice@example.com"
+    )
+    hosts.upsert_on_connect(
+        "d20da5ceec8a187a07e979dc92337ada", "alice-desktop", "alice@example.com"
+    )
     # Mark one offline so online_host_count < host_count.
-    hosts.set_offline("host_a2")
+    hosts.set_offline("d20da5ceec8a187a07e979dc92337ada")
 
     resp = await auth_client.get("/v1/admin/users", headers=_headers("boss@example.com"))
 
@@ -270,8 +274,12 @@ async def test_list_user_sessions_includes_host(
     bound = _make_session_for(db_uri, "alice@example.com")
     unbound = _make_session_for(db_uri, "alice@example.com")
     hosts = HostStore(db_uri)
-    hosts.upsert_on_connect("host_a1", "alice-laptop", "alice@example.com")
-    SqlAlchemyConversationStore(db_uri).set_host_id(bound, "host_a1", workspace="/w")
+    hosts.upsert_on_connect(
+        "2af665017b2de6c88bfb8ec9cb4602d7", "alice-laptop", "alice@example.com"
+    )
+    SqlAlchemyConversationStore(db_uri).set_host_id(
+        bound, "2af665017b2de6c88bfb8ec9cb4602d7", workspace="/w"
+    )
 
     resp = await auth_client.get(
         "/v1/admin/users/alice@example.com/sessions",
@@ -422,11 +430,16 @@ async def test_list_sessions_filtered_by_host(auth_client: httpx.AsyncClient, db
     _make_user(db_uri, "boss@example.com", is_admin=True)
     bound = _make_session_for(db_uri, "alice@example.com")
     _make_session_for(db_uri, "alice@example.com")  # unbound — must not match
-    HostStore(db_uri).upsert_on_connect("host_h1", "alice-laptop", "alice@example.com")
-    SqlAlchemyConversationStore(db_uri).set_host_id(bound, "host_h1", workspace="/w")
+    HostStore(db_uri).upsert_on_connect(
+        "9febc95d789ecb6fea1a666306c94844", "alice-laptop", "alice@example.com"
+    )
+    SqlAlchemyConversationStore(db_uri).set_host_id(
+        bound, "9febc95d789ecb6fea1a666306c94844", workspace="/w"
+    )
 
     resp = await auth_client.get(
-        "/v1/admin/sessions?host=host_h1", headers=_headers("boss@example.com")
+        "/v1/admin/sessions?host=9febc95d789ecb6fea1a666306c94844",
+        headers=_headers("boss@example.com"),
     )
     assert resp.status_code == 200
     rows = resp.json()["sessions"]
@@ -453,28 +466,32 @@ async def test_list_hosts_with_version_and_filters(
     _make_user(db_uri, "boss@example.com", is_admin=True)
     hosts = HostStore(db_uri)
     hosts.upsert_on_connect(
-        "host_on",
+        "f6f8a58b783fef5c0e571ccac450e19b",
         "alice-laptop",
         "alice@example.com",
         version="0.3.1",
         os="Darwin (arm64)",
         login_token_expires_at=1784433709,
     )
-    hosts.upsert_on_connect("host_off", "alice-desktop", "alice@example.com", version="0.3.0")
-    hosts.set_offline("host_off")
-    hosts.upsert_on_connect("host_bob", "bob-laptop", "bob@example.com", version="0.3.1")
+    hosts.upsert_on_connect(
+        "ba0a675ffb72378982f8ef434478adc8", "alice-desktop", "alice@example.com", version="0.3.0"
+    )
+    hosts.set_offline("ba0a675ffb72378982f8ef434478adc8")
+    hosts.upsert_on_connect(
+        "774d8c150c0060ddb61a91b23b64a0d0", "bob-laptop", "bob@example.com", version="0.3.1"
+    )
 
     # All hosts.
     resp = await auth_client.get("/v1/admin/hosts", headers=_headers("boss@example.com"))
     assert resp.status_code == 200
     by_id = {h["host_id"]: h for h in resp.json()["hosts"]}
-    assert by_id["host_on"]["version"] == "0.3.1"
-    assert by_id["host_on"]["os"] == "Darwin (arm64)"
-    assert by_id["host_on"]["login_token_expires_at"] == 1784433709
-    assert by_id["host_bob"]["login_token_expires_at"] is None
-    assert by_id["host_on"]["online"] is True
-    assert by_id["host_off"]["online"] is False
-    assert by_id["host_off"]["version"] == "0.3.0"
+    assert by_id["f6f8a58b783fef5c0e571ccac450e19b"]["version"] == "0.3.1"
+    assert by_id["f6f8a58b783fef5c0e571ccac450e19b"]["os"] == "Darwin (arm64)"
+    assert by_id["f6f8a58b783fef5c0e571ccac450e19b"]["login_token_expires_at"] == 1784433709
+    assert by_id["774d8c150c0060ddb61a91b23b64a0d0"]["login_token_expires_at"] is None
+    assert by_id["f6f8a58b783fef5c0e571ccac450e19b"]["online"] is True
+    assert by_id["ba0a675ffb72378982f8ef434478adc8"]["online"] is False
+    assert by_id["ba0a675ffb72378982f8ef434478adc8"]["version"] == "0.3.0"
 
     # Filter by owner.
     resp = await auth_client.get(
@@ -488,7 +505,7 @@ async def test_list_hosts_with_version_and_filters(
         "/v1/admin/hosts?status=offline", headers=_headers("boss@example.com")
     )
     ids = {h["host_id"] for h in resp.json()["hosts"]}
-    assert ids == {"host_off"}
+    assert ids == {"ba0a675ffb72378982f8ef434478adc8"}
 
 
 async def test_list_hosts_forbidden_for_non_admin(
@@ -524,15 +541,21 @@ async def test_admin_hosts_outdated_flag(auth_client: httpx.AsyncClient, db_uri:
     _make_user(db_uri, "boss@example.com", is_admin=True)
     hosts = HostStore(db_uri)
     # A host on the server's exact build is up to date; a different one is outdated.
-    hosts.upsert_on_connect("host_cur", "cur", "alice@example.com", version=version_label())
-    hosts.upsert_on_connect("host_old", "old", "alice@example.com", version="0.0.1 (deadbeef)")
-    hosts.upsert_on_connect("host_none", "none", "alice@example.com")  # no version
+    hosts.upsert_on_connect(
+        "d9a64df6b10447f664ddb75b4f781d65", "cur", "alice@example.com", version=version_label()
+    )
+    hosts.upsert_on_connect(
+        "660d14a93e762f508ff74112a7a81eea", "old", "alice@example.com", version="0.0.1 (deadbeef)"
+    )
+    hosts.upsert_on_connect(
+        "6ea740b02b52df81a5ed3ba1e717979d", "none", "alice@example.com"
+    )  # no version
 
     resp = await auth_client.get("/v1/admin/hosts", headers=_headers("boss@example.com"))
     by_id = {h["host_id"]: h for h in resp.json()["hosts"]}
-    assert by_id["host_cur"]["outdated"] is False
-    assert by_id["host_old"]["outdated"] is True
-    assert by_id["host_none"]["outdated"] is None
+    assert by_id["d9a64df6b10447f664ddb75b4f781d65"]["outdated"] is False
+    assert by_id["660d14a93e762f508ff74112a7a81eea"]["outdated"] is True
+    assert by_id["6ea740b02b52df81a5ed3ba1e717979d"]["outdated"] is None
 
 
 # ── GET /install.sh ─────────────────────────────────────────

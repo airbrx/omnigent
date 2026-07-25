@@ -82,7 +82,7 @@ def admin_scenario(live_server: str) -> Iterator[_AdminScenario]:
     conv = convs.create_conversation()
     convs.update_conversation(conv.id, title=scenario.session_title)
     perms.grant(scenario.member_email, conv.id, level=LEVEL_OWNER)
-    host_id = f"host-{suffix}"
+    host_id = uuid.uuid4().hex
     hosts.upsert_on_connect(
         host_id,
         scenario.host_name,

@@ -338,7 +338,7 @@ def create_admin_router(
         def _build() -> dict[str, object]:
             hosts = host_store.list_all_hosts() if host_store is not None else []
             if user is not None:
-                hosts = [h for h in hosts if h.owner == user]
+                hosts = [h for h in hosts if h.user_id == user]
             online = (
                 host_store.online_host_ids([h.host_id for h in hosts])
                 if host_store is not None and hosts
@@ -361,7 +361,7 @@ def create_admin_router(
                     {
                         "host_id": h.host_id,
                         "name": h.name,
-                        "owner": h.owner,
+                        "owner": h.user_id,
                         "online": is_online,
                         "version": h.version,
                         "os": h.os,

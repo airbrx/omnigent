@@ -107,6 +107,11 @@ _CONFIG_URL_PROD = "https://config.omnigent-telemetry.io"
 _CONFIG_URL_STAGING = "https://config-staging.omnigent-telemetry.io"
 
 
+# Cached result of is_disabled() — computed once on first call, then reused.
+# Using a list so it's mutable from within the function (avoids global keyword).
+_IS_DISABLED_CACHE: list[bool | None] = [None]
+
+
 @dataclass
 class TelemetryConfig:
     """Resolved remote configuration for the telemetry client."""
@@ -164,7 +169,7 @@ def _fetch_remote_config() -> TelemetryConfig | None:
             _logger.debug("Telemetry disabled for OS %s by remote config", platform.system())
             return None
         rollout = cfg.get("rollout_percentage", 100)
-        if random.randint(0, 100) > rollout:
+        if random.random() * 100 >= rollout:
             _logger.debug("Telemetry excluded by rollout_percentage=%s", rollout)
             return None
 
@@ -210,8 +215,12 @@ def _config_telemetry_disabled() -> bool:
 def is_disabled() -> bool:
     """Return ``True`` when telemetry should be completely suppressed.
 
+    Result is cached after the first call — env vars and config.yaml are
+    checked once at startup and not re-read on every emit, so there is no
+    per-request I/O overhead.
+
     Checks (in order):
-    1. ``OMNIGENT_TELEMETRY=0``
+    1. ``OMNIGENT_ANALYTICS=0``
     2. ``DISABLE_TELEMETRY=true`` or ``OMNIGENT_DISABLE_TELEMETRY=true``
     3. ``DO_NOT_TRACK=1``
     4. Any CI environment variable from :data:`_CI_ENV_VARS`
@@ -219,19 +228,28 @@ def is_disabled() -> bool:
 
     Always returns a ``bool``; never raises.
     """
+    if _IS_DISABLED_CACHE[0] is not None:
+        return _IS_DISABLED_CACHE[0]
     try:
-        if os.environ.get("OMNIGENT_TELEMETRY", "").strip() == "0":
-            return True
-        for var in ("DISABLE_TELEMETRY", "OMNIGENT_DISABLE_TELEMETRY"):
-            if os.environ.get(var, "").strip().lower() in ("1", "true", "yes"):
-                return True
-        if os.environ.get("DO_NOT_TRACK", "").strip() == "1":
-            return True
-        if any(var in os.environ for var in _CI_ENV_VARS):
-            return True
-        return _config_telemetry_disabled()
+        result = _compute_is_disabled()
     except Exception:
+        result = True
+    _IS_DISABLED_CACHE[0] = result
+    return result
+
+
+def _compute_is_disabled() -> bool:
+    """Compute whether telemetry is disabled (uncached)."""
+    if os.environ.get("OMNIGENT_ANALYTICS", "").strip() == "0":
         return True
+    for var in ("DISABLE_TELEMETRY", "OMNIGENT_DISABLE_TELEMETRY"):
+        if os.environ.get(var, "").strip().lower() in ("1", "true", "yes"):
+            return True
+    if os.environ.get("DO_NOT_TRACK", "").strip() == "1":
+        return True
+    if any(var in os.environ for var in _CI_ENV_VARS):
+        return True
+    return _config_telemetry_disabled()
 
 
 def _detect_environment() -> str | None:
@@ -267,6 +285,7 @@ def _build_record(event: object) -> dict[str, Any]:
     installation_id: str | None = fields.pop("installation_id", None)
     session_id: str | None = fields.pop("session_id", None)
     anon_user_id: str | None = fields.pop("anon_user_id", None)
+    host_installation_id: str | None = fields.pop("host_installation_id", None)
 
     # All remaining event-specific fields go into params as a JSON string.
     params_str: str | None = None
@@ -285,6 +304,7 @@ def _build_record(event: object) -> dict[str, Any]:
         "duration_ms": 0,
         "installation_id": installation_id,
         "anon_user_id": anon_user_id,
+        "host_installation_id": host_installation_id,
         "environment": _detect_environment(),
         "params": params_str,
     }

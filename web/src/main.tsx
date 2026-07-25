@@ -21,7 +21,9 @@ import {
   readUiFontFamily,
   readUiFontSizePx,
 } from "./lib/uiFontPreferences";
+import { applySidebarFontSize, readSidebarFontSizePx } from "./lib/sidebarFontPreferences";
 import { applyThemePalette, readThemePalette } from "./lib/themePalette";
+import { applyCustomTheme, readCustomTheme } from "./lib/customTheme";
 import { initChatStore } from "./store/chatStore";
 import "./index.css";
 
@@ -59,9 +61,11 @@ initNativeInsets();
 // Apply the saved UI font size and family before first paint so there's no flash.
 applyUiFontScale(readUiFontSizePx());
 applyUiFontFamily(readUiFontFamily());
+applySidebarFontSize(readSidebarFontSizePx());
 
 // Apply the saved color palette (data-theme on <html>) before first paint too,
 // so the app renders in the chosen theme rather than flashing the brand default.
+applyCustomTheme(readCustomTheme());
 applyThemePalette(readThemePalette());
 
 // Probe /v1/info BEFORE the first render so the route table knows
@@ -77,6 +81,7 @@ const _bootProbe: Promise<ServerInfo> = Promise.race([
       () =>
         resolve({
           accounts_enabled: false,
+          single_user: false,
           login_url: null,
           needs_setup: false,
           databricks_features: false,
@@ -86,6 +91,9 @@ const _bootProbe: Promise<ServerInfo> = Promise.race([
           public_sharing_enabled: true,
           server_version: null,
           smart_routing_enabled: false,
+          harness_install_enabled: false,
+          installable_harnesses: [],
+          dictation_available: false,
         }),
       1500,
     ),

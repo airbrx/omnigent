@@ -54,18 +54,18 @@ const { projectsMock, conversationsRef, projectSessionsMock } = vi.hoisted(() =>
 vi.mock("@/hooks/useConversations", () => ({
   useConversations: vi.fn(),
   useArchiveConversation: () => ({ mutate: vi.fn() }),
-  // Fork: ProjectFolder renames projects inline; the component calls this
-  // hook unconditionally, so the mock must export it.
-  useRenameProject: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useBulkArchiveConversations: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useBulkDeleteConversations: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useBulkStopSessions: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useConnectedConversations: () => [],
   useStopAndDeleteConversation: () => ({ mutate: vi.fn() }),
-  usePinnedConversationBackfill: () => [],
+  usePinnedConversations: () => ({ data: [], isSuccess: true }),
+  useTogglePinnedConversation: () => ({ mutate: vi.fn() }),
+  setConversationPinned: vi.fn(() => Promise.resolve({})),
+  PINNED_CONVERSATIONS_KEY: ["pinned-conversations"],
   useRenameConversation: () => ({ mutate: vi.fn() }),
   useStopSession: () => ({ mutate: vi.fn() }),
-  useProjects: () => ({ data: projectsMock }),
+  useProjects: () => ({ data: projectsMock.map((name: string) => ({ id: `p_${name}`, name })) }),
   useProjectSessions: (project: string, enabled: boolean) => {
     const override = projectSessionsMock.current[project];
     const rows = !enabled
@@ -91,6 +91,8 @@ vi.mock("@/hooks/useConversations", () => ({
   },
   useMoveToProject: () => ({ mutate: vi.fn() }),
   useDeleteProject: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useRenameProject: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useCreateProject: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   fetchProjectSessionIds: vi.fn(() => Promise.resolve([] as string[])),
   PROJECT_LABEL_KEY: "omni_project",
 }));
@@ -142,11 +144,6 @@ function mockConversations(convs: Conversation[]) {
   );
 }
 
-// Fork: ConversationRow's title attribute is a multi-line tooltip
-// ("<title>\nHost: …\nAgent: …"). testing-library's default normalizer
-// collapses that newline to a space, so match rows on the first word.
-const byTitle = (id: string) => screen.getByTitle(new RegExp(`^${id}( |$)`));
-
 function renderSidebar() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -179,11 +176,11 @@ describe("Sidebar shift-click selection", () => {
     fireEvent.click(selectBtn);
 
     // Click first session (sets anchor)
-    const row1 = byTitle("s1").closest("a")!;
+    const row1 = screen.getByRole("link", { name: "s1" });
     fireEvent.click(row1);
 
     // Shift-click third session
-    const row3 = byTitle("s3").closest("a")!;
+    const row3 = screen.getByRole("link", { name: "s3" });
     fireEvent.click(row3, { shiftKey: true });
 
     // s1, s2, s3 should all be selected (bg-primary/5 class)
@@ -214,11 +211,11 @@ describe("Sidebar shift-click selection", () => {
     fireEvent.click(selectBtn);
 
     // Click c1 (first chat session, sets anchor)
-    const rowC1 = byTitle("c1").closest("a")!;
+    const rowC1 = screen.getByRole("link", { name: "c1" });
     fireEvent.click(rowC1);
 
     // Shift-click c3 (last chat session)
-    const rowC3 = byTitle("c3").closest("a")!;
+    const rowC3 = screen.getByRole("link", { name: "c3" });
     fireEvent.click(rowC3, { shiftKey: true });
 
     // Only c1, c2, c3 should be selected — NOT p1, p2
@@ -236,15 +233,15 @@ describe("Sidebar shift-click selection", () => {
     fireEvent.click(selectBtn);
 
     // Click s1 (anchor), shift-click s2 (range: s1, s2)
-    fireEvent.click(byTitle("s1").closest("a")!);
-    fireEvent.click(byTitle("s2").closest("a")!, { shiftKey: true });
+    fireEvent.click(screen.getByRole("link", { name: "s1" }));
+    fireEvent.click(screen.getByRole("link", { name: "s2" }), { shiftKey: true });
 
     await waitFor(() => {
       expect(screen.getByText("2 selected")).toBeInTheDocument();
     });
 
     // Normal click on s4 (sets new anchor, toggles s4 on)
-    fireEvent.click(byTitle("s4").closest("a")!);
+    fireEvent.click(screen.getByRole("link", { name: "s4" }));
 
     await waitFor(() => {
       expect(screen.getByText("3 selected")).toBeInTheDocument();
@@ -278,8 +275,8 @@ describe("Sidebar shift-click selection", () => {
     // Click p1 (anchor) then shift-click p3 — the range should include
     // p1, p2, p3 (all from the folder's own query, including p3 which
     // isn't in the global list).
-    fireEvent.click(byTitle("p1").closest("a")!);
-    fireEvent.click(byTitle("p3").closest("a")!, { shiftKey: true });
+    fireEvent.click(screen.getByRole("link", { name: "p1" }));
+    fireEvent.click(screen.getByRole("link", { name: "p3" }), { shiftKey: true });
 
     await waitFor(() => {
       expect(screen.getByText("3 selected")).toBeInTheDocument();
@@ -293,12 +290,12 @@ describe("Sidebar shift-click selection", () => {
 
     // Enter, click s1, exit
     fireEvent.click(screen.getByRole("button", { name: /select/i }));
-    fireEvent.click(byTitle("s1").closest("a")!);
+    fireEvent.click(screen.getByRole("link", { name: "s1" }));
     fireEvent.click(screen.getByRole("button", { name: /exit/i }));
 
     // Re-enter, shift-click s3 — should single-toggle (no anchor)
     fireEvent.click(screen.getByRole("button", { name: /select/i }));
-    fireEvent.click(byTitle("s3").closest("a")!, { shiftKey: true });
+    fireEvent.click(screen.getByRole("link", { name: "s3" }), { shiftKey: true });
 
     await waitFor(() => {
       expect(screen.getByText("1 selected")).toBeInTheDocument();
