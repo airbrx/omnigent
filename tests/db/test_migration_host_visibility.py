@@ -52,7 +52,7 @@ def test_visibility_defaults_null_on_insert(tmp_path: Path) -> None:
         with engine.begin() as conn:
             conn.execute(
                 sa.text(
-                    "INSERT INTO hosts (owner, name, host_id, status, "
+                    "INSERT INTO hosts (user_id, name, host_id, status, "
                     "created_at, updated_at) VALUES "
                     "('alice@x', 'laptop', 'host_z', 1, 1, 1)"
                 )
