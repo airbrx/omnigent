@@ -122,15 +122,15 @@ export function settingsNavGroups(
   // read-only under OIDC (no password actions); Policies is identical.
   if (isAdmin) {
     // Members (manage other accounts), Sessions (view any user's sessions),
-    // and Sharing (grant sessions to other users) have no meaning in
-    // single-user mode — there are no other users — so drop them there. Hosts
-    // (host management) and Policies (global policies apply to a solo user's
-    // own sessions too) stay.
+    // Hosts (cross-user host admin), and Sharing (grant sessions to other
+    // users) are all cross-user surfaces with no meaning in single-user mode —
+    // there are no other users — so drop them there. Policies stays: global
+    // policies apply to a solo user's own sessions too.
     const adminItems: SettingsNavItem[] = [];
     if (!isSingleUser) adminItems.push({ id: "members", label: "Members", icon: UsersIcon });
     if (!isSingleUser)
       adminItems.push({ id: "sessions", label: "Sessions", icon: MessagesSquareIcon });
-    adminItems.push({ id: "hosts", label: "Hosts", icon: ServerIcon });
+    if (!isSingleUser) adminItems.push({ id: "hosts", label: "Hosts", icon: ServerIcon });
     adminItems.push({ id: "policies", label: "Policies", icon: ShieldCheckIcon });
     if (!isSingleUser) adminItems.push({ id: "sharing", label: "Sharing", icon: Share2Icon });
     groups.push({ title: "Admin", items: adminItems });
