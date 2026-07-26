@@ -205,6 +205,55 @@ async def test_launch_runner_writes_host_id_and_runner_id(
     assert updated.host_id == _HOST_ID, "host_id should be written to session row"
 
 
+async def test_launch_runner_rolls_back_when_host_bind_fails(db_uri: str) -> None:
+    """A failed host-bind must NOT leave the session half-bound (stranded).
+
+    ``set_runner_id`` commits in its own transaction; ``set_host_id`` then runs
+    in a SEPARATE one. If that second write fails (e.g. an IntegrityError from a
+    NULL workspace), the row must roll back to fully-unbound — NOT be left
+    ``runner_id``-set / ``host_id``-NULL. That half-bound state is exactly the
+    ``local_stranded`` bug: it mislabels the session, shows the wrong
+    ``omnigent … --resume`` CLI dialog, and forces the owner to fork to keep
+    working (and the fork-resume re-bind can strand again — the recurrence).
+
+    A store subclass raises on ``set_host_id`` so the failure lands on the
+    exact write the atomic-bind guard protects.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    class _FailHostBindStore(SqlAlchemyConversationStore):
+        def set_host_id(self, *args: object, **kwargs: object) -> None:  # type: ignore[override]
+            raise IntegrityError("set_host_id", {}, Exception("workspace required for host"))
+
+    registry = HostRegistry()
+    host_store = HostStore(db_uri)
+    conv_store = _FailHostBindStore(db_uri)
+    app = FastAPI()
+    app.include_router(create_host_tunnel_router(registry, host_store), prefix="/v1")
+    app.include_router(create_hosts_router(registry, host_store, conv_store), prefix="/v1")
+
+    # Keep the communicator referenced: dropping it would GC the host WS,
+    # deregistering the host so the launch fails the "host is offline" gate
+    # (409) before ever reaching the bind we're testing.
+    comm = await _connect_host(app, registry)
+    conv = conv_store.create_conversation(agent_id=None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            f"/v1/hosts/{_HOST_ID}/runners",
+            json={"session_id": conv.id, "workspace": "/tmp"},
+        )
+    assert comm is not None  # keep the host connection alive across the POST
+
+    assert resp.status_code == 400
+    updated = conv_store.get_conversation(conv.id)
+    assert updated is not None
+    # Rolled back to fully unbound — NOT the stranded (runner set / host NULL)
+    # state. A retry can then bind cleanly instead of the owner forking.
+    assert updated.runner_id is None, "runner_id must roll back when the host-bind fails"
+    assert updated.host_id is None, "host_id must remain unset on a failed bind"
+
+
 async def test_host_id_in_session_response(
     binding_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
 ) -> None:
