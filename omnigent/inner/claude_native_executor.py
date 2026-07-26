@@ -190,7 +190,16 @@ def _session_is_active(bridge_dir: Path, request_session_id: str | None) -> bool
     if request_session_id is None:
         return True
     active_session_id = read_active_session_id(bridge_dir)
-    return active_session_id is None or active_session_id == request_session_id
+    if active_session_id is None:
+        return True
+    # Compare bare ids: the harness spawns with a bare REQUEST_SESSION_ID
+    # while some write paths (the /clear rotation, a prefixed launch id)
+    # store a ``conv_``-prefixed ``active_session_id``. A strict compare then
+    # fails for the SAME session and rejects every send with the bogus
+    # "no longer active after /clear" error. Normalising both sides the way
+    # bridge-dir hashing already does (claude_native_state) keeps the guard
+    # correct regardless of which side carries the prefix.
+    return active_session_id.removeprefix("conv_") == request_session_id.removeprefix("conv_")
 
 
 def _latest_user_text(messages: list[Message], bridge_dir: Path) -> str:
