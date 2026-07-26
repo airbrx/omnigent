@@ -1668,21 +1668,21 @@ def test_terminal_lookup_miss_log_explains_stopped_registered_terminal(
 
 
 @pytest.mark.asyncio
-async def test_auto_create_claude_terminal_resets_stale_bridge_id_label(
+async def test_auto_create_claude_terminal_honours_inherited_bridge_id_label(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    Auto-create corrects a stale ``bridge_id`` label on the Omnigent session.
+    Auto-create honours an inherited ``bridge_id`` label (matches the executor).
 
-    If a prior rotation left ``BRIDGE_ID_LABEL_KEY`` set to an older
-    bridge id (e.g. ``"m0-bridge_from_prior_rotation"``),
-    ``_auto_create_claude_terminal`` must PATCH the label to
-    ``session_id`` before proceeding.  Without the correction,
-    ``_ensure_comment_relay_started`` would later read the stale label
-    and write ``tool_relay.json`` into the wrong bridge dir — the bridge
-    MCP subprocess would never see it and the relay tools
-    (``list_comments``, ``sys_session_list``, etc.) would be absent.
+    A /clear-rotated session legitimately inherits the ORIGINAL session's
+    ``bridge_id`` (see ``_create_clear_replacement_session``), and the executor's
+    spawn_env resolves that label verbatim via ``build_claude_native_spawn_env``.
+    ``_auto_create_claude_terminal`` must key the terminal — the pane AND
+    ``tmux.json`` — on the SAME dir the executor uses (``D(label)``), NOT on
+    ``D(session_id)``.  The old override to ``session_id`` stranded the harness in
+    ``D(label)`` while the pane landed in ``D(session_id)``, so every composer
+    send missed the live terminal after a /clear + host relaunch.
     """
     monkeypatch.setattr(claude_native_bridge, "_TRUSTED_PARENT", tmp_path)
     monkeypatch.setattr(claude_native_bridge, "_BRIDGE_ROOT", tmp_path / "root")
@@ -1696,10 +1696,25 @@ async def test_auto_create_claude_terminal_resets_stale_bridge_id_label(
         _no_op_forwarder,
     )
 
-    class _FakeResourceRegistry:
-        """Returns a minimal terminal view; no live terminal registry."""
+    class _FakeInstance:
+        """Minimal live terminal instance for the tmux-target publish."""
 
-        terminal_registry = None
+        running = True
+        socket_path = "/tmp/fake-claude.sock"
+        tmux_target = "claude:0.0"
+
+    class _FakeTerminalRegistry:
+        """Returns the live instance for any (session, terminal, key) lookup."""
+
+        def get(self, conversation_id: str, terminal_name: str, session_key: str) -> Any:
+            """Return the fake live instance."""
+            del conversation_id, terminal_name, session_key
+            return _FakeInstance()
+
+    class _FakeResourceRegistry:
+        """Resource registry exposing a live terminal registry."""
+
+        terminal_registry = _FakeTerminalRegistry()
 
         async def launch_required_terminal(
             self,
@@ -1730,17 +1745,20 @@ async def test_auto_create_claude_terminal_resets_stale_bridge_id_label(
                 },
             )
 
+    session_id = "9a0bec6675dc7ac693d7bf6f53cfb984"
+    inherited_bridge_id = "conv_1f74aa2b33e2404cade9adfd86aeea7f"
+
     # Capture all HTTP requests made to the fake Omnigent server.
     recorded_requests: list[httpx.Request] = []
 
     def _handle(req: httpx.Request) -> httpx.Response:
-        """Record every request; return 200 with minimal session payload."""
+        """Report the session's bridge_id label as the inherited original."""
         recorded_requests.append(req)
         return httpx.Response(
             200,
             json={
                 "reasoning_effort": None,
-                "labels": {BRIDGE_ID_LABEL_KEY: "m0-bridge_from_prior_rotation"},
+                "labels": {BRIDGE_ID_LABEL_KEY: inherited_bridge_id},
             },
             request=req,
         )
@@ -1751,7 +1769,7 @@ async def test_auto_create_claude_terminal_resets_stale_bridge_id_label(
     )
 
     await _auto_create_claude_terminal(
-        "9a0bec6675dc7ac693d7bf6f53cfb984",
+        session_id,
         _FakeResourceRegistry(),
         lambda _sid, _evt: None,
         server_client=fake_client,
@@ -1759,26 +1777,38 @@ async def test_auto_create_claude_terminal_resets_stale_bridge_id_label(
 
     await fake_client.aclose()
 
-    # Exactly one PATCH request must have been sent to correct the label.
-    # 0 means the fix was not applied and the relay would target the wrong dir.
-    patch_requests = [r for r in recorded_requests if r.method == "PATCH"]
-    assert len(patch_requests) == 1, (
-        f"Expected exactly one PATCH to correct the stale bridge_id label; "
-        f"got {len(patch_requests)}. 0 means _auto_create_claude_terminal did "
-        f"not update the label, so _ensure_comment_relay_started would write "
-        f"tool_relay.json to a dir the bridge subprocess never reads."
-    )
+    inherited_dir = claude_native_bridge.bridge_dir_for_bridge_id(inherited_bridge_id)
+    natural_dir = claude_native_bridge.bridge_dir_for_bridge_id(session_id)
+    # The inherited-label dir is prepared; the natural session_id dir is not.
+    assert inherited_dir.exists()
+    assert not natural_dir.exists()
+    # tmux.json (what the executor reads to inject) must land in the SAME dir the
+    # executor resolves from the label — NOT the session_id dir. Divergence here
+    # was the "composer send misses the live terminal after /clear + relaunch" bug.
+    assert (inherited_dir / "tmux.json").exists()
+    assert not (natural_dir / "tmux.json").exists()
 
+    # The dir auto-create keyed on must equal the one the executor's spawn_env
+    # resolves for the same label — the invariant this fix restores.
+    executor_bridge_dir = claude_native_bridge.build_claude_native_spawn_env(
+        session_id, bridge_id=inherited_bridge_id
+    )[claude_native_bridge.BRIDGE_DIR_ENV_VAR]
+    assert executor_bridge_dir == str(inherited_dir)
+
+    # Auto-create must NOT reset the label to session_id (the old override that
+    # caused the divergence). Any bridge_id label PATCH must preserve the
+    # inherited id so the executor and the terminal keep resolving one dir.
     import json as _json
 
-    patch_body = _json.loads(patch_requests[0].content)
-    assert (
-        patch_body.get("labels", {}).get(BRIDGE_ID_LABEL_KEY) == "9a0bec6675dc7ac693d7bf6f53cfb984"
-    ), (
-        f"PATCH must set {BRIDGE_ID_LABEL_KEY!r} to the session_id "
-        f"'9a0bec6675dc7ac693d7bf6f53cfb984' so _ensure_comment_relay_started finds the "
-        f"correct bridge dir; got {patch_body.get('labels', {})!r}"
-    )
+    for req in recorded_requests:
+        if req.method != "PATCH":
+            continue
+        labels = _json.loads(req.content).get("labels", {})
+        if BRIDGE_ID_LABEL_KEY in labels:
+            assert labels[BRIDGE_ID_LABEL_KEY] == inherited_bridge_id, (
+                "auto-create must honour the inherited bridge_id label, not reset "
+                f"it to session_id; got {labels[BRIDGE_ID_LABEL_KEY]!r}"
+            )
 
 
 @pytest.mark.asyncio

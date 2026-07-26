@@ -5415,25 +5415,23 @@ async def _auto_create_claude_terminal(
         agent_name,
         skills_filter,
     )
-    # Pick the bridge id this session's dir is keyed on. Normally session_id,
-    # and we (re)assert the label = session_id so a STALE label from a rotation
-    # that timed out before its terminal transfer can't make
-    # _ensure_comment_relay_started write tool_relay.json to the wrong dir.
+    # Resolve the bridge id this session's dir is keyed on the SAME way the
+    # executor's spawn_env does (build_claude_native_spawn_env via
+    # _claude_native_bridge_id_for_session): honour the existing bridge_id label
+    # verbatim, falling back to session_id only when the label is absent. The two
+    # paths MUST agree — otherwise the harness listens in D(label) while the pane
+    # lands in D(session_id), so every composer send misses the live terminal.
     #
-    # EXCEPTION: a session superseded by /clear is deliberately re-keyed to
-    # "{session_id}-cleared" (see _create_clear_replacement_session). Its natural
-    # D(session_id) is the NEW session's live pane; resuming there would share
-    # one transcript with two forwarders (duplicate items) and trip the
-    # "no longer active after /clear" guard. So when the label is exactly that
-    # marker, honour it and resume in the session's own isolated dir. The
-    # executor spawn_env already resolves the same label, so the two agree.
-    cleared_bridge_id = f"{session_id}-cleared"
-    existing_bridge_id = await _claude_native_bridge_id_with_optional_labels(
+    # This covers the /clear cases without special-casing: the NEW session
+    # legitimately inherits the ORIGINAL bridge_id and owns D(original), while the
+    # superseded session carries the "{session_id}-cleared" marker and resumes in
+    # its own isolated dir (see _create_clear_replacement_session). A normal
+    # session has label == session_id (or none), so D(label) == D(session_id).
+    bridge_id = await _claude_native_bridge_id_with_optional_labels(
         server_client=server_client,
         session_id=session_id,
         session_labels=session_init.snapshot.labels if session_init is not None else None,
     )
-    bridge_id = cleared_bridge_id if existing_bridge_id == cleared_bridge_id else session_id
     if session_init is not None:
         # The transfer-inbound guard has already consumed the original label.
         # From this point this terminal owns the bridge, so later first-turn
