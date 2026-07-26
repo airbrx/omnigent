@@ -203,6 +203,59 @@ async def test_run_turn_rejects_stale_session_after_clear(
 
 
 @pytest.mark.asyncio
+async def test_run_turn_injects_when_active_id_prefix_differs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    A ``conv_``-prefix mismatch is the SAME session — the send must land.
+
+    The harness spawns with a bare ``REQUEST_SESSION_ID`` while some write
+    paths (the /clear rotation, a prefixed launch id) persist a
+    ``conv_``-prefixed ``active_session_id``. A strict compare then rejects
+    every send for the live session with the bogus "no longer active after
+    /clear" error (the Signal/Gateway breakage). The guard normalises the
+    prefix, so the injection proceeds.
+    """
+    (tmp_path / "bridge.json").write_text(
+        '{"active_session_id": "conv_abc123"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(REQUEST_SESSION_ID_ENV_VAR, "abc123")
+
+    injected: list[str] = []
+
+    def record_inject_user_message(
+        bridge_dir_arg: Path,
+        *,
+        content: str,
+        timeout_s: float = 30.0,
+    ) -> None:
+        """Record the injected text instead of driving tmux."""
+        del bridge_dir_arg, timeout_s
+        injected.append(content)
+
+    monkeypatch.setattr(
+        claude_native_executor,
+        "inject_user_message",
+        record_inject_user_message,
+    )
+
+    executor = ClaudeNativeExecutor(tmp_path)
+    events = [
+        event
+        async for event in executor.run_turn(
+            messages=[{"role": "user", "content": "hello live session"}],
+            tools=[],
+            system_prompt="ignored",
+        )
+    ]
+
+    assert events == [TurnComplete(response=None)]
+    assert injected == ["hello live session"]
+
+
+@pytest.mark.asyncio
 async def test_enqueue_session_message_rejects_stale_session_after_clear(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
