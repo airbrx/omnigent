@@ -1961,3 +1961,71 @@ async def test_persist_error_labels_short_message_stored_verbatim() -> None:
         captured["d6e1678fb446a1cf5a892e0df60aaba3"]["omnigent.last_task_error_code"]
         == "runner_error"
     )
+
+
+# ── detail snapshot preserves ``waiting`` (composer send-gate) ───────────────
+#
+# The list/rollup read paths collapse ``waiting`` → ``running`` for the sidebar
+# spinner, but the DETAIL snapshot must forward the real ``waiting`` so the web
+# composer's reconnect/switch path finalizes the ended turn instead of reopening
+# a streaming response. Collapsing it stranded follow-ups in the "(queued)"
+# placeholder whenever a background shell (e.g. a dev webserver) outlived the
+# turn — the caller had to jump to the terminal to send.
+
+
+@pytest.mark.asyncio
+async def test_session_snapshot_preserves_waiting_status() -> None:
+    """A turn-end ``waiting`` (background work remains) survives the snapshot."""
+    cid = "aa11bb22cc33dd44ee55ff6600112233"
+    conv_store = _ConversationStore([_message_item("item_1", "hi")])
+    _sessions_mod._session_status_cache[cid] = "waiting"
+    _sessions_mod._session_background_task_count_cache[cid] = 1
+    try:
+        snapshot = await _get_session_snapshot(conv_store, cid)  # type: ignore[arg-type]
+    finally:
+        _sessions_mod._session_status_cache.pop(cid, None)
+        _sessions_mod._session_background_task_count_cache.pop(cid, None)
+    # NOT collapsed to "running": the composer treats waiting as free-to-send.
+    assert snapshot.status == "waiting"
+    # The background-shell tally still rides along so the spinner stays lit.
+    assert snapshot.background_task_count == 1
+
+
+@pytest.mark.asyncio
+async def test_session_snapshot_idle_with_background_shell_reads_waiting() -> None:
+    """A settled-idle turn with a live background shell reports ``waiting``.
+
+    The server's trailing PTY-activity ``idle`` (no count) can leave the raw
+    cache at ``idle`` while the sticky tally still holds a live shell. The
+    detail snapshot must still forward ``waiting`` so the composer sends.
+    """
+    cid = "bb22cc33dd44ee55ff66001122334455"
+    conv_store = _ConversationStore([_message_item("item_1", "hi")])
+    _sessions_mod._session_status_cache[cid] = "idle"
+    _sessions_mod._session_background_task_count_cache[cid] = 2
+    try:
+        snapshot = await _get_session_snapshot(conv_store, cid)  # type: ignore[arg-type]
+    finally:
+        _sessions_mod._session_status_cache.pop(cid, None)
+        _sessions_mod._session_background_task_count_cache.pop(cid, None)
+    assert snapshot.status == "waiting"
+    assert snapshot.background_task_count == 2
+
+
+@pytest.mark.asyncio
+async def test_session_snapshot_running_turn_stays_running() -> None:
+    """A genuine in-flight turn still reports ``running`` — the composer queues.
+
+    Control for the fix: only a turn that has actually ENDED (waiting) frees the
+    send gate; an active turn must still queue follow-ups, even with a shell up.
+    """
+    cid = "cc33dd44ee55ff660011223344556677"
+    conv_store = _ConversationStore([_message_item("item_1", "hi")])
+    _sessions_mod._session_status_cache[cid] = "running"
+    _sessions_mod._session_background_task_count_cache[cid] = 1
+    try:
+        snapshot = await _get_session_snapshot(conv_store, cid)  # type: ignore[arg-type]
+    finally:
+        _sessions_mod._session_status_cache.pop(cid, None)
+        _sessions_mod._session_background_task_count_cache.pop(cid, None)
+    assert snapshot.status == "running"
