@@ -6319,6 +6319,7 @@ async def _get_session_snapshot(
     if runner_client is None:
         runner_client = get_runner_client()
 
+    status: Literal["idle", "running", "waiting", "failed"]
     status = _session_status_from_cache(session_id)
     if status == "idle":
         # Cache miss (or truly idle): either the server restarted, or the
@@ -6472,6 +6473,21 @@ async def _get_session_snapshot(
         host_for_resume = await asyncio.to_thread(host_store.get_host, conv.host_id)
         if host_for_resume is not None:
             host_resumable = host_resume_supported(host_for_resume, sandbox_config)
+    # Detail snapshots preserve the ``waiting`` distinction that the list/rollup
+    # read paths collapse to ``running``. ``waiting`` means the turn ended and
+    # only background work (background shells / sub-agents) outlives it, and the
+    # server keeps ``active_response_id`` populated across it. Collapsing it to
+    # ``running`` made a switch-back / reconnect reopen a streaming response and
+    # strand the composer on the "(queued)" placeholder while a background shell
+    # (e.g. a dev webserver) stayed alive — the client's ``waiting`` branch
+    # instead finalizes the response and frees the send gate. The "Working…"
+    # spinner still lights for ``waiting`` and for a lingering
+    # background_task_count, so background activity stays visible.
+    if status != "failed":
+        raw_status = _session_status_cache.get(session_id)
+        background_tasks = _session_background_task_count_cache.get(session_id, 0)
+        if raw_status == "waiting" or (status != "running" and background_tasks > 0):
+            status = "waiting"
     return _build_session_response(
         conv,
         items,

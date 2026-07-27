@@ -1,0 +1,64 @@
+# omnigent.airbrx.ai server — standalone compose for the EC2 + Aurora deploy.
+#
+# Differs from deploy/docker/docker-compose.yaml in three ways:
+#   1. No bundled postgres — the database is an external Aurora PostgreSQL
+#      Serverless v2 cluster, supplied via DATABASE_URL (so the EC2 box can be
+#      torn down and rebuilt without touching the data).
+#   2. No Caddy/HTTPS overlay — TLS terminates at the ALB with the *.airbrx.ai
+#      ACM cert; this container speaks plain HTTP on :8000, reachable only from
+#      the ALB security group.
+#   3. Auth is JumpCloud OIDC (auto-provisioning), not accounts mode.
+#
+# Brought up by the Terraform user-data (see terraform/), which writes the .env
+# below and /etc/omnigent/admins. To run by hand: create .env with the OIDC +
+# DATABASE_URL values and `docker compose up -d --build` from this directory.
+
+name: omnigent-server
+
+services:
+  omnigent:
+    build:
+      # repo root, reached from deploy/omnigent-ec2/ → ../..
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.org/simple}
+    image: omnigent-server:local
+    restart: unless-stopped
+    environment:
+      # Aurora endpoint (postgresql://user:pw@host:5432/omnigent?sslmode=require).
+      # The entrypoint normalizes this to the psycopg3 dialect SQLAlchemy needs,
+      # so the bare postgresql:// form is fine here (unlike the native install,
+      # which needs the explicit postgresql+psycopg:// form).
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL to the Aurora endpoint}
+      ARTIFACT_DIR: /data/artifacts
+      HOST: 0.0.0.0
+      PORT: "8000"
+      OMNIGENT_AUTH_ENABLED: "1"
+      # ── JumpCloud OIDC (auto-provisioning) ──
+      OMNIGENT_AUTH_PROVIDER: oidc
+      OMNIGENT_OIDC_ISSUER: ${OMNIGENT_OIDC_ISSUER:?set the OIDC issuer}
+      OMNIGENT_OIDC_CLIENT_ID: ${OMNIGENT_OIDC_CLIENT_ID:?set the client id}
+      OMNIGENT_OIDC_CLIENT_SECRET: ${OMNIGENT_OIDC_CLIENT_SECRET:?set the client secret}
+      # Public hostname. Drives the OIDC redirect URI (https://<domain>/auth/callback)
+      # and the secure __Host- cookie — mandatory because the ALB terminates TLS
+      # and uvicorn does not trust X-Forwarded-Proto. Must match the JumpCloud
+      # app's registered callback exactly.
+      OMNIGENT_DOMAIN: ${OMNIGENT_DOMAIN:?set omnigent.airbrx.ai}
+      # Pinned cookie secret (64 hex) — MUST be stable across instance
+      # replacement, or every redeploy invalidates all logged-in sessions.
+      # Terraform generates it once (durable root stack) and injects it here.
+      OMNIGENT_OIDC_COOKIE_SECRET: ${OMNIGENT_OIDC_COOKIE_SECRET:?set a 64-hex cookie secret}
+      OMNIGENT_OIDC_ALLOWED_DOMAINS: ${OMNIGENT_OIDC_ALLOWED_DOMAINS:-airbrx.com,airbrx.ai}
+      OMNIGENT_OIDC_SESSION_TTL_HOURS: ${OMNIGENT_OIDC_SESSION_TTL_HOURS:-720}
+      # Admin roster (emails). The ONLY admin-promotion signal for OIDC — a
+      # listed identity is promoted to admin on login. Bind-mounted below.
+      OMNIGENT_ADMIN_LIST_PATH: /config/admins
+    volumes:
+      - artifact-data:/data
+      - /etc/omnigent/admins:/config/admins:ro
+    ports:
+      - "8000:8000"   # reached only by the ALB target group (SG-restricted)
+
+volumes:
+  artifact-data:

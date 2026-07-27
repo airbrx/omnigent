@@ -1,0 +1,16 @@
+# omnigent.airbrx.ai server config (OIDC mode).
+#
+# Almost everything for this deploy is set via environment variables (see
+# docker-compose.yaml and the Terraform-written .env), NOT this file:
+#   - DATABASE_URL                  → Aurora endpoint
+#   - OMNIGENT_AUTH_PROVIDER=oidc   → JumpCloud SSO
+#   - OMNIGENT_DOMAIN               → omnigent.airbrx.ai (redirect URI + cookies)
+#   - OMNIGENT_OIDC_*               → issuer / client id / secret / cookie secret
+#   - OMNIGENT_ADMIN_LIST_PATH      → /config/admins (admin emails, see admins.example)
+#
+# The admin roster for OIDC is a FILE of emails (admins.example), not the
+# `admins:` key below — that key is the accounts-mode (username) mechanism and
+# is not used here. This file is kept as a placeholder for any future non-secret
+# server settings; see deploy/docker/config.yaml.example for the full key set.
+#
+# TLS terminates at the ALB with the *.airbrx.ai ACM cert — no Caddy overlay.

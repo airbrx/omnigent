@@ -1,0 +1,36 @@
+[Unit]
+# Native (non-Docker) Omnigent server for omnigent.airbrx.ai.
+#
+# Runs the FastAPI/WebSocket coordinator straight from the /opt/omnigent
+# git checkout via a uv-managed venv (.venv), so a backend change is just
+# `git pull && systemctl restart omnigent-server` — no image rebuild. The
+# React SPA is NOT built here; it is pulled from a GitHub Release by
+# pull-webui.sh into omnigent/server/static/web-ui (build-here, ship-once).
+#
+# Binds 127.0.0.1:8001. Caddy terminates TLS and reverse-proxies
+# omnigent.airbrx.ai -> 127.0.0.1:8001. (8001, not 8000, so this can be
+# brought up alongside the outgoing Docker container on :8000 for a
+# zero-downtime Caddy-reload cutover.)
+Description=Omnigent server (native, from /opt/omnigent source)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/omnigent
+# All config + secrets (DATABASE_URL in the postgresql+psycopg:// form the
+# native engine needs, the OIDC client/cookie secrets, OMNIGENT_DOMAIN,
+# OMNIGENT_DATA_DIR, OMNIGENT_ADMIN_LIST_PATH) live here. Shared verbatim
+# with the prior native install, so the cookie secret is unchanged and
+# logged-in sessions survive the cutover.
+EnvironmentFile=/etc/omnigent/server.env
+# --database-uri is belt-and-suspenders: the server reads DATABASE_URL
+# env-first, but the explicit flag matches the known-good prior unit.
+ExecStart=/opt/omnigent/.venv/bin/omnigent server --host 127.0.0.1 --port 8001 --database-uri ${DATABASE_URL}
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

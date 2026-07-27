@@ -1,0 +1,37 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored
+# (it carries the JumpCloud client secret).
+
+region = "us-east-1" # MUST match the region the *.airbrx.ai ACM cert is in
+
+# ── Network (the live box is in the default VPC) ──────────────────────
+vpc_id             = "vpc-05b69c7707282a5fe"
+public_subnet_ids  = ["subnet-aaaa", "subnet-bbbb"] # ≥2 AZs, for the ALB
+instance_subnet_id = "subnet-aaaa"                  # where the EC2 box runs
+db_subnet_ids      = ["subnet-aaaa", "subnet-bbbb", "subnet-cccc"]
+db_ingress_cidrs   = ["172.31.0.0/16"]              # default-VPC CIDR
+
+# ── App source ────────────────────────────────────────────────────────
+repo_url = "https://github.com/airbrx/omnigent.git"
+branch   = "omnigent-airbrx-server"
+
+# ── Auth: JumpCloud OIDC ──────────────────────────────────────────────
+# The redirect URI registered in the JumpCloud app MUST be exactly
+# https://omnigent.airbrx.ai/auth/callback (derived from `domain`).
+oidc_client_id     = "ab49aaeb-9398-4624-9d3f-55696b5c6680"
+oidc_client_secret = "REPLACE_ME_FROM_JUMPCLOUD" # sensitive — do not commit
+# oidc_allowed_domains = "airbrx.com,airbrx.ai"
+# oidc_session_ttl_hrs = 720
+
+admins = ["ben@airbrx.com"]
+
+# ── Database (Aurora Serverless v2) ───────────────────────────────────
+# db_min_acu             = 0     # 0 = scale-to-zero; 0.5 = warm floor, no cold start
+# db_max_acu             = 2
+# db_auto_pause_seconds  = 300
+# db_deletion_protection = true
+
+# ── Optional ──────────────────────────────────────────────────────────
+# key_name          = "omnigent-server"   # omit to use SSM Session Manager only
+# web_ingress_cidrs = ["0.0.0.0/0"]        # restrict to office ranges if you can
+# instance_type     = "t3.small"
+# deploy_app        = true                  # false to tear down compute, keep Aurora

@@ -925,13 +925,32 @@ def create_hosts_router(
         # ck_conversations_workspace_required_for_host. ``workspace`` is the
         # realpath returned by validate_workspace (W6), or body.workspace
         # verbatim only in non-production wiring without an agent cache.
-        await asyncio.to_thread(
-            conversation_store.set_host_id,
-            body.session_id,
-            host_id,
-            workspace,
-            git_branch,
-        )
+        #
+        # The runner bind above (``set_runner_id``) already committed in its
+        # OWN transaction; this ``set_host_id`` runs in a separate one. A
+        # failure here (e.g. IntegrityError from a NULL workspace, a store
+        # error) would otherwise leave the row ``runner_id``-set but
+        # ``host_id``/``workspace``-NULL — the "stranded" state that mislabels
+        # the session ``local_stranded`` (the wrong ``omnigent … --resume`` CLI
+        # dialog) and forces the owner to fork to keep working. Roll the whole
+        # bind back so a failed host-bind leaves the session cleanly unbound
+        # (retryable) rather than half-bound.
+        try:
+            await asyncio.to_thread(
+                conversation_store.set_host_id,
+                body.session_id,
+                host_id,
+                workspace,
+                git_branch,
+            )
+        except Exception as exc:
+            await _rollback_failed_launch()
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "failed to bind session to host (workspace unavailable); session left unbound"
+                ),
+            ) from exc
 
         request_id = secrets.token_hex(8)
         future: asyncio.Future[dict[str, str | None]] = asyncio.get_running_loop().create_future()
