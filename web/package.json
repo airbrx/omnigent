@@ -91,7 +91,7 @@
     "zustand": "^5.0.12"
   },
   "overrides": {
-    "linkify-it": "5.0.1",
+    "linkify-it": "5.0.2",
     "shiki": "$shiki",
     "@shikijs/core": "^4.2.0",
     "@shikijs/engine-javascript": "^4.2.0",
