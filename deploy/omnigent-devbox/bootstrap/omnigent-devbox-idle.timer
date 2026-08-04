@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic idle check for the omnigent dev box
+
+[Timer]
+# First check 5 min after boot, then every 5 min.
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

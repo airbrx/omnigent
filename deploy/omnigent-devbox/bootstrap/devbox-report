@@ -1,0 +1,32 @@
+#!/bin/bash
+# Report dev box state. Usage: devbox-report [status|idle]
+set -uo pipefail
+
+section() { printf '%s\n' "-- $1 --"; }
+
+case "${1:-status}" in
+  status)
+    printf 'uptime:        %s\n' "$(uptime -p)"
+    printf 'load:          %s\n' "$(cut -d' ' -f1-3 /proc/loadavg)"
+    printf 'memory:        %s\n' "$(free -h | awk '/^Mem:/{print $3" used / "$2" total"}')"
+    printf 'disk:          %s\n' "$(df -h / | awk 'NR==2{print $3" used / "$2" ("$5")"}')"
+    printf 'idle counter:  %s min\n' "$(cat /var/lib/omnigent-devbox-idle.count 2>/dev/null || echo '?')"
+    printf 'omnigent-host: %s\n' \
+      "$(runuser -l michael -c 'export XDG_RUNTIME_DIR=/run/user/1001; systemctl --user is-active omnigent-host.service' 2>/dev/null)"
+    printf 'claude procs:  %s\n' "$(pgrep -u michael -f '[c]laude' | wc -l)"
+    ;;
+  idle)
+    section "config"
+    grep IDLE_MINUTES /etc/omnigent/devbox-idle.conf
+    printf 'accumulated: %s min\n' "$(cat /var/lib/omnigent-devbox-idle.count 2>/dev/null || echo '?')"
+    section "timer"
+    systemctl is-active omnigent-devbox-idle.timer
+    systemctl list-timers omnigent-devbox-idle.timer --no-pager 2>/dev/null | sed -n '2p'
+    section "recent decisions"
+    journalctl -t omnigent-idle -n 8 --no-pager --output=short 2>/dev/null
+    ;;
+  *)
+    echo "usage: devbox-report [status|idle]" >&2
+    exit 2
+    ;;
+esac
