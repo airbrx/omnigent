@@ -60,6 +60,34 @@ lingering `omnigent-host` user unit re-registers. ~40–60s.
 
 ---
 
+## Waking from the omnigent host picker
+
+With this on the SERVER's config, an offline `omnigent-devbox` row in the host
+dropdown becomes clickable and starts the box instead of dead-ending:
+
+```yaml
+host_wake:
+  - host_name: omnigent-devbox
+    provider: ec2
+    instance_id: i-099d66548b496d876
+    region: us-east-1
+```
+
+The server needs `ec2:StartInstances` + `ec2:DescribeInstances` on that
+instance ARN — grant it on the SERVER's instance role
+(`omnigent-server-ssm`), not via stored keys. Install with the `ec2` extra so
+boto3 is present.
+
+**Opt-in by construction.** With no `host_wake:` section every host reports
+`wakeable: false` and the endpoint refuses with 409, so a laptop-only install
+behaves exactly as before — a quiet laptop is never affected.
+
+Matching is by host NAME, not id: ids are minted at first registration and
+change when the box is rebuilt, while the name is stable and is what an
+operator actually knows.
+
+---
+
 ## Idle auto-stop
 
 A 5-minute systemd timer stops the box after `IDLE_MINUTES` (default **60**) of

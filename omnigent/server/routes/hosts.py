@@ -50,11 +50,17 @@ from omnigent.runner.identity import token_bound_runner_id
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.server.auth import AuthProvider
 from omnigent.server.host_registry import HostConnection, HostRegistry
+from omnigent.server.host_wake import (
+    HostWakeError,
+    HostWakeTarget,
+    wake_host,
+)
 from omnigent.server.routes._auth_helpers import require_user
 from omnigent.server.routes._host_launch import resolve_host_launch
 from omnigent.server.schemas import SessionGitOptions
 from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.host_store import (
+    Host,
     HostStore,
     caller_can_reach_host,
     host_is_live,
@@ -562,6 +568,7 @@ def create_hosts_router(
     permission_store: PermissionStore | None = None,
     agent_store: AgentStore | None = None,
     agent_cache: AgentCache | None = None,
+    wake_targets: dict[str, HostWakeTarget] | None = None,
 ) -> APIRouter:
     """Build the router for host REST endpoints.
 
@@ -582,9 +589,23 @@ def create_hosts_router(
         :func:`omnigent.server.app.create_app` always supplies it.
     :param agent_cache: Agent-spec cache used to read the agent's
         ``os_env.cwd`` boundary. Paired with ``agent_store``.
+    :param wake_targets: Hosts the server may power on, keyed by host NAME
+        (see :mod:`omnigent.server.host_wake`). ``None``/empty — the default
+        — leaves every response byte-identical to a server without the
+        feature, so a laptop-only install is unaffected.
     :returns: A FastAPI router with host endpoints.
     """
     router = APIRouter()
+    wake_by_name: dict[str, HostWakeTarget] = wake_targets or {}
+
+    def _is_wakeable(host: Host) -> bool:
+        """
+        Whether the server could power this host on.
+
+        Owner-agnostic on purpose: it describes the MACHINE, not the caller's
+        rights. The wake endpoint still enforces reachability separately.
+        """
+        return host.name in wake_by_name
 
     @router.get("/hosts")
     async def list_hosts(request: Request) -> dict[str, list[dict[str, Any]]]:
@@ -640,6 +661,10 @@ def create_hosts_router(
                     # caller doesn't own so "whose host is this" is clear.
                     "visibility": host.visibility or "private",
                     "is_owner": user_id is None or host.user_id == user_id,
+                    # True only when the operator configured `host_wake:` for
+                    # this host name. Absent config leaves this False for every
+                    # host, so the picker renders exactly as it always has.
+                    "wakeable": _is_wakeable(host),
                 }
             )
         return {"hosts": result}
@@ -680,8 +705,62 @@ def create_hosts_router(
             "configured_harnesses": host.configured_harnesses,
             "visibility": host.visibility or "private",
             "is_owner": user_id is None or host.user_id == user_id,
+            "wakeable": _is_wakeable(host),
             "runners": [],
         }
+
+    @router.post("/hosts/{host_id}/wake")
+    async def wake_host_endpoint(request: Request, host_id: str) -> dict[str, Any]:
+        """Power on the cloud compute behind an offline wakeable host.
+
+        Returns as soon as the provider accepts the start — it does NOT wait
+        for the host to re-register. A wake takes ~40-60s (boot + service
+        start + tunnel connect), far too long to hold a request open, and the
+        client already polls the host list, so it observes the transition to
+        ``"online"`` on its own.
+
+        Idempotent: waking an already-running host is a success, since the
+        desired end state holds. That matters because the picker can fire this
+        while a previous wake is still booting.
+
+        :param request: The incoming request (for auth).
+        :param host_id: Host identifier, e.g. ``"host_a1b2c3d4..."``.
+        :returns: ``{"status": "waking"|"already-online", "host_id": ...}``.
+        :raises HTTPException: 404 if the host does not exist, 403 if the
+            caller cannot reach it, 409 if it is not configured as wakeable,
+            502 if the provider rejects the start.
+        """
+        # require_user: an unauthenticated caller must 401 rather than slip
+        # past the reachability check below as None.
+        user_id = require_user(request, auth_provider)
+        host = await asyncio.to_thread(host_store.get_host, host_id)
+        if host is None:
+            raise HTTPException(status_code=404, detail="host not found")
+        if not caller_can_reach_host(host, user_id):
+            raise HTTPException(status_code=403, detail="not your host")
+
+        target = wake_by_name.get(host.name)
+        if target is None:
+            # 409, not 404: the host exists, it just isn't something this
+            # deployment can power on. Says so plainly instead of pretending
+            # the endpoint is missing.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"host '{host.name}' is not configured as wakeable — add it to "
+                    "the server's 'host_wake' config to enable this"
+                ),
+            )
+
+        # Cheap short-circuit: a live host needs no provider call at all.
+        if host_is_live(host):
+            return {"status": "already-online", "host_id": host.host_id}
+
+        try:
+            state = await wake_host(target)
+        except HostWakeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {"status": "waking", "host_id": host.host_id, "provider_state": state}
 
     @router.get("/hosts/{host_id}/harnesses/{harness}/model-options")
     async def get_host_model_options(

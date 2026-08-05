@@ -56,6 +56,7 @@ from omnigent.server.background_session_titles import (
     BackgroundSessionTitleCoordinator,
     RunnerBackgroundTitleGenerator,
 )
+from omnigent.server.host_wake import HostWakeTarget
 from omnigent.server.managed_hosts import ManagedSandboxConfig
 from omnigent.server.mcp_pool import ServerMcpPool
 from omnigent.server.performance_metrics import (
@@ -1141,6 +1142,7 @@ def create_app(
     admins: list[str] | None = None,
     allowed_domains: list[str] | None = None,
     sandbox_config: ManagedSandboxConfig | None = None,
+    host_wake_targets: dict[str, HostWakeTarget] | None = None,
     sharing_mode: SharingMode | Callable[[], SharingMode] | None = None,
     public_sharing: bool | Callable[[], bool] | None = None,
     server_config: dict[str, Any] | None = None,
@@ -1211,6 +1213,10 @@ def create_app(
         config's ``allowed_domains:`` key (OIDC), e.g. ``["example.com"]``.
         Union'd with ``OMNIGENT_OIDC_ALLOWED_DOMAINS`` and the
         runtime-editable domains file.
+    :param host_wake_targets: Parsed ``host_wake:`` section — hosts whose
+        cloud compute this server may power on, keyed by host name.
+        ``None``/empty (the default) makes the feature inert: every
+        host reads back ``wakeable: false`` and the picker is unchanged.
     :param sandbox_config: Parsed ``sandbox:`` section of the server
         config — which provider to provision managed hosts
         (``host_type="managed"`` sessions) from and the URL they dial
@@ -2767,6 +2773,7 @@ def create_app(
                 permission_store=permission_store,
                 agent_store=agent_store,
                 agent_cache=agent_cache,
+                wake_targets=host_wake_targets,
             ),
             prefix="/v1",
             tags=["hosts"],
