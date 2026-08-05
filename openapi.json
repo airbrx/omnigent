@@ -7649,6 +7649,52 @@
         ]
       }
     },
+    "/v1/hosts/{host_id}/wake": {
+      "post": {
+        "description": "Power on the cloud compute behind an offline wakeable host.\n\nReturns as soon as the provider accepts the start \u2014 it does NOT wait\nfor the host to re-register. A wake takes ~40-60s (boot + service\nstart + tunnel connect), far too long to hold a request open, and the\nclient already polls the host list, so it observes the transition to\n`\"online\"` on its own.\n\nIdempotent: waking an already-running host is a success, since the\ndesired end state holds. That matters because the picker can fire this\nwhile a previous wake is still booting.\n\n**Returns:** `{\"status\": \"waking\"|\"already-online\", \"host_id\": ...}`.\n\n**Raises**\n\n- `HTTPException` \u2014 404 if the host does not exist, 403 if the caller cannot reach it, 409 if it is not configured as wakeable, 502 if the provider rejects the start.",
+        "operationId": "wake_host_endpoint_v1_hosts__host_id__wake_post",
+        "parameters": [
+          {
+            "description": "Host identifier, e.g. `\"host_a1b2c3d4...\"`.",
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Wake Host Endpoint V1 Hosts  Host Id  Wake Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Wake Host Endpoint",
+        "tags": [
+          "hosts"
+        ]
+      }
+    },
     "/v1/hosts/{host_id}/worktrees": {
       "get": {
         "description": "List the git worktrees of a repository on a host.\n\nUsed by the Web UI's new-session worktree picker to show the\nworktrees a session can start in directly. Owner-scoped exactly\nlike the filesystem browse endpoints; NOT scoped to a session.\nA path that is not a git repository is reported as 400 so the\npicker can quietly fall back to \"no worktrees\".\n\n**Returns:** `{\"object\": \"list\", \"data\": [{path, branch, is_main, detached}, ...]}` (main first).\n\n**Raises**\n\n- `HTTPException` \u2014 404 if host not found, 403 if not owned by caller, 409 if host is offline/unresponsive, 400 on path validation or a non-git path.",
