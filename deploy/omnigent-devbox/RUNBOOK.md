@@ -75,8 +75,9 @@ host_wake:
 
 The server needs `ec2:StartInstances` + `ec2:DescribeInstances` on that
 instance ARN — grant it on the SERVER's instance role
-(`omnigent-server-ssm`), not via stored keys. Install with the `ec2` extra so
-boto3 is present.
+(`omnigent-server-ssm`), not via stored keys. boto3 must be importable on the
+server (it already is via the `s3` / `bedrock` extras); the wake path imports
+it lazily, so a deployment that never wakes a host never needs it.
 
 **Opt-in by construction.** With no `host_wake:` section every host reports
 `wakeable: false` and the endpoint refuses with 409, so a laptop-only install

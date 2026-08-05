@@ -127,11 +127,6 @@ bedrock = ["boto3>=1.30,<2", "botocore>=1.30,<2"]
 # with ``OMNIGENT_ARTIFACT_URI=s3://bucket/prefix``; the store imports boto3
 # lazily, so only users of this backend need the extra.
 s3 = ["boto3>=1.30,<2", "botocore>=1.30,<2"]
-# Waking hosts whose compute is an EC2 instance (server `host_wake:` with
-# `provider: ec2`). boto3 is imported lazily inside the wake path, so the
-# base install stays slim and a deployment that never wakes a host never
-# needs it.
-ec2 = ["boto3>=1.30,<2", "botocore>=1.30,<2"]
 vertex = ["google-auth>=2.0,<3"]
 # Modal sandbox launcher (`omnigent sandbox --provider modal`). The
 # launcher module ships in the base package and imports the SDK lazily,

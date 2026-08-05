@@ -131,7 +131,8 @@ def _start_ec2_sync(target: HostWakeTarget) -> str:
         import boto3
     except ImportError as exc:  # pragma: no cover - depends on install extras
         raise HostWakeError(
-            "the 'ec2' host-wake provider needs boto3 — install with `pip install 'omnigent[ec2]'`"
+            "the 'ec2' host-wake provider needs boto3 — install it, e.g. "
+            "`pip install 'omnigent[s3]'` or `pip install boto3`"
         ) from exc
 
     client = boto3.client("ec2", region_name=target.region)
