@@ -77,6 +77,7 @@ vi.mock("@/hooks/useSession", () => ({
   useSession: (id: string | null | undefined) => useSessionMock(id),
 }));
 vi.mock("@/hooks/useHosts", () => ({
+  useWakeHost: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useHosts: (opts: unknown) => useHostsMock(opts),
 }));
 vi.mock("@/hooks/RunnerHealthProvider", () => ({

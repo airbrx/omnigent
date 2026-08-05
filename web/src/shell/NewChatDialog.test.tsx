@@ -41,6 +41,7 @@ vi.mock("@/lib/identity", async (importOriginal) => ({
   authenticatedFetch: vi.fn(),
 }));
 vi.mock("@/hooks/useHosts", () => ({
+  useWakeHost: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useHosts: vi.fn(),
   useHostModelOptions: vi.fn(),
   // The setup dialog mounts these; default to an inert mutation + not-installing
