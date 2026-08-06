@@ -3481,6 +3481,18 @@ def server(
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
+    # Wakeable hosts (`host_wake:`): hosts whose cloud compute this server may
+    # power on, so the picker can offer to wake an offline one. Parsed here for
+    # the same reason as `sandbox:` — a typo must stop startup, not surface as
+    # a wake button that silently does nothing. Absent section => empty dict =>
+    # the feature is entirely inert.
+    from omnigent.server.host_wake import parse_host_wake_config
+
+    try:
+        host_wake_targets = parse_host_wake_config(cfg.get("host_wake"))
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
     # Accounts mode ergonomics: when accounts mode is selected
     # (OMNIGENT_AUTH_ENABLED=1 without OIDC config, or an explicit
     # OMNIGENT_AUTH_PROVIDER=accounts), supply sensible defaults
@@ -3548,6 +3560,7 @@ def server(
         admins=config_str_list(cfg.get("admins")),
         allowed_domains=config_str_list(cfg.get("allowed_domains")),
         sandbox_config=sandbox_config,
+        host_wake_targets=host_wake_targets,
         server_config=cfg,
     )
 

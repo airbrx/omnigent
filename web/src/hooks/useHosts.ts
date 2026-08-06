@@ -20,6 +20,13 @@ export interface Host {
    * "nothing configured".
    */
   configured_harnesses?: Record<string, boolean | string> | null;
+  /**
+   * Whether the server can power this host's compute on when it is offline
+   * (an operator listed it under `host_wake:`). Absent/false — the norm, and
+   * what every older server returns — means an offline host is simply
+   * offline, exactly as before. Never true for a laptop.
+   */
+  wakeable?: boolean;
 }
 
 interface HostsResponse {
@@ -135,6 +142,51 @@ export function useInstallHarness(hostId: string) {
           h.host_id === hostId ? { ...h, configured_harnesses: result.configured_harnesses } : h,
         ),
       );
+    },
+  });
+}
+
+export interface WakeHostResult {
+  status: "waking" | "already-online";
+  host_id: string;
+  provider_state?: string;
+}
+
+/**
+ * Power on the cloud compute behind an offline `wakeable` host.
+ *
+ * Resolves as soon as the provider accepts the start — NOT when the host is
+ * back. A wake is ~40-60s (boot, service start, tunnel connect), so the
+ * caller shows progress and lets the existing hosts query observe the flip to
+ * `"online"`; the server deliberately does not hold the request open.
+ *
+ * Invalidating `["hosts"]` on success tightens that feedback loop: the
+ * 60s fallback poll would otherwise leave the row stale for up to a minute
+ * after the host is actually back.
+ */
+export function useWakeHost() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (hostId: string): Promise<WakeHostResult> => {
+      const res = await authenticatedFetch(`/v1/hosts/${encodeURIComponent(hostId)}/wake`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!res.ok) {
+        let detail = `${res.status} ${res.statusText}`;
+        try {
+          const err = (await res.json()) as { detail?: string };
+          if (typeof err.detail === "string" && err.detail) detail = err.detail;
+        } catch {
+          // Non-JSON error body — keep the status-line detail.
+        }
+        throw new Error(detail);
+      }
+      return (await res.json()) as WakeHostResult;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["hosts"] });
     },
   });
 }

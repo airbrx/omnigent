@@ -54,6 +54,7 @@ const {
 }));
 
 vi.mock("@/hooks/useHosts", () => ({
+  useWakeHost: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useHosts: useHostsMock,
 }));
 

@@ -1,0 +1,12 @@
+[Unit]
+Description=Fetch omnigent dev-box credentials from Secrets Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/omnigent-fetch-creds.sh
+
+[Install]
+WantedBy=multi-user.target

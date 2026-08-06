@@ -1,0 +1,27 @@
+[Unit]
+Description=Omnigent host daemon (self-restarting)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/michael/.local/bin/omnigent host --server https://omnigent.airbrx.ai --non-interactive
+Restart=always
+RestartSec=5
+WorkingDirectory=/home/michael
+# PATH is baked deliberately: a systemd user unit starts with a minimal
+# environment, and the daemon must be able to exec `claude` when it spawns a
+# runner. This mirrors the login-shell PATH.
+Environment="PATH=/home/michael/.npm-global/bin:/home/michael/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:/snap/bin"
+Environment="HOME=/home/michael"
+Environment="USER=michael"
+Environment="LOGNAME=michael"
+Environment="SHELL=/bin/bash"
+# Harness credentials materialized from Secrets Manager by
+# omnigent-creds.service. Leading '-' so a missing file is not fatal.
+EnvironmentFile=-/home/michael/.config/omnigent/host.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -121,7 +121,7 @@ import {
   nativeCodingAgentForAvailableAgent,
   nativeWrapperLabelsForAgent,
 } from "@/lib/nativeCodingAgents";
-import { useHostModelOptions, useHosts, type Host } from "@/hooks/useHosts";
+import { useHostModelOptions, useHosts, useWakeHost, type Host } from "@/hooks/useHosts";
 import {
   controlHost,
   getHostIdentity,
@@ -1773,6 +1773,15 @@ export function NewChatLandingScreen() {
   const { data: agents } = useAvailableAgents();
   const { data: hosts, isLoading: hostsLoading } = useHosts();
 
+  // Waking a `wakeable` offline host (server `host_wake:` config). Tracked by
+  // host id rather than the mutation's own isPending so two rows can't both
+  // render a spinner from one shared observer. A wake takes ~40-60s and the
+  // host list flips the row to ONLINE on its own, so the id is cleared when
+  // the host reappears online (effect below) rather than on mutation settle.
+  const wakeHost = useWakeHost();
+  const [wakingHostId, setWakingHostId] = useState<string | null>(null);
+  const [wakeError, setWakeError] = useState<string | null>(null);
+
   const agentList = useMemo(
     () =>
       sortAgentsForDisplay((agents ?? []).filter((a) => !NEW_SESSION_HIDDEN_AGENTS.has(a.name))),
@@ -2079,6 +2088,19 @@ export function NewChatLandingScreen() {
   }, []);
 
   const { recent, addRecent } = useRecentWorkspaces(selectedHostId);
+
+  // A wake resolves at the provider, not at the host — so the spinner is
+  // cleared by the host actually coming back online, not by the POST
+  // returning. Selecting it too means the click that woke the box also picks
+  // it, which is what the user meant by clicking an offline host.
+  useEffect(() => {
+    if (wakingHostId == null) return;
+    const woken = (hosts ?? []).find((h) => h.host_id === wakingHostId);
+    if (woken?.status === "online") {
+      setWakingHostId(null);
+      setSelectedHostId(woken.host_id);
+    }
+  }, [hosts, wakingHostId]);
 
   const allHosts = hosts ?? [];
   const onlineHosts = allHosts.filter((h) => h.status === "online");
@@ -3667,6 +3689,40 @@ export function NewChatLandingScreen() {
                         </DropdownMenuItem>
                       );
                     }
+                    // Offline but the server can power its compute on: make
+                    // the row the wake affordance instead of a dead entry.
+                    // `wakeable` is false for every host unless an operator
+                    // configured `host_wake:`, so a laptop-only install is
+                    // untouched and this branch never runs.
+                    if (host.wakeable) {
+                      const waking = wakingHostId === host.host_id;
+                      return (
+                        <DropdownMenuItem
+                          key={host.host_id}
+                          onSelect={(event) => {
+                            // Keep the menu open so the progress subtitle is
+                            // visible while the box boots.
+                            event.preventDefault();
+                            if (waking) return;
+                            setWakeError(null);
+                            setWakingHostId(host.host_id);
+                            wakeHost.mutate(host.host_id, {
+                              onError: (err: Error) => {
+                                setWakingHostId(null);
+                                setWakeError(err.message);
+                              },
+                            });
+                          }}
+                          data-testid="new-chat-landing-wake-host"
+                          className="text-xs"
+                        >
+                          <HostOption
+                            host={host}
+                            subtitle={waking ? "starting… ~1 min" : "select to start"}
+                          />
+                        </DropdownMenuItem>
+                      );
+                    }
                     return (
                       <DropdownMenuItem key={host.host_id} disabled className="text-xs">
                         <HostOption
@@ -3676,6 +3732,11 @@ export function NewChatLandingScreen() {
                       </DropdownMenuItem>
                     );
                   })}
+                  {wakeError && (
+                    <div className="px-2 py-1 text-[11px] text-destructive" role="alert">
+                      {wakeError}
+                    </div>
+                  )}
                   {/* Desktop shell, machine not in the list yet: offer to connect
                     it in one click. */}
                   {showConnectThisMachine && (

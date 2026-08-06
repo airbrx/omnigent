@@ -1,0 +1,6 @@
+[Unit]
+Description=Stop the omnigent dev box when it has been idle
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/omnigent-devbox-idle-check.sh
