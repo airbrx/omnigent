@@ -8,6 +8,7 @@ decodes the result.
 
     python runbox.py <script.sh> [instance-id]
 """
+
 import base64
 import json
 import os
@@ -55,27 +56,40 @@ def main() -> None:
     payload.write_text(json.dumps(params), encoding="utf-8")
 
     out = aws(
-        "ssm", "send-command",
-        "--instance-ids", instance,
-        "--document-name", "AWS-RunShellScript",
-        "--parameters", f"file://{payload}",
-        "--output", "json",
+        "ssm",
+        "send-command",
+        "--instance-ids",
+        instance,
+        "--document-name",
+        "AWS-RunShellScript",
+        "--parameters",
+        f"file://{payload}",
+        "--output",
+        "json",
     )
     cid = json.loads(out)["Command"]["CommandId"]
     print(f"CommandId={cid}", flush=True)
 
     subprocess.run(
-        ["aws", "ssm", "wait", "command-executed",
-         "--command-id", cid, "--instance-id", instance],
-        capture_output=True, env=_AWS_ENV,
+        ["aws", "ssm", "wait", "command-executed", "--command-id", cid, "--instance-id", instance],
+        capture_output=True,
+        env=_AWS_ENV,
     )
-    inv = json.loads(aws(
-        "ssm", "get-command-invocation",
-        "--command-id", cid, "--instance-id", instance, "--output", "json",
-    ))
+    inv = json.loads(
+        aws(
+            "ssm",
+            "get-command-invocation",
+            "--command-id",
+            cid,
+            "--instance-id",
+            instance,
+            "--output",
+            "json",
+        )
+    )
     print("STATUS:", inv.get("Status"))
-    body = (inv.get("StandardOutputContent") or "")
-    err = (inv.get("StandardErrorContent") or "")
+    body = inv.get("StandardOutputContent") or ""
+    err = inv.get("StandardErrorContent") or ""
     if err.strip():
         body += "\n--- STDERR ---\n" + err
     # cp1252 console: replace anything it cannot render rather than crashing.

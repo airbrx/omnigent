@@ -137,19 +137,26 @@ export interface AdminServerInfo {
 // `Record<string, string | undefined>` param — interfaces are open to
 // declaration merging and so lack an implicit index signature.
 
+// The explicit index signature keeps these assignable to buildQuery's
+// Record<string, string | undefined> — interfaces (unlike object-literal type
+// aliases) have no implicit one. Every named field is an optional string, so it
+// stays compatible with the signature.
+
 /** Filters for the global sessions listing. */
-export type SessionFilters = {
+export interface SessionFilters {
   user?: string;
   host?: string;
   q?: string;
-};
+  [key: string]: string | undefined;
+}
 
 /** Filters for the hosts listing. */
-export type HostFilters = {
+export interface HostFilters {
   user?: string;
   status?: string;
   version?: string;
-};
+  [key: string]: string | undefined;
+}
 
 function buildQuery(params: Record<string, string | undefined>): string {
   const sp = new URLSearchParams();
