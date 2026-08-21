@@ -2,13 +2,15 @@
 # Build the Omnigent SPA HERE and publish it as a GitHub Release asset.
 #
 # The native EC2 boxes (omnigent.airbrx.ai, and later the interns box) pull
-# this prebuilt tarball with pull-webui.sh instead of running `npm run build`
-# on a 2 GB box. Build once on a machine with node, fan the same bytes out to
-# every box. The release tag (webui-<sha>) binds the artifact to the exact
-# source commit, so a box can be pinned/rolled back by tag.
+# this prebuilt tarball with pull-webui.sh instead of building the SPA on a
+# 2 GB box. Build once on a machine with node, fan the same bytes out to every
+# box. The release tag (webui-<sha>) binds the artifact to the exact source
+# commit, so a box can be pinned/rolled back by tag.
 #
-# Requires: node + npm, and an authenticated `gh` (contents:write on the repo).
-# Run from anywhere inside the repo.
+# Requires: node + pnpm (the web tree is a pnpm workspace — `corepack enable`
+# provisions the version pinned by the root package.json `packageManager`), and
+# an authenticated `gh` (contents:write on the repo). Run from anywhere inside
+# the repo.
 set -euo pipefail
 
 REPO="${OMNIGENT_RELEASE_REPO:-airbrx/omnigent}"
@@ -21,7 +23,12 @@ ASSET="web-ui-${SHA}.tar.gz"
 BUNDLE_DIR="omnigent/server/static/web-ui"
 
 echo ">> Building SPA (web) for ${SHA} ..."
-( cd web && npm ci --legacy-peer-deps && npm run build )
+# pnpm workspace: install the exact locked deps for just the web package from
+# the repo root, then build. `rm -rf` backstops Vite's emptyOutDir against a
+# stale bundle. Vite's outDir is ${BUNDLE_DIR}.
+rm -rf "${BUNDLE_DIR}"
+pnpm install --frozen-lockfile --filter web
+pnpm --filter web run build
 test -f "${BUNDLE_DIR}/index.html" \
   || { echo "ERROR: ${BUNDLE_DIR}/index.html missing after build" >&2; exit 1; }
 

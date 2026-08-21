@@ -39,9 +39,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Repo composite: pins npm to the exact version that generated the
-      # lockfile (11.12.1) — stock node's npm 10.x fails `npm ci` validation.
-      - uses: ./.github/actions/setup-node
+      # Repo composite: Node + pnpm (standalone) with the pnpm store cached on
+      # pnpm-lock.yaml. The web tree is a pnpm workspace; release-webui.sh runs
+      # `pnpm install --frozen-lockfile --filter web` + `pnpm --filter web build`.
+      - uses: ./.github/actions/setup-pnpm
 
       - name: Build SPA and publish webui-<sha> release
         env:
