@@ -15,7 +15,6 @@ import {
   KeyboardIcon,
   MessagesSquareIcon,
   PaletteIcon,
-  PanelRightOpenIcon,
   ServerIcon,
   Share2Icon,
   ShieldCheckIcon,

@@ -91,7 +91,7 @@ def parse_host_wake_config(raw: object) -> dict[str, HostWakeTarget]:
         if not isinstance(host_name, str) or not host_name.strip():
             raise ValueError(f"{where}.host_name is required (the registered host name)")
         provider = entry.get("provider")
-        if provider not in SUPPORTED_WAKE_PROVIDERS:
+        if not isinstance(provider, str) or provider not in SUPPORTED_WAKE_PROVIDERS:
             supported = ", ".join(sorted(SUPPORTED_WAKE_PROVIDERS))
             raise ValueError(f"{where}.provider must be one of: {supported} (got {provider!r})")
         instance_id = entry.get("instance_id")

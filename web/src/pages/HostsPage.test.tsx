@@ -11,7 +11,7 @@ import * as adminApi from "@/lib/adminApi";
 
 const navigate = vi.fn();
 vi.mock("@/lib/routing", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/routing")>("@/lib/routing");
+  const actual = await vi.importActual<Record<string, unknown>>("@/lib/routing");
   return { ...actual, useNavigate: () => navigate };
 });
 vi.mock("@/lib/adminApi", () => ({ listAdminHosts: vi.fn(), getServerInfo: vi.fn() }));

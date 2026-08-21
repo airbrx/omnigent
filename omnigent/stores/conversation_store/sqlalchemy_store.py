@@ -3160,7 +3160,7 @@ class SqlAlchemyConversationStore(ConversationStore):
             return []
         conv_ids = [m.id for m in meta_rows]
         meta_by_id = {m.id: m for m in meta_rows}
-        with self._conv_session() as ap_sess:
+        with self._conv_session("list_conversations_by_host_id") as ap_sess:
             ap_rows = (
                 ap_sess.execute(
                     select(SqlConversation).where(

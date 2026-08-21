@@ -2407,6 +2407,8 @@ async def test_session_snapshot_running_turn_stays_running() -> None:
         _sessions_mod._session_status_cache.pop(cid, None)
         _sessions_mod._session_background_task_count_cache.pop(cid, None)
     assert snapshot.status == "running"
+
+
 # ── _runner_reject_detail ────────────────────────────────────────────────────
 
 
