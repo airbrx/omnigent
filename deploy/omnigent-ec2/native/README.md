@@ -35,7 +35,7 @@ sudo -u ubuntu bash -lc 'curl -LsSf https://astral.sh/uv/install.sh | sh'
 # 2. Backend venv (editable install + sibling SDK path-deps; psycopg is not
 #    a baseline dep — pulled in explicitly, as the Docker image does).
 #    OMNIGENT_SKIP_WEB_UI=true is REQUIRED: the package's build hook otherwise
-#    tries to `npm run build` the SPA and hard-fails (no node on the box).
+#    tries to build the SPA (pnpm) and hard-fails (no node/pnpm on the box).
 #    --no-dev keeps the venv lean; the SPA is shipped via release (step 3).
 cd /opt/omnigent
 sudo -u ubuntu bash -lc 'export PATH=$HOME/.local/bin:$PATH; OMNIGENT_SKIP_WEB_UI=true uv sync --no-dev'

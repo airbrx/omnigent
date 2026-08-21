@@ -9,7 +9,7 @@ import { SessionsPage } from "./SessionsPage";
 import * as adminApi from "@/lib/adminApi";
 
 vi.mock("@/lib/routing", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/routing")>("@/lib/routing");
+  const actual = await vi.importActual<Record<string, unknown>>("@/lib/routing");
   return { ...actual, useNavigate: () => vi.fn() };
 });
 vi.mock("@/lib/adminApi", () => ({ listSessions: vi.fn() }));

@@ -129,7 +129,7 @@ export function MembersPage() {
     return (
       <PageScroll contentClassName="px-8" extraBottom="2.5rem">
         <h1 className="mb-2 text-2xl font-semibold">Members</h1>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-ui text-muted-foreground">
           Member management is not available in single-user mode.
         </p>
       </PageScroll>
@@ -143,7 +143,7 @@ export function MembersPage() {
   // not a full-page replacement.
   if (meIsAdmin === null) {
     return (
-      <div className="flex min-h-full items-center justify-center text-sm text-muted-foreground">
+      <div className="flex min-h-full items-center justify-center text-ui text-muted-foreground">
         Loading…
       </div>
     );
@@ -154,7 +154,7 @@ export function MembersPage() {
     return (
       <PageScroll contentClassName="px-8" extraBottom="2.5rem">
         <h1 className="mb-2 text-2xl font-semibold">Members</h1>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-ui text-muted-foreground">
           You don't have permission to manage members.
         </p>
       </PageScroll>
@@ -218,7 +218,7 @@ export function MembersPage() {
       </div>
 
       {!manageable && (
-        <p className="mb-4 text-sm text-muted-foreground">
+        <p className="mb-4 text-ui text-muted-foreground">
           Users are provisioned automatically on first sign-in through your identity provider. This
           list is read-only.
         </p>
@@ -227,7 +227,7 @@ export function MembersPage() {
       {loadError !== null && (
         <div
           role="alert"
-          className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-ui text-destructive"
         >
           {loadError}
         </div>
@@ -235,8 +235,8 @@ export function MembersPage() {
 
       {users !== null && users.length > 0 && (
         <div className="overflow-hidden rounded-md border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-left text-xs uppercase text-muted-foreground">
+          <table className="w-full text-ui">
+            <thead className="bg-muted/40 text-left text-sm uppercase text-muted-foreground">
               <tr>
                 <th className="px-3 py-2 font-medium">Username</th>
                 <th className="px-3 py-2 font-medium">Role</th>
@@ -341,7 +341,7 @@ export function MembersPage() {
       )}
 
       {users !== null && users.length === 0 && (
-        <p className="text-sm text-muted-foreground">No members yet.</p>
+        <p className="text-ui text-muted-foreground">No members yet.</p>
       )}
 
       <div className="mt-3 flex items-center justify-end">
@@ -367,7 +367,7 @@ export function MembersPage() {
               They'll choose their own username and password when they redeem it.
             </DialogDescription>
           </DialogHeader>
-          <label className="flex items-center gap-2 text-sm">
+          <label className="flex items-center gap-2 text-ui">
             <input
               type="checkbox"
               checked={inviteAsAdmin}
@@ -379,7 +379,7 @@ export function MembersPage() {
           {actionError !== null && (
             <div
               role="alert"
-              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-ui text-destructive"
             >
               {actionError}
             </div>
@@ -392,8 +392,8 @@ export function MembersPage() {
             >
               Cancel
             </Button>
-            <Button onClick={() => void onCreateInvite()} disabled={pendingAction}>
-              {pendingAction ? "Creating…" : "Create invite"}
+            <Button onClick={() => void onCreateInvite()} loading={pendingAction}>
+              Create invite
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -466,7 +466,7 @@ export function MembersPage() {
           {actionError !== null && (
             <div
               role="alert"
-              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-ui text-destructive"
             >
               {actionError}
             </div>
@@ -482,9 +482,9 @@ export function MembersPage() {
             <Button
               variant="destructive"
               onClick={() => void onConfirmDelete()}
-              disabled={pendingAction}
+              loading={pendingAction}
             >
-              {pendingAction ? "Removing…" : "Remove"}
+              Remove
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -516,7 +516,7 @@ function CopyableValue({ value }: { value: string }) {
       <Input
         value={value}
         readOnly
-        className="font-mono text-xs"
+        className="font-mono text-sm"
         onFocus={(e) => e.currentTarget.select()}
       />
       <Button variant="outline" size="sm" onClick={() => void onCopy()} aria-label="Copy">
