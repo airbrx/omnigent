@@ -22,9 +22,7 @@ export function useAgentAvatars() {
       const res = await authenticatedFetch("/v1/agent-avatars");
       if (!res.ok) return {};
       const body = (await res.json()) as { data: AgentAvatarRow[] };
-      return Object.fromEntries(
-        body.data.map((a) => [a.agent_name, `${a.url}?v=${a.updated_at}`]),
-      );
+      return Object.fromEntries(body.data.map((a) => [a.agent_name, `${a.url}?v=${a.updated_at}`]));
     },
     staleTime: 60_000,
   });
