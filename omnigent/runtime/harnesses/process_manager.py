@@ -251,6 +251,18 @@ def _resolve_module_path(harness: str) -> str:
     module_path = _HARNESS_MODULES.get(harness)
     if module_path is not None:
         return module_path
+    # Accept the spellings the spec validator accepts. `executor.type` is
+    # underscored (`claude_sdk`, `agents_sdk`) while harness ids are
+    # hyphenated, so a bundle that validates would otherwise fail to spawn.
+    # Imported here rather than at module scope to keep this module free of a
+    # harness_plugins import cycle.
+    from omnigent.harness_aliases import canonicalize_harness
+
+    canonical = canonicalize_harness(harness)
+    if canonical is not None and canonical != harness:
+        module_path = _HARNESS_MODULES.get(canonical)
+        if module_path is not None:
+            return module_path
     # Generic-ACP ids (``acp:<slug>``) all resolve to the base ``acp`` module;
     # the slug selecting the concrete agent is read from the spec at spawn.
     if harness.startswith("acp:"):
