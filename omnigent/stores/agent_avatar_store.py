@@ -46,6 +46,11 @@ class AgentAvatarStore:
             self._engine,
             query_name_prefix="omnigent.agent_avatar_store",
         )
+        self._lifecycle_session = make_named_managed_session_maker(
+            self._engine,
+            query_name_prefix="omnigent.agent_avatar_store",
+            immediate=True,
+        )
         self._artifacts = artifact_store
 
     def put(self, agent_name: str, data: bytes, content_type: str) -> AgentAvatar:
@@ -54,13 +59,29 @@ class AgentAvatarStore:
         Bytes are written BEFORE the row is committed: a blob with no row
         is invisible and harmless, whereas a row pointing at a missing
         blob would render as a broken image.
+
+        Uses the ``immediate=True`` session maker for the check-then-insert
+        below, following ``HostStore``'s analogous upsert-on-connect path
+        (see ``host_store.py``'s ``_lifecycle_session``): ``BEGIN IMMEDIATE``
+        on SQLite and ``SELECT ... FOR UPDATE`` on Postgres both serialize
+        two concurrent ``put()`` calls for the same
+        ``(workspace_id, agent_name)`` — e.g. a doubled-submit avatar
+        upload — so the second call sees the first's row and updates it
+        instead of racing it into an ``IntegrityError``.
         """
         workspace_id = current_workspace_id()
         key = _artifact_key(workspace_id, agent_name)
         self._artifacts.put(key, data)
         now = int(time.time())
-        with self._session("put_agent_avatar") as session:
-            row = session.get(SqlAgentAvatar, (workspace_id, agent_name))
+        with self._lifecycle_session("put_agent_avatar") as session:
+            row = session.execute(
+                select(SqlAgentAvatar)
+                .where(
+                    SqlAgentAvatar.workspace_id == workspace_id,
+                    SqlAgentAvatar.agent_name == agent_name,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
             if row is None:
                 row = SqlAgentAvatar(
                     workspace_id=workspace_id,

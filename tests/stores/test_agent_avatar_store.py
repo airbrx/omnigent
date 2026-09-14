@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pytest
 
 from omnigent.stores.agent_avatar_store import AgentAvatarStore
@@ -31,6 +33,42 @@ def test_get_unknown_agent_is_none(store):
 def test_put_twice_replaces_and_advances_updated_at(store):
     first = store.put("researcher", b"one", "image/png")
     second = store.put("researcher", b"two", "image/jpeg")
+    assert store.get("researcher")[0] == b"two"
+    assert second.content_type == "image/jpeg"
+    assert second.updated_at >= first.updated_at
+    assert len(store.list_all()) == 1
+
+
+def test_put_twice_upserts_via_the_immediate_session_maker(store):
+    """put()'s check-then-insert must go through the immediate session maker.
+
+    ``host_store.py`` protects its analogous upsert-on-connect path from a
+    check-then-insert race with a second, ``immediate=True`` session maker
+    (``BEGIN IMMEDIATE`` on SQLite, ``SELECT ... FOR UPDATE`` on Postgres) —
+    without it, two concurrent ``put()`` calls for the same
+    ``(workspace_id, agent_name)`` (e.g. a doubled-submit avatar upload)
+    can both see no row and both INSERT, and the second raises
+    ``IntegrityError`` instead of upserting. A true concurrency test would be
+    flaky, so this instead proves two things sequentially: the upsert path
+    still replaces cleanly rather than raising, and it is the *immediate*
+    session maker — not the plain one used by get/list_all/delete — that
+    actually ran the check-then-insert.
+    """
+    calls: list[str] = []
+    original_lifecycle_session = store._lifecycle_session
+
+    @contextmanager
+    def spying_lifecycle_session(query_name):
+        calls.append(query_name)
+        with original_lifecycle_session(query_name) as session:
+            yield session
+
+    store._lifecycle_session = spying_lifecycle_session
+
+    first = store.put("researcher", b"one", "image/png")
+    second = store.put("researcher", b"two", "image/jpeg")
+
+    assert calls == ["put_agent_avatar", "put_agent_avatar"]
     assert store.get("researcher")[0] == b"two"
     assert second.content_type == "image/jpeg"
     assert second.updated_at >= first.updated_at
