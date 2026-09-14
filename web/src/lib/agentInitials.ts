@@ -17,8 +17,13 @@ const PALETTE = [
 export function agentInitials(name: string): string {
   const words = name.split(/[\s\-_]+/u).filter(Boolean);
   if (words.length === 0) return "?";
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  return (words[0][0] + words[1][0]).toUpperCase();
+  // Array.from splits on code points rather than UTF-16 code units, so an
+  // astral-plane emoji (e.g. this fork's "🐄 Cache Cow" persona names) is
+  // taken whole instead of being cut mid-surrogate-pair into a mangled
+  // glyph. Both branches index the same way for the same reason.
+  if (words.length === 1) return Array.from(words[0]).slice(0, 2).join("").toUpperCase();
+  const firstCodePoint = (word: string) => Array.from(word)[0] ?? "";
+  return (firstCodePoint(words[0]) + firstCodePoint(words[1])).toUpperCase();
 }
 
 /** Stable Tailwind background class for a name. Same name, same colour. */

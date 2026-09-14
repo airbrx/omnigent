@@ -8876,6 +8876,12 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "description": "agent_name failed validation, unsupported content type, or the bytes match no supported image signature"
+          },
+          "413": {
+            "description": "Upload exceeds the maximum avatar size"
+          },
           "422": {
             "content": {
               "application/json": {

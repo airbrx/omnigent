@@ -102,15 +102,7 @@ function mockConversations(conversations: Conversation[]) {
 }
 
 function sidebarAt(props: { open: boolean; peek?: boolean }) {
-  return (
-    <Sidebar
-      open={props.open}
-      peek={props.peek}
-      onClose={vi.fn()}
-      onOpen={vi.fn()}
-      onBrowseAgents={vi.fn()}
-    />
-  );
+  return <Sidebar open={props.open} peek={props.peek} onClose={vi.fn()} onOpen={vi.fn()} />;
 }
 
 function renderSidebar(props: { open: boolean; peek?: boolean }) {

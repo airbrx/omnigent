@@ -7,7 +7,7 @@
 // deeper rework of the picker itself.
 
 import { XIcon } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { useAgentAvatars } from "@/hooks/useAgentAvatars";
@@ -31,6 +31,12 @@ interface AgentDrawerProps {
 export function AgentDrawer({ open, onClose, onSelectAgent }: AgentDrawerProps) {
   const { data: agents } = useAvailableAgents();
   const { data: avatars } = useAgentAvatars();
+  // Per-row fallback: an avatar URL that 404s (or, in the build:embed target,
+  // resolves against the wrong origin because a plain <img> bypasses the host
+  // fetcher — see SessionImage.tsx for the codebase's blob-URL solution,
+  // out of scope here) should degrade to the initials chip rather than show
+  // a broken-image glyph.
+  const [failedAvatars, setFailedAvatars] = useState<Record<string, boolean>>({});
 
   // Cheap Esc-to-close — not a focus trap, just a keyboard escape hatch for
   // an overlay that otherwise only closes via the scrim or the header button.
@@ -75,7 +81,7 @@ export function AgentDrawer({ open, onClose, onSelectAgent }: AgentDrawerProps) 
 
         <div className="flex-1 overflow-y-auto p-2">
           {(agents ?? []).map((agent) => {
-            const url = avatars?.[agent.name];
+            const url = failedAvatars[agent.name] ? undefined : avatars?.[agent.name];
             return (
               <button
                 key={agent.id}
@@ -89,6 +95,7 @@ export function AgentDrawer({ open, onClose, onSelectAgent }: AgentDrawerProps) 
                     src={url}
                     alt={agent.name}
                     className="size-10 shrink-0 rounded-full object-cover"
+                    onError={() => setFailedAvatars((prev) => ({ ...prev, [agent.name]: true }))}
                   />
                 ) : (
                   <span

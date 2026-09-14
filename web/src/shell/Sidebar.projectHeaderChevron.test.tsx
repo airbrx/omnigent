@@ -98,7 +98,7 @@ function renderSidebar(initialEntry = "/") {
     <QueryClientProvider client={qc}>
       <TooltipProvider>
         <MemoryRouter initialEntries={[initialEntry]}>
-          <Sidebar open={true} onClose={vi.fn()} onBrowseAgents={vi.fn()} />
+          <Sidebar open={true} onClose={vi.fn()} />
         </MemoryRouter>
       </TooltipProvider>
     </QueryClientProvider>,

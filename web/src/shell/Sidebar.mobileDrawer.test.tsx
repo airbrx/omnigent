@@ -105,11 +105,7 @@ function renderSidebar(props: { open?: boolean; onClose?: () => void; route?: st
     <QueryClientProvider client={qc}>
       <TooltipProvider>
         <MemoryRouter initialEntries={[props.route ?? "/"]}>
-          <Sidebar
-            open={props.open ?? true}
-            onClose={props.onClose ?? vi.fn()}
-            onBrowseAgents={vi.fn()}
-          />
+          <Sidebar open={props.open ?? true} onClose={props.onClose ?? vi.fn()} />
         </MemoryRouter>
       </TooltipProvider>
     </QueryClientProvider>,

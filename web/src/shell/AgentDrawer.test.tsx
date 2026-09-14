@@ -59,6 +59,17 @@ describe("AgentDrawer", () => {
     expect(screen.queryByText("RE")).not.toBeInTheDocument();
   });
 
+  it("falls back to initials when the avatar image fails to load", () => {
+    vi.mocked(useAgentAvatars).mockReturnValue({
+      data: { researcher: "/v1/agent-avatars/researcher?v=1" },
+    } as never);
+    renderDrawer();
+    const img = screen.getByAltText("researcher");
+    fireEvent.error(img);
+    expect(screen.queryByAltText("researcher")).not.toBeInTheDocument();
+    expect(screen.getByText("RE")).toBeInTheDocument();
+  });
+
   it("calls onSelectAgent with the full agent when a row is clicked", () => {
     const { onSelectAgent } = renderDrawer();
     fireEvent.click(screen.getByTestId("agent-drawer-row-researcher"));

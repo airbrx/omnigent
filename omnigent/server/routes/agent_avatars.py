@@ -168,7 +168,16 @@ def create_agent_avatars_router(
             },
         )
 
-    @router.put("/agent-avatars/{agent_name}")
+    @router.put(
+        "/agent-avatars/{agent_name}",
+        responses={
+            400: {
+                "description": "agent_name failed validation, unsupported content "
+                "type, or the bytes match no supported image signature"
+            },
+            413: {"description": "Upload exceeds the maximum avatar size"},
+        },
+    )
     async def put_agent_avatar(request: Request, agent_name: str, file: UploadFile) -> Response:
         require_user(request, auth_provider)
         name_error = _validate_agent_name(agent_name)

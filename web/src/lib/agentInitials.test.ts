@@ -20,6 +20,19 @@ describe("agentInitials", () => {
     expect(agentInitials("")).toBe("?");
     expect(agentInitials("   ")).toBe("?");
   });
+
+  it("keeps an astral-plane emoji whole in a single-word name", () => {
+    // "🐮" is a surrogate pair (2 UTF-16 code units); slicing code units
+    // instead of code points would cut it in half and render a mangled
+    // glyph plus a stray trailing letter.
+    expect(agentInitials("🐮Cow")).toBe("🐮C");
+  });
+
+  it("keeps an emoji-led first word whole in a multi-word name", () => {
+    // This fork's agent personas are emoji-led ("🐄 Cache Cow"), so indexing
+    // words[0][0] would grab a lone high surrogate instead of the emoji.
+    expect(agentInitials("🐄 Cache Cow")).toBe("🐄C");
+  });
 });
 
 describe("agentAvatarColor", () => {

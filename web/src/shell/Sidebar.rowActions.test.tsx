@@ -239,7 +239,7 @@ function renderSidebar(activeId?: string, info?: ServerInfo) {
   // reference lets React bail out without re-invoking the sidebar, which
   // would swallow a `mockConversations` swap applied mid-test.
   const makeUi = () => {
-    const sidebar = <Sidebar open={true} onClose={vi.fn()} onBrowseAgents={vi.fn()} />;
+    const sidebar = <Sidebar open={true} onClose={vi.fn()} />;
     const tree = (
       <QueryClientProvider client={qc}>
         <TooltipProvider>
@@ -1358,7 +1358,7 @@ describe("peek mode row menu", () => {
       <QueryClientProvider client={qc}>
         <TooltipProvider>
           <MemoryRouter>
-            <Sidebar open={false} peek onClose={onClose} onBrowseAgents={vi.fn()} />
+            <Sidebar open={false} peek onClose={onClose} />
           </MemoryRouter>
         </TooltipProvider>
       </QueryClientProvider>,
