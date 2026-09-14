@@ -3,6 +3,7 @@ import type * as UseConversationsModule from "@/hooks/useConversations";
 import type * as AgentLabelsModule from "@/lib/agentLabels";
 import type * as ChatStoreModule from "@/store/chatStore";
 import type * as NativeBridgeModule from "@/lib/nativeBridge";
+import type { ReactNode } from "react";
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -46,6 +47,7 @@ import { useDirectorySessions } from "@/hooks/useDirectorySessions";
 import { useRunnerHealthRegistration } from "@/hooks/RunnerHealthProvider";
 import type { Conversation } from "@/hooks/useConversations";
 import { setOmnigentHostConfig } from "@/lib/host";
+import { useNavigate } from "@/lib/routing";
 import { COMPOSER_SEND_SHORTCUT_STORAGE_KEY } from "@/lib/composerSendShortcutPreferences";
 import {
   connectArcaHost,
@@ -790,7 +792,15 @@ function setupLandingMocks() {
   ]);
 }
 
-function renderLanding(infoOverrides: Partial<ServerInfo> = {}, route = "/") {
+function renderLanding(
+  infoOverrides: Partial<ServerInfo> = {},
+  route = "/",
+  // Almost every caller wants the bare screen; the AgentDrawer hand-off
+  // tests below swap this for a screen-plus-trigger harness so they can
+  // navigate ("/" -> "/?agent=…") without unmounting it — the exact
+  // same-route condition the fix targets.
+  element: ReactNode = <NewChatLandingScreen />,
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -822,9 +832,7 @@ function renderLanding(infoOverrides: Partial<ServerInfo> = {}, route = "/") {
     <QueryClientProvider client={client}>
       <CapabilitiesProvider info={info}>
         <TooltipProvider>
-          <MemoryRouter initialEntries={[route]}>
-            <NewChatLandingScreen />
-          </MemoryRouter>
+          <MemoryRouter initialEntries={[route]}>{element}</MemoryRouter>
         </TooltipProvider>
       </CapabilitiesProvider>
     </QueryClientProvider>,
@@ -5686,5 +5694,73 @@ describe("NewChatLandingScreen Smart Routing flavors are scoped separately", () 
     expect(screen.getByTestId("new-chat-landing-config-harness").textContent).toContain(
       "Smart Routing",
     );
+  });
+});
+
+// Task 6 fix: the AgentDrawer (opened from the sidebar) hands its pick to
+// this screen via a one-shot `/?agent=<id>` query param rather than
+// AppShell.tsx:2196's earlier writeLastAgentId()+navigate("/"), which was
+// reversed because it silently started the WRONG agent. Both cases below
+// are the ones the review named as required: they fail against the earlier
+// mechanism (verified by temporarily reverting NewChatDialog.tsx's `agent`-
+// param effect while writing this test) and pass with the effect in place.
+describe("AgentDrawer hand-off (?agent= param)", () => {
+  beforeEach(setupLandingMocks);
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+  });
+
+  it("updates the picker when an agent is picked while already on the landing screen", () => {
+    // "/" and "/c/:id" both render the same <ChatPage> in the real app
+    // (App.tsx), so AppShell's navigate("/") from an agent already sitting
+    // on "/" never remounts this screen — reproduced here by rendering the
+    // navigate-trigger and the landing screen as siblings under one
+    // MemoryRouter with no <Routes> in between, so nothing about this tree
+    // unmounts when the location changes.
+    function Harness() {
+      const navigate = useNavigate();
+      return (
+        <>
+          <button type="button" data-testid="drawer-pick-a2" onClick={() => navigate("/?agent=a2")}>
+            pick a2
+          </button>
+          <NewChatLandingScreen />
+        </>
+      );
+    }
+    renderLanding({}, "/", <Harness />);
+
+    // No stored preference yet, so the picker starts on the catalog default
+    // (a1, "Claude Code").
+    expect(screen.getByTestId("new-chat-landing-agent-select").textContent).toContain(
+      "Claude Code",
+    );
+
+    fireEvent.click(screen.getByTestId("drawer-pick-a2"));
+
+    expect(screen.getByTestId("new-chat-landing-agent-select").textContent).toContain("Codex");
+  });
+
+  it("wins over a parked landing draft and the persisted last-agent preference", () => {
+    // Explicitly pick a2: this persists it (writeLastAgentId, real handler
+    // behavior) AND, on unmount below, parks it as the module-scoped
+    // draft's pickedAgentId — the two places the old
+    // `restoredDraft?.pickedAgentId ?? readLastAgentId()` seed could read
+    // the WRONG agent from.
+    renderLanding();
+    selectAgent("a2");
+    expect(localStorage.getItem(LAST_AGENT_KEY)).toBe("a2");
+    cleanup(); // no resetLandingDraft(): a2 rides into the parked draft on purpose
+
+    // A fresh mount arrives with the drawer's hand-off naming the OTHER
+    // agent (a1). Both the draft and localStorage still say a2; the URL
+    // param must win over both.
+    renderLanding({}, "/?agent=a1");
+
+    expect(screen.getByTestId("new-chat-landing-agent-select").textContent).toContain(
+      "Claude Code",
+    );
+    expect(screen.getByTestId("new-chat-landing-agent-select").textContent).not.toContain("Codex");
   });
 });

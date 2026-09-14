@@ -1,6 +1,6 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Outlet, useParams, useSearchParams } from "@/lib/routing";
+import { Outlet, useNavigate, useParams, useSearchParams } from "@/lib/routing";
 import {
   PROJECT_LABEL_KEY,
   type Conversation,
@@ -36,6 +36,7 @@ import {
   type DesignModeElement,
 } from "@/lib/designModePrompt";
 import { readSessionWorkspaceState, writeSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
+import { writeLastAgentId } from "@/lib/agentPreferences";
 import {
   readDefaultWorkspacePanelOpen,
   writeDefaultWorkspacePanelOpen,
@@ -89,6 +90,7 @@ import {
 } from "@/hooks/useSessionLiveness";
 import { useResizableInlinePanel } from "@/hooks/useResizableInlinePanel";
 import { useResizableSidebar } from "@/hooks/useResizableSidebar";
+import { AgentDrawer } from "./AgentDrawer";
 import { ChatHeader } from "./ChatHeader";
 import { ExecutionLogsPanel } from "./ExecutionLogsPanel";
 import { FileViewer } from "./FileViewer";
@@ -243,6 +245,9 @@ export function AppShell() {
       ? 720
       : undefined;
   const [searchParams, setSearchParams] = useSearchParams();
+  // Used only to land on the new-chat composer after an agent drawer pick;
+  // see the AgentDrawer mount below.
+  const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
   // Extension pages own their top chrome. The shell header only carries the
   // collapsed-sidebar toggle there, so skip it while the sidebar is open and
@@ -376,6 +381,10 @@ export function AppShell() {
   const [panelInitialKey, setPanelInitialKeyState] = useState<string | null>(null);
   const [executionLogsKey, setExecutionLogsKey] = useState<string | null>(null);
   const [filesPanelOpen, setFilesPanelOpen] = useState(false);
+  // Agent roster drawer (AgentDrawer), opened from the sidebar's "Browse
+  // agents" trigger. Global rather than per-session — it has no
+  // conversationId dependency, unlike the panels above.
+  const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
   // Mobile-only full-screen drawers for the rail tabs that have no desktop
   // push panel of their own. On desktop these are tabs in the workspace rail;
   // on a phone they open as full-screen overlays from the session-menu FAB.
@@ -1396,6 +1405,7 @@ export function AppShell() {
     setSidebarOpen(false);
     setSidebarPeek(false);
   }, []);
+  const handleBrowseAgents = useCallback(() => setAgentDrawerOpen(true), []);
   const handleSidebarOpen = useCallback(() => {
     setSidebarOpen(true);
     setSidebarPeek(false);
@@ -1404,6 +1414,19 @@ export function AppShell() {
   const isEmbedded = useIsEmbedded();
   useCommandPaletteHotkey(() => setCommandPaletteOpen((prev) => !prev));
   useNewSessionHotkey(!isEmbedded);
+  // The command palette (components/ui/dialog.tsx) renders at the shared
+  // z-50 used across the whole app, which sits BELOW the agent drawer's
+  // scrim (z-[55]/[56] — needed to clear the mobile sidebar's own z-50
+  // overlay, see AgentDrawer.tsx). The ⌘K hotkey is an unconditional window
+  // listener (useCommandPaletteHotkey above), so it can fire while the
+  // drawer is open and would otherwise paint the palette under the drawer's
+  // 40%-black scrim, unreachable. Closing the drawer whenever the palette
+  // opens covers every way the palette can open (hotkey, search button, a
+  // controlled onOpenChange) without renumbering the shared dialog z-index
+  // every other dialog in the app also relies on.
+  useEffect(() => {
+    if (commandPaletteOpen) setAgentDrawerOpen(false);
+  }, [commandPaletteOpen]);
 
   // Mobile back button: close the open file and return to the files/changes
   // list. On mobile the tab strip is hidden, so a "back" should fully drop the
@@ -1961,6 +1984,7 @@ export function AppShell() {
               dragProgress={sidebarDragProgress}
               onClose={handleSidebarClose}
               onOpenSearch={handleOpenSearch}
+              onBrowseAgents={handleBrowseAgents}
             />
 
             {/* Content region (everything right of the sidebar): a relative
@@ -2173,6 +2197,39 @@ export function AppShell() {
                   onSortChange={handleFilesSortChange}
                 />
               )}
+              {/* Not gated on conversationId: the trigger lives in the sidebar,
+              reachable from the landing composer as well as from a session.
+              Picking a row persists the preference (writeLastAgentId) and
+              navigates to `/?agent=<id>` (plus `project=<name>` when the pick
+              was made from a project-scoped landing — see the handler below),
+              which NewChatDialog.tsx picks up via a dedicated effect and
+              applies to its own state. A bare navigate("/") does not work
+              here: "/" and "/c/:id" render the same <ChatPage>, so navigating
+              from "/" to "/" never remounts the landing screen, and its
+              pickedAgentId useState initializer (which reads the persisted
+              preference) never re-runs — the session would silently start
+              with the OLD agent. The query param instead re-runs an effect on
+              the mounted screen, after the mount-time draft restore, so it
+              also wins over a parked landing draft. */}
+              <AgentDrawer
+                open={agentDrawerOpen}
+                onClose={() => setAgentDrawerOpen(false)}
+                onSelectAgent={(agent) => {
+                  setAgentDrawerOpen(false);
+                  writeLastAgentId(agent.id);
+                  // Carry `project` forward specifically — not the whole query
+                  // string. The drawer trigger sits in the same sidebar as the
+                  // project-scoped landing links (Sidebar.tsx), so a pick made
+                  // from `/?project=Foo` must not drop back to the unscoped
+                  // landing. Other params on `/c/:id` (file, comment, view,
+                  // sidebar) are page-local and must not ride along.
+                  const target = new URLSearchParams();
+                  const project = searchParams.get("project");
+                  if (project) target.set("project", project);
+                  target.set("agent", agent.id);
+                  navigate(`/?${target.toString()}`);
+                }}
+              />
               {/* Mobile-only full-screen drawers for the rail tabs that have no
           desktop push panel of their own. `MobilePanelDrawer` is `md:hidden`,
           so these never collide with the desktop rail; they're opened from

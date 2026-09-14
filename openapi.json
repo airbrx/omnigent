@@ -295,6 +295,20 @@
         "title": "BackgroundTaskInfo",
         "type": "object"
       },
+      "Body_put_agent_avatar_v1_agent_avatars__agent_name__put": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_put_agent_avatar_v1_agent_avatars__agent_name__put",
+        "type": "object"
+      },
       "Body_update_session_agent_v1_sessions__session_id__agent_put": {
         "properties": {
           "bundle": {
@@ -8699,6 +8713,189 @@
         "summary": "Health",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/v1/agent-avatars": {
+      "get": {
+        "operationId": "list_agent_avatars_v1_agent_avatars_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Agent Avatars V1 Agent Avatars Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Agent Avatars",
+        "tags": [
+          "agent-avatars"
+        ]
+      }
+    },
+    "/v1/agent-avatars/{agent_name}": {
+      "delete": {
+        "operationId": "delete_agent_avatar_v1_agent_avatars__agent_name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_name",
+            "required": true,
+            "schema": {
+              "title": "Agent Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Avatar deleted"
+          },
+          "400": {
+            "description": "agent_name failed validation"
+          },
+          "404": {
+            "description": "No avatar stored for that agent"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Agent Avatar",
+        "tags": [
+          "agent-avatars"
+        ]
+      },
+      "get": {
+        "operationId": "get_agent_avatar_v1_agent_avatars__agent_name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_name",
+            "required": true,
+            "schema": {
+              "title": "Agent Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/gif": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The agent's avatar image"
+          },
+          "400": {
+            "description": "agent_name failed validation"
+          },
+          "404": {
+            "description": "No avatar stored for that agent"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent Avatar",
+        "tags": [
+          "agent-avatars"
+        ]
+      },
+      "put": {
+        "operationId": "put_agent_avatar_v1_agent_avatars__agent_name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_name",
+            "required": true,
+            "schema": {
+              "title": "Agent Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_put_agent_avatar_v1_agent_avatars__agent_name__put"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "agent_name failed validation, unsupported content type, or the bytes match no supported image signature"
+          },
+          "413": {
+            "description": "Upload exceeds the maximum avatar size"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Agent Avatar",
+        "tags": [
+          "agent-avatars"
         ]
       }
     },

@@ -1393,6 +1393,36 @@ class SqlHost(OmnigentBase):
     )
 
 
+class SqlAgentAvatar(OmnigentBase):
+    """
+    SQLAlchemy model for the ``agent_avatars`` table.
+
+    airbrx-local. Maps an agent NAME (not id) to an image held in the
+    artifact store, so the drawer can render agents as recognisable
+    teammates. Deliberately keyed on name and kept out of ``AgentSpec``:
+    that is a versioned bundle format the SDK also reads, and forking it
+    would be the most expensive divergence available to this fork.
+
+    :param workspace_id: Owning workspace, matching every other table.
+    :param agent_name: The agent's ``name`` as returned by ``GET /v1/agents``.
+    :param artifact_key: Key into the artifact store holding the bytes.
+    :param content_type: Validated image media type, e.g. ``"image/png"``.
+    :param updated_at: Unix epoch seconds; drives HTTP cache validation.
+    """
+
+    __tablename__ = "agent_avatars"
+
+    workspace_id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        default=current_workspace_id,
+    )
+    agent_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    artifact_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class SqlUserDailyCost(OmnigentBase):
     """
     SQLAlchemy model for the ``user_daily_cost`` table.

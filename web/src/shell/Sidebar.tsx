@@ -366,6 +366,13 @@ interface SidebarProps {
    * Whether the sidebar is peeking.
    */
   peek?: boolean;
+  /**
+   * Open the agent roster drawer (AgentDrawer, mounted by AppShell). Optional
+   * (defaults to a no-op) because this is a fork-added prop on an
+   * upstream-owned component — requiring it would force every one of the
+   * upstream-owned Sidebar tests to pass a stub just to keep compiling.
+   */
+  onBrowseAgents?: () => void;
 }
 
 /**
@@ -579,6 +586,7 @@ function SidebarImpl({
   dragProgress = null,
   onOpenSearch,
   peek,
+  onBrowseAgents,
 }: SidebarProps) {
   const branding = useBranding();
   const serverInfo = useServerInfo();
@@ -1111,6 +1119,23 @@ function SidebarImpl({
                   />
                   New session
                 </Link>
+              </Button>
+              {/* Opens the agent roster drawer (AgentDrawer, mounted by AppShell)
+            rather than navigating, so it's a plain button in the same row
+            treatment as the other primary-nav rows instead of a Link. */}
+              <Button
+                type="button"
+                variant="ghost"
+                className={cn(
+                  SIDEBAR_ROW,
+                  "w-full justify-start border-0 font-normal",
+                  SIDEBAR_HOVER_HIGHLIGHT,
+                )}
+                data-testid="browse-agents-button"
+                onClick={() => onBrowseAgents?.()}
+              >
+                <UsersIcon className="ui-icon text-muted-foreground" />
+                Agents
               </Button>
               {/* Keep Scheduled in the primary nav group with the same row treatment as New session. */}
               <Button

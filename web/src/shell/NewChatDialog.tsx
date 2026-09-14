@@ -2297,7 +2297,7 @@ export function resetLandingDraft(): void {
 
 export function NewChatLandingScreen() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const isMobileViewport = useIsMobileViewport();
   const isCoarsePointer = useIsCoarsePointer();
@@ -2959,6 +2959,24 @@ export function NewChatLandingScreen() {
     seededConfigSigRef.current = prefillConfigSig;
     setPrefill(initialPrefillState(projectParam));
   }, [projectParam, prefill.project, prefillConfigSig]);
+
+  // AgentDrawer hand-off: the drawer navigates to `/?agent=<id>` rather than
+  // relying on a remount (`/` -> `/` doesn't remount this screen, so a
+  // useState initializer re-reading `readLastAgentId()` would never re-run —
+  // see the AgentDrawer mount in AppShell.tsx). A `?agent=` change instead
+  // re-runs this effect on an already-mounted screen, and setting state here
+  // happens strictly after the mount-time draft restore above, so a picked
+  // agent always wins over a parked draft. One-shot: applied then stripped
+  // from the URL, same pattern as AppShell's `?sidebar=open`.
+  const agentParam = searchParams.get("agent") ?? "";
+  useEffect(() => {
+    if (agentParam === "") return;
+    setPickedAgentId(agentParam);
+    setPickedHarness(readLastHarness(agentParam));
+    const next = new URLSearchParams(searchParams);
+    next.delete("agent");
+    setSearchParams(next, { replace: true });
+  }, [agentParam, searchParams, setSearchParams]);
 
   // Record the config the machine settled from, once it's loaded and the
   // machine is done, so the reseed effect above can spot a later change to it
