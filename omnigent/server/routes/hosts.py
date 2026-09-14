@@ -802,7 +802,7 @@ def create_hosts_router(
         request: Request,
         host_id: str,
         harness: str,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[str, list[Any]]:
         """Return pre-launch model choices resolved by the selected host.
 
         A preview of the host's ambient default catalog, not a binding
@@ -830,7 +830,22 @@ def create_hosts_router(
                 detail=str(result.get("error") or "host model-options lookup failed"),
             )
         models = result.get("models")
-        return {"models": models if isinstance(models, list) else []}
+        routable = result.get("routable_models")
+        payload: dict[str, Any] = {
+            "models": models if isinstance(models, list) else [],
+            # Every id the harness's endpoint routes: the picker names one
+            # row per model, while a launch takes an exact id.
+            "routable_models": (
+                [m for m in routable if isinstance(m, str)] if isinstance(routable, list) else []
+            ),
+        }
+        # An honest empty answer carries the reason (e.g. "the codex model
+        # probe failed — see the host log") so the picker can say WHY it is
+        # empty instead of a generic "Models unavailable".
+        error = result.get("error")
+        if isinstance(error, str) and error:
+            payload["error"] = error
+        return payload
 
     @router.post("/hosts/{host_id}/runners")
     async def launch_runner(
@@ -951,6 +966,7 @@ def create_hosts_router(
                         repo_path=workspace,
                         branch_name=body.git.branch_name,
                         base_branch=body.git.base_branch,
+                        existing_branch=body.git.existing_branch,
                     )
                 except WorktreeHostUnavailableError as exc:
                     # Host offline / unresponsive — infra, not user input.
@@ -971,6 +987,11 @@ def create_hosts_router(
             worktree (and no orphan branch) on the host. Never raises —
             a cleanup failure is logged and the original error still
             propagates.
+
+            A recreated worktree (``existing_branch``) checks out a branch
+            that predates this request — the directory is ours to remove,
+            but the branch (and its unpushed commits) is the user's, so it
+            must survive the rollback.
             """
             if worktree is None:
                 return
@@ -985,7 +1006,7 @@ def create_hosts_router(
                     host_conn=conn,
                     worktree_path=worktree.worktree_path,
                     branch=worktree.branch,
-                    delete_branch=True,
+                    delete_branch=body.git is None or not body.git.existing_branch,
                 )
             except WorktreeProxyError:
                 _logger.warning(

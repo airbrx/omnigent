@@ -1,394 +1,343 @@
-"""Install the Omnigent host as a user-scoped, self-restarting service.
-
-The host process (``omnigent host``) already self-heals two failure modes:
-tunnel drops (its reconnect loop) and version skew (``--auto-upgrade`` re-execs
-in place). The third — the process itself dying — needs a supervisor, because a
-dead process cannot restart itself. This module installs that supervisor.
-
-It is deliberately **user-scoped**, never root/system: the host resolves ``$HOME``
-for ``~/.claude`` / ``~/.codex`` / ``~/.omnigent`` credentials, so a system unit
-would resolve the wrong home and silently break every agent launch.
-
-    ┌────────────┐  install   ┌──────────────────────┐
-    │ omnigent   │──────────▶ │ user unit (per OS):   │
-    │ host       │            │  systemd --user  (L)  │
-    │ install    │            │  launchd Agent   (M)  │
-    └────────────┘            └───────────┬──────────┘
-                                          │ Restart=always / KeepAlive
-                                          ▼
-        crash ──▶ supervisor relaunches ``omnigent host`` in <RestartSec>
-        clean stop / uninstall ──▶ stays down
-
-Scope (v1, minimal): supervise a *remote* (``--server``) host; capture the
-allowlisted daemon env so the service connects with the same environment the
-manual host used. NOT handled here: a typed permanent-failure exit code
-(a permanently-broken host restart-loops — rare, log-visible, recoverable),
-unit-aware ``host stop``/``status``, multi-target units, and local-mode server
-ownership. Those are deferred by design.
-"""
+"""Install the Omnigent host as a per-user operating-system service."""
 
 from __future__ import annotations
 
 import os
+import platform
 import plistlib
-import shutil
+import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+import tempfile
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal
 
-from omnigent._platform import IS_DARWIN, IS_LINUX
+from omnigent.process_logging import data_dir
 
-#: systemd user unit / launchd label. Single-target in v1 (multi-target
-#: identity is deferred), so a fixed name is safe.
-SYSTEMD_UNIT_NAME = "omnigent-host.service"
 LAUNCHD_LABEL = "ai.omnigent.host"
+SYSTEMD_UNIT = "omnigent-host.service"
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-class CommandRunner(Protocol):
-    """Runs a command and returns the completed process.
-
-    Injected so tests can assert on issued commands without touching a real
-    init system.
-    """
-
-    def __call__(
-        self, args: list[str], *, check: bool = ...
-    ) -> subprocess.CompletedProcess[str]: ...
-
-
-class HostServiceError(Exception):
-    """A host-service install/uninstall could not be completed."""
+class HostServiceError(RuntimeError):
+    """Raised when a host service cannot be installed or removed."""
 
 
 @dataclass(frozen=True)
-class HostServiceConfig:
-    """What to bake into the supervised unit.
+class HostService:
+    """Description of the current platform's per-user host service."""
 
-    :param server_url: Remote Omnigent server URL, e.g.
-        ``"https://example.databricksapps.com"``. Required — v1 supervises
-        remote hosts only.
-    :param exec_path: Absolute path to the ``omnigent`` binary the unit runs.
-    :param auto_upgrade: Pass ``--auto-upgrade`` to the supervised host.
-    :param shared: Pass ``--shared`` (open the host to any authed user).
-    :param workroot: Jail dir for a shared host. REQUIRED when ``shared`` — a
-        persistent daemon must not default to a surprising cwd.
-    :param environment: Allowlisted env to embed (from the CLI's
-        ``_build_host_daemon_env``), so the service connects with the same
-        environment the manual host used.
-    :param restart_sec: Seconds a crashed host waits before relaunch.
-    """
-
-    server_url: str
-    exec_path: str
-    auto_upgrade: bool = False
-    shared: bool = False
-    workroot: str | None = None
-    environment: dict[str, str] = field(default_factory=dict)
-    restart_sec: int = 5
+    kind: Literal["launchd", "systemd_user"]
+    path: Path
+    label: str
+    log_path: Path | None = None
 
 
-@dataclass(frozen=True)
-class InstallResult:
-    """Outcome of an install for user-facing reporting.
-
-    :param unit_path: Path of the written unit/plist.
-    :param status_cmd: Command the user can run to inspect the service.
-    :param stop_cmd: Command that stops the service (supervisor-aware).
-    :param linger_enabled: Whether this install turned on ``enable-linger``.
-    """
-
-    unit_path: Path
-    status_cmd: str
-    stop_cmd: str
-    linger_enabled: bool
-
-
-def _default_runner(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    """Run *args* capturing text output; the injectable default runner."""
-    return subprocess.run(args, check=check, capture_output=True, text=True)
-
-
-def resolve_omnigent_bin() -> str:
-    """Absolute path to the ``omnigent`` binary the unit should exec.
-
-    Prefer the console script on PATH (matches how ``--auto-upgrade`` re-execs
-    via ``sys.argv[0]``); fall back to the current ``sys.argv[0]`` resolved.
-
-    :returns: An absolute filesystem path.
-    :raises HostServiceError: If no ``omnigent`` binary can be resolved.
-    """
-    found = shutil.which("omnigent")
-    if found:
-        return str(Path(found).resolve())
-    argv0 = sys.argv[0] if sys.argv else ""
-    if argv0:
-        resolved = Path(argv0).resolve()
-        if resolved.exists() and os.path.basename(argv0) in {"omnigent", "omni"}:
-            return str(resolved)
+def _service_for_current_platform() -> HostService:
+    """Return the current platform's per-user service description."""
+    system = platform.system()
+    if system == "Darwin":
+        log_path = data_dir() / "logs" / "host" / "service.log"
+        return HostService(
+            kind="launchd",
+            path=Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist",
+            label=LAUNCHD_LABEL,
+            log_path=log_path,
+        )
+    if system == "Linux":
+        config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        return HostService(
+            kind="systemd_user",
+            path=config_home / "systemd" / "user" / SYSTEMD_UNIT,
+            label=SYSTEMD_UNIT,
+        )
     raise HostServiceError(
-        "Could not locate the 'omnigent' binary to supervise. Ensure it is on "
-        "PATH (e.g. `which omnigent`)."
+        f"Host services are supported on macOS and Linux, not {system or 'this platform'}."
     )
 
 
-def systemd_user_dir() -> Path:
-    """Directory for the user's systemd units (``~/.config/systemd/user``)."""
-    return Path.home() / ".config" / "systemd" / "user"
+def _service_command(
+    server_url: str | None,
+    *,
+    auto_upgrade: bool = False,
+    shared: bool = False,
+    workroot: str | None = None,
+) -> list[str]:
+    """Build the persistent service entry-point command.
 
-
-def systemd_unit_path() -> Path:
-    """Path of the systemd user unit file."""
-    return systemd_user_dir() / SYSTEMD_UNIT_NAME
-
-
-def launchd_plist_path() -> Path:
-    """Path of the launchd LaunchAgent plist."""
-    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
-
-
-def _linger_marker_path() -> Path:
-    """Marker recording that *we* enabled linger (so uninstall can undo it)."""
-    return systemd_user_dir() / ".omnigent-host-linger-set"
-
-
-def _validate(config: HostServiceConfig) -> None:
-    """Reject a config that can't be safely supervised.
-
-    :raises HostServiceError: On an unsupported platform or a shared host
-        without an explicit ``--workroot``.
+    :param server_url: Remote server URL, or ``None`` for local mode.
+    :param auto_upgrade: Bake ``--auto-upgrade`` into the supervised host.
+    :param shared: Bake ``--shared`` in (requires ``workroot``).
+    :param workroot: Jail dir for a shared host's non-owner sessions.
     """
-    if not (IS_LINUX or IS_DARWIN):
-        raise HostServiceError(
-            "`omnigent host install` supports Linux (systemd --user) and macOS "
-            "(launchd) only. On Windows, run the host under Task Scheduler "
-            "manually."
+    mode = ["--server", server_url] if server_url else ["--local"]
+    extra: list[str] = []
+    if auto_upgrade:
+        extra.append("--auto-upgrade")
+    if shared:
+        extra.append("--shared")
+        if workroot:
+            extra.extend(["--workroot", workroot])
+    return [sys.executable, "-m", "omnigent.host.service_entry", *mode, *extra]
+
+
+def _clean_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """Validate environment values before persisting them in a service file."""
+    cleaned: dict[str, str] = {}
+    for key, value in environment.items():
+        if not _ENV_NAME_RE.fullmatch(key):
+            raise HostServiceError(f"Cannot persist invalid environment variable name {key!r}.")
+        if "\x00" in value or "\n" in value or "\r" in value:
+            raise HostServiceError(f"Cannot persist multiline environment variable {key!r}.")
+        cleaned[key] = value
+    return dict(sorted(cleaned.items()))
+
+
+def _launchd_payload(
+    service: HostService,
+    *,
+    command: Sequence[str],
+    environment: Mapping[str, str],
+) -> bytes:
+    """Render a launchd user-agent plist."""
+    assert service.log_path is not None
+    payload = {
+        "Label": service.label,
+        "ProgramArguments": list(command),
+        "EnvironmentVariables": dict(environment),
+        "RunAtLoad": True,
+        # service_entry maps permanent host failures to a successful exit.
+        "KeepAlive": {"SuccessfulExit": False},
+        "ThrottleInterval": 10,
+        "StandardOutPath": str(service.log_path),
+        "StandardErrorPath": str(service.log_path),
+        # No ProcessType: the default (Standard) keeps runner/harness children
+        # out of the background QoS band, which would starve their deadlines.
+    }
+    return plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=True)
+
+
+def _systemd_quote(value: str, *, escape_dollar: bool = False) -> str:
+    """Quote one systemd unit value without invoking a shell."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    if escape_dollar:
+        escaped = escaped.replace("$", "$$")
+    return f'"{escaped}"'
+
+
+def _systemd_unit(
+    *,
+    command: Sequence[str],
+    environment: Mapping[str, str],
+) -> bytes:
+    """Render a systemd user service unit."""
+    env_lines = [
+        f"Environment={_systemd_quote(f'{key}={value}')}" for key, value in environment.items()
+    ]
+    lines = [
+        "[Unit]",
+        "Description=Omnigent host",
+        "Wants=network-online.target",
+        "After=network-online.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        *env_lines,
+        "ExecStart=" + " ".join(_systemd_quote(part, escape_dollar=True) for part in command),
+        "Restart=on-failure",
+        "RestartPreventExitStatus=78 143",
+        "RestartSec=10s",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        "",
+    ]
+    return "\n".join(lines).encode()
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    """Atomically write a private service definition."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        path.chmod(0o600)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _run_checked(args: Sequence[str]) -> None:
+    """Run one service-manager command and surface a concise failure."""
+    try:
+        subprocess.run(
+            list(args),
+            check=True,
+            capture_output=True,
+            text=True,
         )
-    if not config.server_url:
+    except FileNotFoundError as exc:
+        raise HostServiceError(f"Required service manager {args[0]!r} was not found.") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        suffix = f": {detail}" if detail else ""
         raise HostServiceError(
-            "`omnigent host install` requires a remote --server URL "
-            "(local-mode installs are not supported in v1)."
+            f"Service manager command failed ({' '.join(args)}){suffix}"
+        ) from exc
+
+
+def _run_best_effort(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    """Run an idempotent service-manager cleanup command."""
+    try:
+        return subprocess.run(
+            list(args),
+            check=False,
+            capture_output=True,
+            text=True,
         )
-    if config.shared and not config.workroot:
+    except FileNotFoundError as exc:
+        raise HostServiceError(f"Required service manager {args[0]!r} was not found.") from exc
+
+
+def _restore_file(path: Path, previous: bytes | None) -> None:
+    """Restore a service definition after a manager command fails."""
+    if previous is None:
+        path.unlink(missing_ok=True)
+    else:
+        _atomic_write(path, previous)
+
+
+def _enable_launchd(service: HostService, content: bytes) -> None:
+    assert service.log_path is not None
+    service.log_path.parent.mkdir(parents=True, exist_ok=True)
+    previous = service.path.read_bytes() if service.path.exists() else None
+    domain = f"gui/{os.getuid()}"
+    _run_best_effort(["launchctl", "bootout", f"{domain}/{service.label}"])
+    _atomic_write(service.path, content)
+    try:
+        _run_checked(["launchctl", "bootstrap", domain, str(service.path)])
+    except HostServiceError:
+        _restore_file(service.path, previous)
+        if previous is not None:
+            _run_best_effort(["launchctl", "bootstrap", domain, str(service.path)])
+        raise
+
+
+def _enable_systemd(service: HostService, content: bytes) -> None:
+    previous = service.path.read_bytes() if service.path.exists() else None
+    changed = previous != content
+    _atomic_write(service.path, content)
+    try:
+        _run_checked(["systemctl", "--user", "daemon-reload"])
+        _run_checked(["systemctl", "--user", "enable", "--now", service.label])
+        if previous is not None and changed:
+            _run_checked(["systemctl", "--user", "restart", service.label])
+    except HostServiceError:
+        _restore_file(service.path, previous)
+        _run_best_effort(["systemctl", "--user", "daemon-reload"])
+        raise
+
+
+def _record_service(service: HostService) -> None:
+    """Add the service to the uninstall ledger."""
+    from omnigent.install_ledger import LaunchAgentEntry, record_launch_agent
+
+    try:
+        record_launch_agent(
+            LaunchAgentEntry(
+                kind=service.kind,
+                path=str(service.path),
+                label=service.label,
+                source="recorded",
+                confidence="certain",
+            )
+        )
+    except OSError as exc:
+        raise HostServiceError(
+            f"The service was enabled, but its uninstall record could not be written: {exc}"
+        ) from exc
+
+
+def _forget_service(service: HostService) -> None:
+    """Remove the service from install ledgers."""
+    from omnigent.install_ledger import remove_launch_agent
+
+    try:
+        remove_launch_agent(kind=service.kind, label=service.label)
+    except OSError as exc:
+        raise HostServiceError(
+            f"The service was disabled, but its uninstall record could not be updated: {exc}"
+        ) from exc
+
+
+def enable_user_host_service(
+    server_url: str | None,
+    *,
+    environment: Mapping[str, str],
+    auto_upgrade: bool = False,
+    shared: bool = False,
+    workroot: str | None = None,
+) -> HostService:
+    """Install, enable, and start the current user's host service.
+
+    :param server_url: Remote server URL, or ``None`` for local mode.
+    :param environment: Allowlisted env baked into the unit.
+    :param auto_upgrade: Supervise the host with ``--auto-upgrade``.
+    :param shared: Supervise the host with ``--shared``.
+    :param workroot: Jail dir for a shared host. REQUIRED when ``shared`` — a
+        reboot-surviving daemon must not default to a surprising cwd.
+    :raises HostServiceError: When ``shared`` is set without a ``workroot``.
+    """
+    if shared and not workroot:
         raise HostServiceError(
             "A persistent shared host must name its --workroot explicitly "
             "(a reboot-surviving daemon must not default to the current "
             "directory). Re-run with --shared --workroot <dir>."
         )
-
-
-def build_exec_args(config: HostServiceConfig) -> list[str]:
-    """The ``omnigent host …`` argv the unit runs.
-
-    Always ``--non-interactive`` (no TTY/browser under a supervisor).
-
-    :returns: argv such as ``["/usr/bin/omnigent", "host", "--server", url,
-        "--non-interactive", "--auto-upgrade"]``.
-    """
-    args = [config.exec_path, "host", "--server", config.server_url, "--non-interactive"]
-    if config.auto_upgrade:
-        args.append("--auto-upgrade")
-    if config.shared:
-        args.append("--shared")
-        if config.workroot:
-            args.extend(["--workroot", config.workroot])
-    return args
-
-
-def _working_dir(config: HostServiceConfig) -> str:
-    """Pin the service working dir: the shared workroot, else the user's home."""
-    return config.workroot if config.shared and config.workroot else str(Path.home())
-
-
-def _systemd_env_line(key: str, value: str) -> str:
-    r"""Render one ``Environment=`` line, escaping ``\`` and ``"`` for systemd."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'Environment="{key}={escaped}"'
-
-
-def render_systemd_unit(config: HostServiceConfig) -> str:
-    """Render the systemd ``--user`` unit text.
-
-    ``Restart=always`` + ``RestartSec`` is the whole point: a crashed host comes
-    back. Env is embedded so the service matches the manual host's environment.
-    """
-    exec_start = " ".join(build_exec_args(config))
-    env_lines = "\n".join(_systemd_env_line(k, v) for k, v in sorted(config.environment.items()))
-    env_block = f"{env_lines}\n" if env_lines else ""
-    return (
-        "[Unit]\n"
-        "Description=Omnigent host daemon (self-restarting)\n"
-        "After=network-online.target\n"
-        "Wants=network-online.target\n"
-        "\n"
-        "[Service]\n"
-        "Type=simple\n"
-        f"ExecStart={exec_start}\n"
-        "Restart=always\n"
-        f"RestartSec={config.restart_sec}\n"
-        f"WorkingDirectory={_working_dir(config)}\n"
-        f"{env_block}"
-        "StandardOutput=journal\n"
-        "StandardError=journal\n"
-        "\n"
-        "[Install]\n"
-        "WantedBy=default.target\n"
+    service = _service_for_current_platform()
+    command = _service_command(
+        server_url, auto_upgrade=auto_upgrade, shared=shared, workroot=workroot
     )
-
-
-def render_launchd_plist(config: HostServiceConfig) -> str:
-    """Render the launchd LaunchAgent plist XML.
-
-    ``KeepAlive=true`` relaunches the host on death; ``ThrottleInterval`` is
-    launchd's minimum respawn spacing (its floor is 10s). ``RunAtLoad`` starts
-    it at login / on bootstrap.
-    """
-    log_dir = Path.home() / "Library" / "Logs"
-    plist: dict[str, object] = {
-        "Label": LAUNCHD_LABEL,
-        "ProgramArguments": build_exec_args(config),
-        "KeepAlive": True,
-        "RunAtLoad": True,
-        "ThrottleInterval": max(config.restart_sec, 10),
-        "WorkingDirectory": _working_dir(config),
-        "StandardOutPath": str(log_dir / "omnigent-host.log"),
-        "StandardErrorPath": str(log_dir / "omnigent-host.log"),
-    }
-    if config.environment:
-        plist["EnvironmentVariables"] = dict(config.environment)
-    return plistlib.dumps(plist).decode("utf-8")
-
-
-def _write_private(path: Path, text: str) -> None:
-    """Write *text* to *path* at mode 0600 (units may embed auth env)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
-    os.chmod(path, 0o600)
-
-
-def _install_linux(
-    config: HostServiceConfig, runner: CommandRunner, enable_linger: bool
-) -> InstallResult:
-    """Write + enable the systemd user unit; optionally enable linger."""
-    unit_path = systemd_unit_path()
-    _write_private(unit_path, render_systemd_unit(config))
-    runner(["systemctl", "--user", "daemon-reload"])
-    runner(["systemctl", "--user", "enable", SYSTEMD_UNIT_NAME])
-    # restart (not just start) so a re-install applies the new unit immediately.
-    runner(["systemctl", "--user", "restart", SYSTEMD_UNIT_NAME])
-
-    linger_enabled = False
-    if enable_linger and not _linger_already_on(runner):
-        user = _current_user()
-        try:
-            runner(["loginctl", "enable-linger", user])
-            _linger_marker_path().write_text("1\n")
-            linger_enabled = True
-        except (subprocess.CalledProcessError, OSError):
-            # Non-fatal: the unit is installed and runs while logged in; linger
-            # only affects survival across logout. Surfaced to the caller.
-            linger_enabled = False
-    return InstallResult(
-        unit_path=unit_path,
-        status_cmd=f"systemctl --user status {SYSTEMD_UNIT_NAME}",
-        stop_cmd=(
-            f"omnigent host uninstall  (or: systemctl --user disable --now {SYSTEMD_UNIT_NAME})"
-        ),
-        linger_enabled=linger_enabled,
-    )
-
-
-def _install_darwin(config: HostServiceConfig, runner: CommandRunner) -> InstallResult:
-    """Write + bootstrap the launchd LaunchAgent."""
-    plist_path = launchd_plist_path()
-    _write_private(plist_path, render_launchd_plist(config))
-    domain = f"gui/{os.getuid()}"
-    # bootout first so a re-install cleanly replaces a loaded agent.
-    runner(["launchctl", "bootout", f"{domain}/{LAUNCHD_LABEL}"], check=False)
-    runner(["launchctl", "bootstrap", domain, str(plist_path)])
-    return InstallResult(
-        unit_path=plist_path,
-        status_cmd=f"launchctl print {domain}/{LAUNCHD_LABEL}",
-        stop_cmd=f"omnigent host uninstall  (or: launchctl bootout {domain}/{LAUNCHD_LABEL})",
-        linger_enabled=False,
-    )
-
-
-def install_service(
-    config: HostServiceConfig,
-    *,
-    runner: CommandRunner = _default_runner,
-    enable_linger: bool = True,
-) -> InstallResult:
-    """Validate, render, write, and start the supervised host service.
-
-    :param config: What to bake into the unit.
-    :param runner: Injected command runner (default shells out).
-    :param enable_linger: Linux only — run ``loginctl enable-linger`` so the
-        service survives logout/reboot.
-    :returns: An :class:`InstallResult` for user-facing reporting.
-    :raises HostServiceError: On an unsupported platform or invalid config.
-    """
-    _validate(config)
-    if IS_LINUX:
-        return _install_linux(config, runner, enable_linger)
-    return _install_darwin(config, runner)
-
-
-def uninstall_service(*, runner: CommandRunner = _default_runner) -> bool:
-    """Stop, disable, and remove the supervised host service.
-
-    Drops ``enable-linger`` only if *we* set it (marker present) — the user may
-    rely on linger for other services.
-
-    :returns: ``True`` if a unit was present and removed, ``False`` if none.
-    :raises HostServiceError: On an unsupported platform.
-    """
-    if not (IS_LINUX or IS_DARWIN):
-        raise HostServiceError("host uninstall supports Linux and macOS only.")
-    if IS_LINUX:
-        return _uninstall_linux(runner)
-    return _uninstall_darwin(runner)
-
-
-def _uninstall_linux(runner: CommandRunner) -> bool:
-    unit_path = systemd_unit_path()
-    if not unit_path.exists():
-        return False
-    runner(["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT_NAME], check=False)
-    unit_path.unlink(missing_ok=True)
-    runner(["systemctl", "--user", "daemon-reload"], check=False)
-    marker = _linger_marker_path()
-    if marker.exists():
-        runner(["loginctl", "disable-linger", _current_user()], check=False)
-        marker.unlink(missing_ok=True)
-    return True
-
-
-def _uninstall_darwin(runner: CommandRunner) -> bool:
-    plist_path = launchd_plist_path()
-    if not plist_path.exists():
-        return False
-    runner(["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"], check=False)
-    plist_path.unlink(missing_ok=True)
-    return True
-
-
-def _current_user() -> str:
-    """Login name for ``loginctl`` linger commands."""
-    import getpass
-
-    return getpass.getuser()
-
-
-def _linger_already_on(runner: CommandRunner) -> bool:
-    """Whether linger is already enabled for this user (idempotency guard)."""
-    try:
-        result = runner(
-            ["loginctl", "show-user", _current_user(), "--property=Linger"],
-            check=False,
+    clean_environment = _clean_environment(environment)
+    if service.kind == "launchd":
+        content = _launchd_payload(
+            service,
+            command=command,
+            environment=clean_environment,
         )
-    except (subprocess.CalledProcessError, OSError):
-        return False
-    return "Linger=yes" in (getattr(result, "stdout", "") or "")
+        _enable_launchd(service, content)
+    else:
+        content = _systemd_unit(command=command, environment=clean_environment)
+        _enable_systemd(service, content)
+    _record_service(service)
+    return service
+
+
+def disable_user_host_service() -> HostService:
+    """Stop, disable, and remove the current user's host service."""
+    service = _service_for_current_platform()
+    if service.kind == "launchd":
+        domain = f"gui/{os.getuid()}"
+        service_target = f"{domain}/{service.label}"
+        _run_best_effort(["launchctl", "bootout", service_target])
+        if _run_best_effort(["launchctl", "print", service_target]).returncode == 0:
+            raise HostServiceError(f"launchd service {service.label!r} is still running.")
+        service.path.unlink(missing_ok=True)
+    else:
+        disable_args = ["systemctl", "--user", "disable", "--now", service.label]
+        if service.path.exists():
+            _run_checked(disable_args)
+        else:
+            _run_best_effort(disable_args)
+        service.path.unlink(missing_ok=True)
+        _run_checked(["systemctl", "--user", "daemon-reload"])
+    _forget_service(service)
+    return service

@@ -3,8 +3,11 @@
 from omnigent.entities.account import Account, AccountToken
 from omnigent.entities.agent import Agent, LoadedAgent
 from omnigent.entities.comment import Comment, CommentsFingerprint
+from omnigent.entities.connection import ProviderConnection
 from omnigent.entities.conversation import (
+    DEFAULT_GENERATED_TITLE_MAX_CHARS,
     NON_CONTENT_ITEM_TYPES,
+    USER_SESSION_TITLE_MAX_CHARS,
     CompactionData,
     Conversation,
     ConversationItem,
@@ -41,7 +44,9 @@ from omnigent.entities.session_resources import (
 
 __all__ = [
     "DEFAULT_ENVIRONMENT_ID",
+    "DEFAULT_GENERATED_TITLE_MAX_CHARS",
     "NON_CONTENT_ITEM_TYPES",
+    "USER_SESSION_TITLE_MAX_CHARS",
     "Account",
     "AccountToken",
     "Agent",
@@ -62,6 +67,7 @@ __all__ = [
     "PagedList",
     "Policy",
     "Project",
+    "ProviderConnection",
     "ReasoningData",
     "ResolvedAccess",
     "ResourceEventData",
