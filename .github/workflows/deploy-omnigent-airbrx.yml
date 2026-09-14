@@ -68,6 +68,20 @@ jobs:
           set -eu
           sudo -u ubuntu git -C /opt/omnigent fetch origin --quiet
           sudo -u ubuntu git -C /opt/omnigent reset --hard ${FULL_SHA}
+          # uv sync runs as ubuntu and must be able to REMOVE files in the
+          # venv, not just write them. Anything ever executed from this venv as
+          # root leaves root-owned __pycache__/*.pyc behind, and uv then dies
+          # with "failed to remove directory ...: Permission denied".
+          #
+          # That failure mode is nastier than it looks: the git reset above has
+          # already landed the new code, but the venv is stale and the service
+          # is never restarted — so the box sits half-updated while the site
+          # keeps serving the OLD build from memory and looks perfectly healthy.
+          # The next restart (or reboot) then boots new code against the old
+          # venv and crash-loops. It cost a failed v0.13 deploy on 2026-09-14.
+          #
+          # Cheap to make impossible: normalize ownership before syncing.
+          chown -R ubuntu:ubuntu /opt/omnigent/.venv
           # Sync the venv to the pushed lockfile (new upstream deps must land
           # before restart — boot imports them). uv sync prunes psycopg (it's
           # outside the lockfile), so reinstall it in the same breath.
