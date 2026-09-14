@@ -154,6 +154,19 @@ class ToolManager:
         # ``shutdown`` can close it cleanly. ``None`` when the spec
         # didn't declare ``os_env``.
         self._os_env: OSEnvironment | None = None
+        from omnigent.airbrx.iris.package import bundle_root, is_iris, validate_spec
+
+        if is_iris(spec):
+            validate_spec(spec)
+            if client_tool_specs or os_env is not None:
+                raise ValueError("Iris does not accept client tools or OS environments")
+            self._tools = {
+                tool.name(): tool
+                for tool in load_local_python_tools(
+                    spec.local_tools, bundle_root(), srt_available=False
+                )
+            }
+            return
         self._register_skill_tools()
         self._register_builtin_tools()
         self._register_sub_agent_tools()

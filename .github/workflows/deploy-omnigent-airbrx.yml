@@ -85,7 +85,7 @@ jobs:
           # Sync the venv to the pushed lockfile (new upstream deps must land
           # before restart — boot imports them). uv sync prunes psycopg (it's
           # outside the lockfile), so reinstall it in the same breath.
-          sudo -u ubuntu env HOME=/home/ubuntu OMNIGENT_SKIP_WEB_UI=true /home/ubuntu/.local/bin/uv sync --directory /opt/omnigent
+          sudo -u ubuntu env HOME=/home/ubuntu OMNIGENT_SKIP_WEB_UI=true /home/ubuntu/.local/bin/uv sync --extra iris --directory /opt/omnigent
           sudo -u ubuntu env HOME=/home/ubuntu /home/ubuntu/.local/bin/uv pip install --python /opt/omnigent/.venv/bin/python 'psycopg[binary]>=3.1,<4'
           sudo -u ubuntu /opt/omnigent/deploy/omnigent-ec2/native/pull-webui.sh webui-${SHORT_SHA}
           sudo -u ubuntu /opt/omnigent/.venv/bin/python - <<'PY'

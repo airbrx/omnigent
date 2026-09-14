@@ -104,3 +104,34 @@ describe("AgentDrawer", () => {
     expect(onClose).toHaveBeenCalled();
   });
 });
+
+it("keeps Iris chat and workspace as separate accessible actions", () => {
+  vi.mocked(useAvailableAgents).mockReturnValue({
+    data: [
+      { id: "iris-id", name: "iris", display_name: "Iris", description: "Read-only cache analyst" },
+    ],
+  } as never);
+  const chat = vi.fn(),
+    workspace = vi.fn();
+  const client = new QueryClient();
+  render(
+    <QueryClientProvider client={client}>
+      <AgentDrawer open onClose={vi.fn()} onSelectAgent={chat} onOpenWorkspace={workspace} />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(screen.getByTestId("agent-drawer-row-iris"));
+  expect(chat).toHaveBeenCalledWith(expect.objectContaining({ id: "iris-id" }));
+  fireEvent.click(screen.getByRole("button", { name: "Open workspace" }));
+  expect(workspace).toHaveBeenCalledOnce();
+});
+
+it("traps Tab focus inside the drawer", () => {
+  renderDrawer();
+  const first = screen.getByRole("button", { name: "Close" });
+  const last = screen.getByTestId("agent-drawer-row-cache cow");
+  expect(first).toHaveFocus();
+  fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+  expect(last).toHaveFocus();
+  fireEvent.keyDown(window, { key: "Tab" });
+  expect(first).toHaveFocus();
+});
