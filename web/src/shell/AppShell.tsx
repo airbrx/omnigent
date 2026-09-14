@@ -90,11 +90,11 @@ import {
 } from "@/hooks/useSessionLiveness";
 import { useResizableInlinePanel } from "@/hooks/useResizableInlinePanel";
 import { useResizableSidebar } from "@/hooks/useResizableSidebar";
+import { AgentDrawer } from "./AgentDrawer";
 import { ChatHeader } from "./ChatHeader";
 import { ExecutionLogsPanel } from "./ExecutionLogsPanel";
 import { FileViewer } from "./FileViewer";
 import { FileViewerContext } from "./FileViewerContext";
-import { AgentDrawer } from "./AgentDrawer";
 import { FilesPanelDrawer } from "./FilesPanelDrawer";
 import type { ChangedSort } from "./FlatFileList";
 import { GithubPanel } from "./GithubPanel";
@@ -2185,17 +2185,24 @@ export function AppShell() {
               )}
               {/* Not gated on conversationId: the trigger lives in the sidebar,
               reachable from the landing composer as well as from a session.
-              Picking a row seeds the landing's stored agent choice
-              (writeLastAgentId, read by NewChatDialog on mount) and lands on
-              "/" — the same create path the landing picker already uses —
-              rather than a second, drawer-owned way to start a session. */}
+              Picking a row persists the preference (writeLastAgentId) and
+              navigates to `/?agent=<id>`, which NewChatDialog.tsx picks up
+              via a dedicated effect and applies to its own state. A bare
+              navigate("/") does not work here: "/" and "/c/:id" render the
+              same <ChatPage>, so navigating from "/" to "/" never remounts
+              the landing screen, and its pickedAgentId useState initializer
+              (which reads the persisted preference) never re-runs — the
+              session would silently start with the OLD agent. The query
+              param instead re-runs an effect on the mounted screen, after
+              the mount-time draft restore, so it also wins over a parked
+              landing draft. */}
               <AgentDrawer
                 open={agentDrawerOpen}
                 onClose={() => setAgentDrawerOpen(false)}
                 onSelectAgent={(agent) => {
                   setAgentDrawerOpen(false);
                   writeLastAgentId(agent.id);
-                  navigate("/");
+                  navigate(`/?agent=${encodeURIComponent(agent.id)}`);
                 }}
               />
               {/* Mobile-only full-screen drawers for the rail tabs that have no

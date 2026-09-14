@@ -2,8 +2,9 @@
 //
 // Deliberately a sibling of the new-chat picker rather than a replacement
 // for it: NewChatDialog.tsx conflicted in BOTH stages of the v0.11 -> v0.13
-// upstream sync, so this feature keeps its footprint in upstream-owned
-// files to a trigger button and one mount point (Task 6).
+// upstream sync, so this feature keeps its footprint there to one small,
+// additive effect (reading a one-shot `?agent=` param) rather than any
+// deeper rework of the picker itself.
 
 import { XIcon } from "lucide-react";
 import { useEffect } from "react";
@@ -19,9 +20,10 @@ interface AgentDrawerProps {
   onClose: () => void;
   /**
    * Called with the full picked agent. The caller (AppShell) needs the
-   * agent's id — not just its name — to seed the new-chat landing's stored
-   * pick (`writeLastAgentId`), so the row hands back the whole object
-   * rather than a single field.
+   * agent's id — not just its name — both to persist the preference
+   * (`writeLastAgentId`) and to navigate to `/?agent=<id>`, which is how the
+   * pick reaches the new-chat landing screen — so the row hands back the
+   * whole object rather than a single field.
    */
   onSelectAgent: (agent: AvailableAgent) => void;
 }
@@ -45,15 +47,22 @@ export function AgentDrawer({ open, onClose, onSelectAgent }: AgentDrawerProps) 
 
   return (
     <>
+      {/* z-[55]/z-[56], not the usual z-40/z-50 modal pair: the trigger lives
+      inside the sidebar, which on mobile is itself a full-bleed `fixed
+      inset-0 z-50` overlay (Sidebar.tsx) — a z-40 scrim would render BEHIND
+      it and be untappable, so a tap meant to dismiss this drawer would fall
+      through to a conversation row in the sidebar underneath and navigate
+      away instead. Staying above the sidebar's z-50 (and below
+      ImageLightbox's z-60) keeps tap-outside working on every breakpoint. */}
       <div
-        className="fixed inset-0 z-40 bg-black/40"
+        className="fixed inset-0 z-[55] bg-black/40"
         onClick={onClose}
         data-testid="agent-drawer-scrim"
       />
       <aside
         data-testid="agent-drawer"
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-80 max-w-[85vw] flex-col",
+          "fixed inset-y-0 left-0 z-[56] flex w-80 max-w-[85vw] flex-col",
           "border-border border-r bg-card shadow-lg",
         )}
       >

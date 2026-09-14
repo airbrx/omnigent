@@ -1,0 +1,175 @@
+// Real coverage for the agent-drawer wiring Task 6 added, replacing
+// AgentDrawer.integration.test.tsx — that file defined its own
+// `data-testid="browse-agents-button"` in a local harness and asserted that
+// a `useState` the test itself wrote flipped, which is a tautology (it also
+// duplicated cases AgentDrawer.test.tsx already covers). Nothing tested that
+// the real Sidebar button calls `onBrowseAgents`, or that AppShell's own
+// `onSelectAgent` handler does the right thing — which is also exactly what
+// would have caught the "starts the wrong agent" regression: an earlier,
+// reversed version of this handler called `writeLastAgentId` + `navigate("/")`
+// and relied on NewChatDialog.tsx remounting to pick it up, which it never
+// does when already on "/" (see NewChatDialog.tsx's `?agent=` effect and its
+// own tests in NewChatDialog.test.tsx for the landing-side half of this).
+//
+// Sidebar itself is stubbed, matching AppShell.test.tsx's own convention for
+// this heavy component — the real button-click-calls-the-prop wiring is
+// covered directly in Sidebar.test.tsx's "Sidebar browse-agents trigger"
+// case. The stub here exposes the exact same `onBrowseAgents` prop AppShell
+// really passes, so a click on it exercises AppShell's real handler. Every
+// other component here — <AppShell>, <AgentDrawer>, `writeLastAgentId` — is
+// the genuine, unmocked implementation; only the two network-backed hooks
+// AgentDrawer reads are stubbed with a fixed roster.
+
+import type * as UseTerminalsModule from "@/hooks/useTerminals";
+import type * as UseChildSessionsModule from "@/hooks/useChildSessions";
+import type * as UseSessionModule from "@/hooks/useSession";
+import type * as UseConversationsModule from "@/hooks/useConversations";
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TooltipProvider } from "@/components/ui/tooltip";
+
+vi.mock("@/hooks/useConversations", async (importOriginal) => ({
+  ...(await importOriginal<typeof UseConversationsModule>()),
+  useConversations: vi.fn(() => ({
+    data: {
+      pages: [{ data: [], first_id: null, last_id: null, has_more: false }],
+      pageParams: [undefined],
+    },
+  })),
+  useProjects: vi.fn(() => ({ data: [] })),
+}));
+vi.mock("@/hooks/useTerminals", async (importOriginal) => ({
+  ...(await importOriginal<typeof UseTerminalsModule>()),
+  useTerminals: vi.fn(() => ({ terminals: [], isLoading: false, error: null })),
+}));
+vi.mock("@/hooks/useWorkspaceChangedFiles", () => ({
+  useWorkspaceEnvironment: vi.fn(() => ({ data: undefined, isLoading: true })),
+  useWorkspaceChangedFiles: vi.fn(() => ({ data: undefined, isLoading: true })),
+}));
+vi.mock("@/hooks/useGithub", () => ({
+  useGithubInfo: vi.fn(() => ({ data: undefined, isLoading: true })),
+}));
+vi.mock("@/hooks/useChildSessions", async (importOriginal) => ({
+  ...(await importOriginal<typeof UseChildSessionsModule>()),
+  useChildSessions: vi.fn(() => ({ children: [], isLoading: false, error: null })),
+}));
+vi.mock("@/hooks/useSession", async (importOriginal) => ({
+  ...(await importOriginal<typeof UseSessionModule>()),
+  useSession: vi.fn(() => ({ session: null, isLoading: false, error: null })),
+}));
+vi.mock("@/hooks/useAgents", () => ({
+  useSessionAgent: vi.fn(() => ({ data: undefined })),
+  useCreateMcpServer: () => ({ mutate: vi.fn(), isPending: false, error: null }),
+  useUpdateMcpServer: () => ({ mutate: vi.fn(), isPending: false, error: null }),
+  useDeleteMcpServer: () => ({ mutate: vi.fn(), isPending: false, error: null }),
+}));
+
+// AgentDrawer's own two data hooks — a fixed two-agent roster, same shape
+// AgentDrawer.test.tsx uses.
+vi.mock("@/hooks/useAvailableAgents", () => ({ useAvailableAgents: vi.fn() }));
+vi.mock("@/hooks/useAgentAvatars", () => ({ useAgentAvatars: vi.fn() }));
+
+// See the file banner: Sidebar's own button/prop wiring is Sidebar.test.tsx's
+// job. This stub keeps only the one prop AppShell's handler actually needs to
+// be exercised through.
+vi.mock("./Sidebar", () => ({
+  Sidebar: ({ onBrowseAgents }: { onBrowseAgents: () => void }) => (
+    <button type="button" data-testid="browse-agents-button" onClick={onBrowseAgents}>
+      Agents
+    </button>
+  ),
+}));
+
+import { AppShell } from "./AppShell";
+import { useAvailableAgents } from "@/hooks/useAvailableAgents";
+import { useAgentAvatars } from "@/hooks/useAgentAvatars";
+import { readLastAgentId } from "@/lib/agentPreferences";
+
+function LocationDisplay() {
+  const location = useLocation();
+  return <div data-testid="location">{location.pathname + location.search}</div>;
+}
+
+function renderShell(path = "/") {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <TooltipProvider>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route element={<AppShell />}>
+              <Route
+                index
+                element={
+                  <>
+                    <div>home</div>
+                    <LocationDisplay />
+                  </>
+                }
+              />
+              <Route
+                path="c/:conversationId"
+                element={
+                  <>
+                    <div>page</div>
+                    <LocationDisplay />
+                  </>
+                }
+              />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </TooltipProvider>
+    </QueryClientProvider>,
+  );
+}
+
+beforeEach(() => {
+  localStorage.clear();
+  vi.mocked(useAvailableAgents).mockReturnValue({
+    data: [
+      { id: "a1", name: "researcher", display_name: "Researcher", description: "" },
+      { id: "a2", name: "coder", display_name: "Coder", description: "" },
+    ],
+  } as never);
+  vi.mocked(useAgentAvatars).mockReturnValue({ data: {} } as never);
+});
+
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
+
+describe("AppShell agent drawer wiring", () => {
+  it("opens the real AgentDrawer from the sidebar trigger, and is reachable from the landing screen (not gated on a conversation)", () => {
+    renderShell("/");
+    expect(screen.queryByTestId("agent-drawer")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+
+    expect(screen.getByTestId("agent-drawer")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-drawer-row-researcher")).toBeInTheDocument();
+  });
+
+  it('persists the pick and hands it to the landing via ?agent=<id> — not a bare navigate("/")', () => {
+    renderShell("/");
+
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+    fireEvent.click(screen.getByTestId("agent-drawer-row-coder"));
+
+    // The drawer closes and the preference is persisted (AppShell keeps
+    // writeLastAgentId so it survives independently of the URL hand-off).
+    expect(screen.queryByTestId("agent-drawer")).not.toBeInTheDocument();
+    expect(readLastAgentId()).toBe("a2");
+
+    // The critical bit: navigation carries the agent id in the URL rather
+    // than a bare "/" — a bare navigate("/") is exactly the reversed
+    // mechanism that silently started the wrong agent, because it relies on
+    // a remount that "/" -> "/" never triggers (see NewChatDialog.tsx and
+    // its tests for the landing side of this contract).
+    expect(screen.getByTestId("location").textContent).toBe("/?agent=a2");
+  });
+});

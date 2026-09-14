@@ -89,7 +89,10 @@ function renderAt(initialEntry: string) {
         <MemoryRouter initialEntries={[initialEntry]}>
           <Routes>
             <Route path="/" element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />} />
-            <Route path="/c/:conversationId" element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />} />
+            <Route
+              path="/c/:conversationId"
+              element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />}
+            />
           </Routes>
         </MemoryRouter>
       </TooltipProvider>

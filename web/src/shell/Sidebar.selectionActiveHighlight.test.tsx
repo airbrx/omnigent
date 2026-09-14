@@ -122,7 +122,10 @@ function renderAt(initialEntry: string, holdRoute = false) {
   const routes = (
     <Routes>
       <Route path="/" element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />} />
-      <Route path="/c/:conversationId" element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />} />
+      <Route
+        path="/c/:conversationId"
+        element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />}
+      />
     </Routes>
   );
   return render(

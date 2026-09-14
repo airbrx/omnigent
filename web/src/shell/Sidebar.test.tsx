@@ -230,9 +230,17 @@ function renderSidebar(
   info?: ServerInfo,
   extensions: ExtensionCatalogItem[] = [],
   onClose = vi.fn(),
+  onBrowseAgents = vi.fn(),
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const sidebar = <Sidebar open={open} onClose={onClose} onOpenSearch={onOpenSearch} onBrowseAgents={vi.fn()} />;
+  const sidebar = (
+    <Sidebar
+      open={open}
+      onClose={onClose}
+      onOpenSearch={onOpenSearch}
+      onBrowseAgents={onBrowseAgents}
+    />
+  );
   return render(
     <QueryClientProvider client={qc}>
       <ExtensionCatalogProvider extensions={extensions}>
@@ -1298,6 +1306,21 @@ describe("Sidebar sections", () => {
   });
 });
 
+// The agent roster drawer's only trigger — a real click on the actual
+// Sidebar button, not a test-authored stand-in (see AgentDrawer.test.tsx and
+// AppShell.agentDrawer.test.tsx for the drawer's own behavior and AppShell's
+// handler, respectively).
+describe("Sidebar browse-agents trigger", () => {
+  it("calls onBrowseAgents when the button beside New session is clicked", () => {
+    mockConversations([]);
+    const onBrowseAgents = vi.fn();
+    renderSidebar(true, "/", undefined, undefined, [], vi.fn(), onBrowseAgents);
+    expect(onBrowseAgents).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+    expect(onBrowseAgents).toHaveBeenCalledTimes(1);
+  });
+});
+
 // The sidebar splits sessions across two tabs: "My sessions" (owned, with the
 // full Pinned / Projects / Chats structure) and "Shared with me" (a flat list).
 describe("Sidebar tabs", () => {
@@ -1792,7 +1815,10 @@ describe("Sidebar project sections", () => {
         <TooltipProvider>
           <MemoryRouter initialEntries={["/c/conv_filed"]}>
             <Routes>
-              <Route path="/c/:conversationId" element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />} />
+              <Route
+                path="/c/:conversationId"
+                element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />}
+              />
             </Routes>
           </MemoryRouter>
         </TooltipProvider>
@@ -2426,8 +2452,14 @@ describe("Sidebar active-row auto-scroll", () => {
         <TooltipProvider>
           <MemoryRouter initialEntries={[initialEntry]}>
             <Routes>
-              <Route path="/" element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />} />
-              <Route path="/c/:conversationId" element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />} />
+              <Route
+                path="/"
+                element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />}
+              />
+              <Route
+                path="/c/:conversationId"
+                element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />}
+              />
             </Routes>
           </MemoryRouter>
         </TooltipProvider>
