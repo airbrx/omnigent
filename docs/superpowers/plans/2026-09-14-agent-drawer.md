@@ -13,7 +13,9 @@
 ## Global Constraints
 
 - **Never modify `AgentSpec`** (`omnigent/spec/types.py`). It is a versioned bundle format the SDK also reads. Avatars are fork-local.
-- **Minimise edits to upstream-owned files.** Only two are touched: `omnigent/server/app.py` (one `include_router`) and `web/src/shell/Sidebar.tsx` + `web/src/shell/AppShell.tsx` (trigger + mount). Everything else is new files upstream does not have.
+- **Minimise edits to upstream-owned files.** Exactly four are touched: `omnigent/server/app.py` (one `create_app` param + one `include_router`), `omnigent/cli.py` (construct the store beside the others), and `web/src/shell/Sidebar.tsx` + `web/src/shell/AppShell.tsx` (trigger + mount). Everything else is new files upstream does not have. `NewChatDialog.tsx` is not touched at all.
+- **Web HTTP goes through `authenticatedFetch` from `@/lib/identity`** — the helper every sibling hook uses (see `web/src/hooks/useHosts.ts:2`). There is no `@/lib/api`.
+- **`AvailableAgent`** (`web/src/hooks/useAvailableAgents.ts:12`) is `{ id, name, display_name, description: string | null, harness, skills, ... }`. Render `display_name || name` as the label; key avatars on `name`, which is what the server stores and what `onSelectAgent` returns.
 - **All new DB tables carry `workspace_id`** as the first primary-key column, defaulting to `current_workspace_id`, matching every table since upstream v0.12.
 - **Migrations use `op.batch_alter_table` / `op.create_table`** and must run on SQLite (tests) and PostgreSQL (production Aurora 16.9).
 - **Any vitest file that mocks `@/hooks/useHosts` must export `useWakeHost`** — the landing screen calls it, and three upstream test files broke on exactly this during the v0.13 sync.
@@ -598,22 +600,37 @@ def create_agent_avatars_router(
     return router
 ```
 
-- [ ] **Step 4: Register it in `app.py`**
+- [ ] **Step 4: Wire it through `create_app` and `cli.py`**
 
-In `omnigent/server/app.py`, construct the store next to the other stores and register the router immediately after the harnesses `include_router` (near line 2670):
+`create_app` has **no `db_uri` parameter** — every store is constructed in `cli.py` and passed in. Follow that pattern exactly; do not construct the store inside `app.py`.
+
+In `omnigent/server/app.py`, add a parameter to `create_app` beside the other optional stores (near `host_store: HostStore | None = None`, ~line 1078):
 
 ```python
-    app.include_router(
-        create_agent_avatars_router(
-            AgentAvatarStore(db_uri, artifact_store),
-            auth_provider=auth_provider,
-        ),
-        prefix="/v1",
-        tags=["agent-avatars"],
-    )
+    agent_avatar_store: AgentAvatarStore | None = None,
 ```
 
-Import `create_agent_avatars_router` and `AgentAvatarStore` alongside the neighbouring route imports. Use the same `db_uri` / `artifact_store` names already in scope in that function — read the surrounding lines and match them rather than assuming.
+Document it in the function's docstring in the same style as the neighbouring `:param host_store:` entry. Then register the router immediately after the harnesses `include_router` (~line 2670), guarded like the other optional stores:
+
+```python
+    if agent_avatar_store is not None:
+        app.include_router(
+            create_agent_avatars_router(
+                agent_avatar_store,
+                auth_provider=auth_provider,
+            ),
+            prefix="/v1",
+            tags=["agent-avatars"],
+        )
+```
+
+In `omnigent/cli.py`, construct it where the other stores are built for the server command — find the block that constructs `host_store` and add alongside it, reusing the `db_uri` and artifact-store variables already in scope there:
+
+```python
+    agent_avatar_store = AgentAvatarStore(db_uri, artifact_store)
+```
+
+then pass `agent_avatar_store=agent_avatar_store` in the `create_app(...)` call. Read the surrounding lines and match the real variable names — they may differ from these.
 
 - [ ] **Step 5: Run the tests and regenerate the spec**
 
@@ -729,7 +746,7 @@ export function agentAvatarColor(name: string): string {
 // web/src/hooks/useAgentAvatars.ts
 import { useQuery } from "@tanstack/react-query";
 
-import { apiFetch } from "@/lib/api";
+import { authenticatedFetch } from "@/lib/identity";
 
 interface AgentAvatarRow {
   agent_name: string;
@@ -748,7 +765,7 @@ export function useAgentAvatars() {
   return useQuery({
     queryKey: ["agent-avatars"],
     queryFn: async (): Promise<Record<string, string>> => {
-      const res = await apiFetch("/v1/agent-avatars");
+      const res = await authenticatedFetch("/v1/agent-avatars");
       if (!res.ok) return {};
       const body = (await res.json()) as { data: AgentAvatarRow[] };
       return Object.fromEntries(
@@ -760,7 +777,9 @@ export function useAgentAvatars() {
 }
 ```
 
-Check `web/src/lib/api.ts` for the real helper name and signature before writing the hook — if the codebase uses something other than `apiFetch`, use that.
+`authenticatedFetch` is the helper every sibling hook uses (`web/src/hooks/useHosts.ts:2`). Confirm its exact signature there before writing — if it takes options or returns a parsed body rather than a `Response`, match that.
+
+An avatar-less roster is the normal state, not an error: a non-OK response returns `{}` so the drawer falls back to initials rather than showing an error state.
 
 - [ ] **Step 4: Run the tests**
 
@@ -815,8 +834,8 @@ function renderDrawer(onSelectAgent = vi.fn(), open = true) {
 beforeEach(() => {
   vi.mocked(useAvailableAgents).mockReturnValue({
     data: [
-      { id: "a1", name: "researcher", description: "Reads things" },
-      { id: "a2", name: "cache cow", description: "Harvests leads" },
+      { id: "a1", name: "researcher", display_name: "Researcher", description: "Reads things" },
+      { id: "a2", name: "cache cow", display_name: "", description: "Harvests leads" },
     ],
   } as never);
   vi.mocked(useAgentAvatars).mockReturnValue({ data: {} } as never);
@@ -825,8 +844,13 @@ beforeEach(() => {
 describe("AgentDrawer", () => {
   it("lists every agent with its description", () => {
     renderDrawer();
-    expect(screen.getByText("researcher")).toBeInTheDocument();
+    expect(screen.getByText("Researcher")).toBeInTheDocument();
     expect(screen.getByText("Reads things")).toBeInTheDocument();
+    expect(screen.getByText("Harvests leads")).toBeInTheDocument();
+  });
+
+  it("falls back to name when display_name is empty", () => {
+    renderDrawer();
     expect(screen.getByText("cache cow")).toBeInTheDocument();
   });
 
@@ -949,7 +973,12 @@ export function AgentDrawer({ open, onClose, onSelectAgent }: AgentDrawerProps) 
                   </span>
                 )}
                 <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium">{agent.name}</span>
+                  {/* Label from display_name so the drawer reads the same as
+                      the picker; the avatar and onSelectAgent both key on
+                      `name`, which is what the server stores. */}
+                  <span className="block truncate text-sm font-medium">
+                    {agent.display_name || agent.name}
+                  </span>
                   {agent.description ? (
                     <span className="block truncate text-xs text-muted-foreground">
                       {agent.description}
@@ -971,7 +1000,7 @@ export function AgentDrawer({ open, onClose, onSelectAgent }: AgentDrawerProps) 
 ```bash
 cd web && npx pnpm@11.15.1 exec vitest run src/shell/AgentDrawer.test.tsx && npx pnpm@11.15.1 run lint
 ```
-Expected: 5 tests PASS, lint clean.
+Expected: 6 tests PASS, lint clean.
 
 - [ ] **Step 5: Commit**
 
@@ -1005,7 +1034,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AgentDrawer } from "./AgentDrawer";
 
 vi.mock("@/hooks/useAvailableAgents", () => ({
-  useAvailableAgents: () => ({ data: [{ id: "a1", name: "researcher", description: "" }] }),
+  useAvailableAgents: () => ({ data: [{ id: "a1", name: "researcher", display_name: "Researcher", description: "" }] }),
 }));
 vi.mock("@/hooks/useAgentAvatars", () => ({ useAgentAvatars: () => ({ data: {} }) }));
 
