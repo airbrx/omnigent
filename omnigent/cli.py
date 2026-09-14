@@ -4286,6 +4286,10 @@ def server(
 
     host_store = HostStore(db_uri)
 
+    from omnigent.stores.agent_avatar_store import AgentAvatarStore
+
+    agent_avatar_store = AgentAvatarStore(db_uri, artifact_store)
+
     # Managed sandbox hosts (host_type="managed" sessions): parse the
     # config's `sandbox:` section up front so an operator typo stops
     # startup instead of 502-ing the first managed session.
@@ -4390,6 +4394,7 @@ def server(
         project_store=project_store,
         auth_provider=auth_provider,
         host_store=host_store,
+        agent_avatar_store=agent_avatar_store,
         account_store=account_store,
         policy_modules=cfg.get("policy_modules"),
         debug_router_modules=config_str_list(cfg.get("debug_router_modules")),

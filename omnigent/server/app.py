@@ -80,6 +80,7 @@ from omnigent.server.performance_metrics import (
     set_request_user_agent_for_access_log,
 )
 from omnigent.server.routes.admin import create_admin_router
+from omnigent.server.routes.agent_avatars import create_agent_avatars_router
 from omnigent.server.routes.builtin_agents import create_builtin_agents_router
 from omnigent.server.routes.comments import create_comments_router
 from omnigent.server.routes.default_policies import create_default_policies_router
@@ -113,6 +114,7 @@ from omnigent.stores import (
     ConversationStore,
     FileStore,
 )
+from omnigent.stores.agent_avatar_store import AgentAvatarStore
 from omnigent.stores.comment_store import CommentStore
 from omnigent.stores.conversation_store import SessionConnectivity, runner_seen_is_fresh
 from omnigent.stores.host_store import HostStore
@@ -1076,6 +1078,7 @@ def create_app(
     project_store: ProjectStore | None = None,
     auth_provider: AuthProvider | None = None,
     host_store: HostStore | None = None,
+    agent_avatar_store: AgentAvatarStore | None = None,
     account_store: Any | None = None,  # SqlAlchemyAccountStore — accounts mode only
     extra_routers: list[tuple[Any, str, list[str]]] | None = None,
     policy_modules: list[str] | None = None,
@@ -1136,6 +1139,8 @@ def create_app(
     :param host_store: Store for host registrations. ``None``
         disables host connectivity features (list hosts, launch
         runners on remote hosts).
+    :param agent_avatar_store: Store for agent drawer avatar images.
+        ``None`` disables the ``/v1/agent-avatars`` routes.
     :param policy_modules: Additional dotted module paths to
         scan for ``POLICY_REGISTRY`` lists at startup, e.g.
         ``["myorg.policies.safety"]``. Sourced from the server
@@ -2672,6 +2677,15 @@ def create_app(
         prefix="/v1",
         tags=["harnesses"],
     )
+    if agent_avatar_store is not None:
+        app.include_router(
+            create_agent_avatars_router(
+                agent_avatar_store,
+                auth_provider=auth_provider,
+            ),
+            prefix="/v1",
+            tags=["agent-avatars"],
+        )
     app.include_router(
         create_extensions_router(
             resolved_extension_state,
