@@ -1405,6 +1405,7 @@ export function AppShell() {
     setSidebarOpen(false);
     setSidebarPeek(false);
   }, []);
+  const handleBrowseAgents = useCallback(() => setAgentDrawerOpen(true), []);
   const handleSidebarOpen = useCallback(() => {
     setSidebarOpen(true);
     setSidebarPeek(false);
@@ -1983,7 +1984,7 @@ export function AppShell() {
               dragProgress={sidebarDragProgress}
               onClose={handleSidebarClose}
               onOpenSearch={handleOpenSearch}
-              onBrowseAgents={() => setAgentDrawerOpen(true)}
+              onBrowseAgents={handleBrowseAgents}
             />
 
             {/* Content region (everything right of the sidebar): a relative
