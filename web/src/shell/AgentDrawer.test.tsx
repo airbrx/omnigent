@@ -86,4 +86,10 @@ describe("AgentDrawer", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("closes when the scrim is clicked", () => {
+    const { onClose } = renderDrawer();
+    fireEvent.click(screen.getByTestId("agent-drawer-scrim"));
+    expect(onClose).toHaveBeenCalled();
+  });
 });

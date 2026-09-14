@@ -1413,6 +1413,19 @@ export function AppShell() {
   const isEmbedded = useIsEmbedded();
   useCommandPaletteHotkey(() => setCommandPaletteOpen((prev) => !prev));
   useNewSessionHotkey(!isEmbedded);
+  // The command palette (components/ui/dialog.tsx) renders at the shared
+  // z-50 used across the whole app, which sits BELOW the agent drawer's
+  // scrim (z-[55]/[56] — needed to clear the mobile sidebar's own z-50
+  // overlay, see AgentDrawer.tsx). The ⌘K hotkey is an unconditional window
+  // listener (useCommandPaletteHotkey above), so it can fire while the
+  // drawer is open and would otherwise paint the palette under the drawer's
+  // 40%-black scrim, unreachable. Closing the drawer whenever the palette
+  // opens covers every way the palette can open (hotkey, search button, a
+  // controlled onOpenChange) without renumbering the shared dialog z-index
+  // every other dialog in the app also relies on.
+  useEffect(() => {
+    if (commandPaletteOpen) setAgentDrawerOpen(false);
+  }, [commandPaletteOpen]);
 
   // Mobile back button: close the open file and return to the files/changes
   // list. On mobile the tab strip is hidden, so a "back" should fully drop the
@@ -2186,23 +2199,34 @@ export function AppShell() {
               {/* Not gated on conversationId: the trigger lives in the sidebar,
               reachable from the landing composer as well as from a session.
               Picking a row persists the preference (writeLastAgentId) and
-              navigates to `/?agent=<id>`, which NewChatDialog.tsx picks up
-              via a dedicated effect and applies to its own state. A bare
-              navigate("/") does not work here: "/" and "/c/:id" render the
-              same <ChatPage>, so navigating from "/" to "/" never remounts
-              the landing screen, and its pickedAgentId useState initializer
-              (which reads the persisted preference) never re-runs — the
-              session would silently start with the OLD agent. The query
-              param instead re-runs an effect on the mounted screen, after
-              the mount-time draft restore, so it also wins over a parked
-              landing draft. */}
+              navigates to `/?agent=<id>` (plus `project=<name>` when the pick
+              was made from a project-scoped landing — see the handler below),
+              which NewChatDialog.tsx picks up via a dedicated effect and
+              applies to its own state. A bare navigate("/") does not work
+              here: "/" and "/c/:id" render the same <ChatPage>, so navigating
+              from "/" to "/" never remounts the landing screen, and its
+              pickedAgentId useState initializer (which reads the persisted
+              preference) never re-runs — the session would silently start
+              with the OLD agent. The query param instead re-runs an effect on
+              the mounted screen, after the mount-time draft restore, so it
+              also wins over a parked landing draft. */}
               <AgentDrawer
                 open={agentDrawerOpen}
                 onClose={() => setAgentDrawerOpen(false)}
                 onSelectAgent={(agent) => {
                   setAgentDrawerOpen(false);
                   writeLastAgentId(agent.id);
-                  navigate(`/?agent=${encodeURIComponent(agent.id)}`);
+                  // Carry `project` forward specifically — not the whole query
+                  // string. The drawer trigger sits in the same sidebar as the
+                  // project-scoped landing links (Sidebar.tsx), so a pick made
+                  // from `/?project=Foo` must not drop back to the unscoped
+                  // landing. Other params on `/c/:id` (file, comment, view,
+                  // sidebar) are page-local and must not ride along.
+                  const target = new URLSearchParams();
+                  const project = searchParams.get("project");
+                  if (project) target.set("project", project);
+                  target.set("agent", agent.id);
+                  navigate(`/?${target.toString()}`);
                 }}
               />
               {/* Mobile-only full-screen drawers for the rail tabs that have no

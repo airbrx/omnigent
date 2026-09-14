@@ -172,4 +172,35 @@ describe("AppShell agent drawer wiring", () => {
     // its tests for the landing side of this contract).
     expect(screen.getByTestId("location").textContent).toBe("/?agent=a2");
   });
+
+  it("preserves ?project= from a project-scoped landing when handing off to ?agent=", () => {
+    renderShell("/?project=Foo");
+
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+    fireEvent.click(screen.getByTestId("agent-drawer-row-coder"));
+
+    // The drawer trigger sits in the same sidebar as the project-scoped
+    // landing links (Sidebar.tsx), so a pick made from a project-filtered
+    // landing must not drop the project scope — only page-local params
+    // (file, comment, view, sidebar) are meant to be dropped, not `project`.
+    expect(screen.getByTestId("location").textContent).toBe("/?project=Foo&agent=a2");
+  });
+
+  it("closes the drawer when the command palette opens, so ⌘K doesn't paint under its scrim", () => {
+    renderShell("/");
+
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+    expect(screen.getByTestId("agent-drawer")).toBeInTheDocument();
+
+    // The palette (components/ui/dialog.tsx, z-50) sits below the drawer's
+    // scrim (z-[55]/[56]) — the fix this test covers closes the drawer
+    // whenever the palette opens, rather than renumbering the shared dialog
+    // z-index every other dialog in the app relies on. isMacPlatform() is
+    // false in this test environment (see src/lib/hotkeys.ts), so the
+    // non-mac chord is Ctrl+K, not ⌘K.
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+
+    expect(screen.queryByTestId("agent-drawer")).not.toBeInTheDocument();
+    expect(screen.getByTestId("command-palette-input")).toBeInTheDocument();
+  });
 });
