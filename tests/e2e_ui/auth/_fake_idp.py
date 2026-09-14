@@ -8,7 +8,7 @@ reach it over the network, exactly as it would a real issuer.
 
 It serves the four things stock OIDC mode expects (see
 ``omnigent/server/oidc.py::OIDCConfig.from_env`` and
-``routes/auth.py::_resolve_oidc_email``), so **no product code changes**:
+``routes/auth.py::_resolve_oidc_identity``), so **no product code changes**:
 
 - ``GET /.well-known/openid-configuration`` — discovery doc naming the
   authorize/token/jwks endpoints (fetched at server boot).

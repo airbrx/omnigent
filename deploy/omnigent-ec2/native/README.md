@@ -86,6 +86,21 @@ ssm> cd /opt/omnigent && git pull \
 
 ## Gotchas (operations)
 
+- **Managed terminals need tmux 3.3+ (since upstream v0.13).** They enable
+  `allow-passthrough`, which tmux added in 3.3, and
+  `_require_supported_tmux()` raises at terminal launch on anything older.
+  This does **not** block boot or the deploy health check — the server comes
+  up fine and only web terminals fail — so it will not show up as a failed
+  deploy. Ubuntu 22.04 ships tmux 3.2a (too old); 24.04 ships 3.4. Check with
+  `tmux -V` on the box **and on every connected host**, and upgrade where
+  needed:
+
+  ```bash
+  tmux -V                      # want >= 3.3
+  sudo apt-get update && sudo apt-get install -y tmux
+  ```
+
+
 - **Never run `uv sync` casually on the box.** `psycopg` is installed
   *outside* the lockfile (step 2), so `uv sync` **prunes it** — the next
   restart then crash-loops on the DB connect (500/502). `uv sync` is only
