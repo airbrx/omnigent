@@ -108,7 +108,7 @@ function renderSidebar() {
     <QueryClientProvider client={qc}>
       <TooltipProvider>
         <MemoryRouter initialEntries={["/"]}>
-          <Sidebar open={true} onClose={vi.fn()} />
+          <Sidebar open={true} onClose={vi.fn()} onBrowseAgents={vi.fn()} />
         </MemoryRouter>
       </TooltipProvider>
     </QueryClientProvider>,
@@ -256,7 +256,7 @@ function renderSidebarRouted(path: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const tree = (
     <>
-      <Sidebar open={true} onClose={vi.fn()} />
+      <Sidebar open={true} onClose={vi.fn()} onBrowseAgents={vi.fn()} />
       <LocationProbe />
     </>
   );

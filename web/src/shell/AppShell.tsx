@@ -1,6 +1,6 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Outlet, useParams, useSearchParams } from "@/lib/routing";
+import { Outlet, useNavigate, useParams, useSearchParams } from "@/lib/routing";
 import {
   PROJECT_LABEL_KEY,
   type Conversation,
@@ -36,6 +36,7 @@ import {
   type DesignModeElement,
 } from "@/lib/designModePrompt";
 import { readSessionWorkspaceState, writeSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
+import { writeLastAgentId } from "@/lib/agentPreferences";
 import {
   readDefaultWorkspacePanelOpen,
   writeDefaultWorkspacePanelOpen,
@@ -93,6 +94,7 @@ import { ChatHeader } from "./ChatHeader";
 import { ExecutionLogsPanel } from "./ExecutionLogsPanel";
 import { FileViewer } from "./FileViewer";
 import { FileViewerContext } from "./FileViewerContext";
+import { AgentDrawer } from "./AgentDrawer";
 import { FilesPanelDrawer } from "./FilesPanelDrawer";
 import type { ChangedSort } from "./FlatFileList";
 import { GithubPanel } from "./GithubPanel";
@@ -243,6 +245,9 @@ export function AppShell() {
       ? 720
       : undefined;
   const [searchParams, setSearchParams] = useSearchParams();
+  // Used only to land on the new-chat composer after an agent drawer pick;
+  // see the AgentDrawer mount below.
+  const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
   // Extension pages own their top chrome. The shell header only carries the
   // collapsed-sidebar toggle there, so skip it while the sidebar is open and
@@ -376,6 +381,10 @@ export function AppShell() {
   const [panelInitialKey, setPanelInitialKeyState] = useState<string | null>(null);
   const [executionLogsKey, setExecutionLogsKey] = useState<string | null>(null);
   const [filesPanelOpen, setFilesPanelOpen] = useState(false);
+  // Agent roster drawer (AgentDrawer), opened from the sidebar's "Browse
+  // agents" trigger. Global rather than per-session — it has no
+  // conversationId dependency, unlike the panels above.
+  const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
   // Mobile-only full-screen drawers for the rail tabs that have no desktop
   // push panel of their own. On desktop these are tabs in the workspace rail;
   // on a phone they open as full-screen overlays from the session-menu FAB.
@@ -1961,6 +1970,7 @@ export function AppShell() {
               dragProgress={sidebarDragProgress}
               onClose={handleSidebarClose}
               onOpenSearch={handleOpenSearch}
+              onBrowseAgents={() => setAgentDrawerOpen(true)}
             />
 
             {/* Content region (everything right of the sidebar): a relative
@@ -2173,6 +2183,21 @@ export function AppShell() {
                   onSortChange={handleFilesSortChange}
                 />
               )}
+              {/* Not gated on conversationId: the trigger lives in the sidebar,
+              reachable from the landing composer as well as from a session.
+              Picking a row seeds the landing's stored agent choice
+              (writeLastAgentId, read by NewChatDialog on mount) and lands on
+              "/" — the same create path the landing picker already uses —
+              rather than a second, drawer-owned way to start a session. */}
+              <AgentDrawer
+                open={agentDrawerOpen}
+                onClose={() => setAgentDrawerOpen(false)}
+                onSelectAgent={(agent) => {
+                  setAgentDrawerOpen(false);
+                  writeLastAgentId(agent.id);
+                  navigate("/");
+                }}
+              />
               {/* Mobile-only full-screen drawers for the rail tabs that have no
           desktop push panel of their own. `MobilePanelDrawer` is `md:hidden`,
           so these never collide with the desktop rail; they're opened from

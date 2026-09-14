@@ -232,7 +232,7 @@ function renderSidebar(
   onClose = vi.fn(),
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const sidebar = <Sidebar open={open} onClose={onClose} onOpenSearch={onOpenSearch} />;
+  const sidebar = <Sidebar open={open} onClose={onClose} onOpenSearch={onOpenSearch} onBrowseAgents={vi.fn()} />;
   return render(
     <QueryClientProvider client={qc}>
       <ExtensionCatalogProvider extensions={extensions}>
@@ -1004,7 +1004,7 @@ describe("Sidebar session list", () => {
       <QueryClientProvider client={qc}>
         <TooltipProvider>
           <MemoryRouter initialEntries={["/"]}>
-            <Sidebar open onClose={onClose} />
+            <Sidebar open onClose={onClose} onBrowseAgents={vi.fn()} />
           </MemoryRouter>
         </TooltipProvider>
       </QueryClientProvider>,
@@ -1753,7 +1753,7 @@ describe("Sidebar project sections", () => {
       <QueryClientProvider client={qc}>
         <TooltipProvider>
           <MemoryRouter initialEntries={["/"]}>
-            <Sidebar open onClose={onClose} />
+            <Sidebar open onClose={onClose} onBrowseAgents={vi.fn()} />
           </MemoryRouter>
         </TooltipProvider>
       </QueryClientProvider>,
@@ -1792,7 +1792,7 @@ describe("Sidebar project sections", () => {
         <TooltipProvider>
           <MemoryRouter initialEntries={["/c/conv_filed"]}>
             <Routes>
-              <Route path="/c/:conversationId" element={<Sidebar open onClose={vi.fn()} />} />
+              <Route path="/c/:conversationId" element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />} />
             </Routes>
           </MemoryRouter>
         </TooltipProvider>
@@ -2287,7 +2287,7 @@ describe("Sidebar auto-expand Pinned on pin", () => {
       <QueryClientProvider client={qc}>
         <TooltipProvider>
           <MemoryRouter initialEntries={["/"]}>
-            <Sidebar open onClose={vi.fn()} />
+            <Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />
           </MemoryRouter>
         </TooltipProvider>
       </QueryClientProvider>
@@ -2426,8 +2426,8 @@ describe("Sidebar active-row auto-scroll", () => {
         <TooltipProvider>
           <MemoryRouter initialEntries={[initialEntry]}>
             <Routes>
-              <Route path="/" element={<Sidebar open onClose={vi.fn()} />} />
-              <Route path="/c/:conversationId" element={<Sidebar open onClose={vi.fn()} />} />
+              <Route path="/" element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />} />
+              <Route path="/c/:conversationId" element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />} />
             </Routes>
           </MemoryRouter>
         </TooltipProvider>

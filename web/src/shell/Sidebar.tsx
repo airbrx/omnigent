@@ -366,6 +366,12 @@ interface SidebarProps {
    * Whether the sidebar is peeking.
    */
   peek?: boolean;
+  /**
+   * Open the agent roster drawer (AgentDrawer, mounted by AppShell). Required
+   * rather than optional/no-op-defaulted: every caller must decide where this
+   * goes, the same contract as `onClose`.
+   */
+  onBrowseAgents: () => void;
 }
 
 /**
@@ -579,6 +585,7 @@ function SidebarImpl({
   dragProgress = null,
   onOpenSearch,
   peek,
+  onBrowseAgents,
 }: SidebarProps) {
   const branding = useBranding();
   const serverInfo = useServerInfo();
@@ -1073,45 +1080,60 @@ function SidebarImpl({
               {/* "New session" routes to the home composer ("/"), which now owns
             session creation end-to-end (host/workspace/worktree chips +
             send). Rendered as a Link so cmd/middle-click opens it in a new
-            tab; onNavClick still closes the sidebar on a plain mobile tap. */}
-              <Button
-                asChild
-                className={cn(
-                  // px-2 + gap-2 puts the icon on the sidebar's left (red) column
-                  // and the label on the label (blue) column — matching section
-                  // headers and project folders. border-0 drops the Button base's
-                  // transparent 1px border so the icon lands exactly on that
-                  // column, flush with the Inbox row and folder rows.
-                  SIDEBAR_ROW,
-                  "w-full justify-start border-0 font-normal",
-                  SIDEBAR_HOVER_HIGHLIGHT,
-                  isNewChatPage && SIDEBAR_ACTIVE_HIGHLIGHT,
-                )}
-                variant="ghost"
-                data-testid="new-chat-button"
-              >
-                {/* New session always creates a session the viewer owns, which
-              lands under "My sessions" — so snap the tab back there on click
-              (the button stays visible on both tabs). */}
-                <Link
-                  to="/"
-                  componentId="sidebar.new_chat"
-                  onClick={(e) => {
-                    switchTab("mine");
-                    onNavClick(e);
-                  }}
+            tab; onNavClick still closes the sidebar on a plain mobile tap.
+            The agent-roster trigger is a sibling icon button rather than
+            folded into the row, so it opens the drawer without navigating. */}
+              <div className="flex items-center gap-1">
+                <Button
+                  asChild
+                  className={cn(
+                    // px-2 + gap-2 puts the icon on the sidebar's left (red) column
+                    // and the label on the label (blue) column — matching section
+                    // headers and project folders. border-0 drops the Button base's
+                    // transparent 1px border so the icon lands exactly on that
+                    // column, flush with the Inbox row and folder rows.
+                    SIDEBAR_ROW,
+                    "w-full justify-start border-0 font-normal",
+                    SIDEBAR_HOVER_HIGHLIGHT,
+                    isNewChatPage && SIDEBAR_ACTIVE_HIGHLIGHT,
+                  )}
+                  variant="ghost"
+                  data-testid="new-chat-button"
                 >
-                  <SquarePenIcon
-                    className={cn(
-                      "ui-icon",
-                      isNewChatPage
-                        ? "text-[var(--sidebar-active-foreground)]"
-                        : "text-muted-foreground",
-                    )}
-                  />
-                  New session
-                </Link>
-              </Button>
+                  {/* New session always creates a session the viewer owns, which
+                lands under "My sessions" — so snap the tab back there on click
+                (the button stays visible on both tabs). */}
+                  <Link
+                    to="/"
+                    componentId="sidebar.new_chat"
+                    onClick={(e) => {
+                      switchTab("mine");
+                      onNavClick(e);
+                    }}
+                  >
+                    <SquarePenIcon
+                      className={cn(
+                        "ui-icon",
+                        isNewChatPage
+                          ? "text-[var(--sidebar-active-foreground)]"
+                          : "text-muted-foreground",
+                      )}
+                    />
+                    New session
+                  </Link>
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="shrink-0 text-muted-foreground"
+                  data-testid="browse-agents-button"
+                  aria-label="Browse agents"
+                  onClick={onBrowseAgents}
+                >
+                  <UsersIcon className="size-3.5 shrink-0" />
+                </Button>
+              </div>
               {/* Keep Scheduled in the primary nav group with the same row treatment as New session. */}
               <Button
                 asChild

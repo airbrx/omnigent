@@ -10,15 +10,20 @@ import { useEffect } from "react";
 
 import { Button } from "@/components/ui/button";
 import { useAgentAvatars } from "@/hooks/useAgentAvatars";
-import { useAvailableAgents } from "@/hooks/useAvailableAgents";
+import { type AvailableAgent, useAvailableAgents } from "@/hooks/useAvailableAgents";
 import { agentAvatarColor, agentInitials } from "@/lib/agentInitials";
 import { cn } from "@/lib/utils";
 
 interface AgentDrawerProps {
   open: boolean;
   onClose: () => void;
-  /** Called with the agent's NAME — the key avatars are stored under. */
-  onSelectAgent: (agentName: string) => void;
+  /**
+   * Called with the full picked agent. The caller (AppShell) needs the
+   * agent's id — not just its name — to seed the new-chat landing's stored
+   * pick (`writeLastAgentId`), so the row hands back the whole object
+   * rather than a single field.
+   */
+  onSelectAgent: (agent: AvailableAgent) => void;
 }
 
 export function AgentDrawer({ open, onClose, onSelectAgent }: AgentDrawerProps) {
@@ -67,7 +72,7 @@ export function AgentDrawer({ open, onClose, onSelectAgent }: AgentDrawerProps) 
                 key={agent.id}
                 type="button"
                 data-testid={`agent-drawer-row-${agent.name}`}
-                onClick={() => onSelectAgent(agent.name)}
+                onClick={() => onSelectAgent(agent)}
                 className="flex w-full items-center gap-3 rounded-md p-2 text-left hover:bg-muted"
               >
                 {url ? (
@@ -90,8 +95,8 @@ export function AgentDrawer({ open, onClose, onSelectAgent }: AgentDrawerProps) 
                 )}
                 <span className="min-w-0">
                   {/* Label from display_name so the drawer reads the same as
-                      the picker; the avatar and onSelectAgent both key on
-                      `name`, which is what the server stores. */}
+                      the picker; the avatar keys on `name`, which is what
+                      the server stores. */}
                   <span className="block truncate font-medium text-ui">
                     {agent.display_name || agent.name}
                   </span>

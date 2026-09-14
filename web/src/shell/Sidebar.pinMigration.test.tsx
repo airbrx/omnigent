@@ -98,7 +98,7 @@ function renderSidebar() {
       <TooltipProvider>
         <MemoryRouter initialEntries={["/"]}>
           <Routes>
-            <Route path="/" element={<Sidebar open onClose={vi.fn()} />} />
+            <Route path="/" element={<Sidebar open onClose={vi.fn()} onBrowseAgents={vi.fn()} />} />
           </Routes>
         </MemoryRouter>
       </TooltipProvider>

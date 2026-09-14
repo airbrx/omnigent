@@ -59,10 +59,15 @@ describe("AgentDrawer", () => {
     expect(screen.queryByText("RE")).not.toBeInTheDocument();
   });
 
-  it("calls onSelectAgent with the agent name when a row is clicked", () => {
+  it("calls onSelectAgent with the full agent when a row is clicked", () => {
     const { onSelectAgent } = renderDrawer();
     fireEvent.click(screen.getByTestId("agent-drawer-row-researcher"));
-    expect(onSelectAgent).toHaveBeenCalledWith("researcher");
+    expect(onSelectAgent).toHaveBeenCalledWith({
+      id: "a1",
+      name: "researcher",
+      display_name: "Researcher",
+      description: "Reads things",
+    });
   });
 
   it("renders nothing when closed", () => {
