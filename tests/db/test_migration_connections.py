@@ -32,9 +32,19 @@ def _downgrade(uri: str, engine: sa.Engine, revision: str) -> None:
 
 
 def test_single_alembic_head() -> None:
+    # airbrx: upstream pins the literal head id here. This fork cannot — it
+    # carries its own migrations (the extra `hosts` columns), so every upstream
+    # sync adds a merge revision and the head is ours, not theirs. Pinning an id
+    # would make this line conflict on every single sync and say nothing useful
+    # when it did.
+    #
+    # The invariant the test is named for is still enforced exactly: more than
+    # one head means the migration graph has forked and `alembic upgrade head`
+    # is ambiguous. That is the failure worth catching; which revision happens
+    # to sit at the head is upstream bookkeeping.
     script = ScriptDirectory.from_config(_build_alembic_config("sqlite://"))
     heads = script.get_heads()
-    assert heads == ["ge1b2c3d4e5f"], f"expected a single head, got {heads!r}"
+    assert len(heads) == 1, f"expected a single head, got {heads!r}"
 
 
 def test_upgrade_creates_table_downgrade_drops_it(tmp_path: Path) -> None:
