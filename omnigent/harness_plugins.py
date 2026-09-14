@@ -759,6 +759,12 @@ _BUILTIN_CONTRIBUTION = HarnessContribution(
         "agy": "antigravity",
         "agy-native": "antigravity-native",
         "claude": "claude-sdk",
+        # Spec `executor.type` values are underscored (`claude_sdk`,
+        # `agents_sdk`) while harness ids are hyphenated. Without these the
+        # spec validator accepts a bundle that the runner then cannot spawn:
+        # `unknown harness 'claude_sdk'`.
+        "claude_sdk": "claude-sdk",
+        "agents_sdk": "openai-agents",
         "github-copilot": "copilot",
         "google-antigravity": "antigravity",
         "kimi-code": "kimi",
