@@ -163,8 +163,10 @@ deliberately forwarded into agent runners — that is what lets Claude push.
 
 ### Gotchas already paid for
 
-1. **`omnigent host install` does not exist in PyPI 0.8.1** (repo `main` has
-   it). Hence the hand-written unit in `bootstrap/`.
+1. **No packaged host-service command in PyPI 0.8.1.** Hence the hand-written
+   unit in `bootstrap/`. Since the v0.12 upstream sync the command exists as
+   `omnigent host enable` / `host disable` (it was briefly this fork's own
+   `host install` / `host uninstall`, now retired in favour of upstream's).
 2. **uid is 1001, not 1000** — `systemctl --user` over `runuser` needs
    `XDG_RUNTIME_DIR=/run/user/1001` or it cannot reach the bus.
 3. **`~/.bashrc` returns early for non-interactive shells** on Ubuntu, so PATH

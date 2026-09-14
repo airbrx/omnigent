@@ -50,6 +50,8 @@ import type {
   SessionModelEvent,
   SessionTitleEvent,
   SessionCollaborationModeEvent,
+  SessionPermissionModeEvent,
+  SessionCodexApprovalModeEvent,
   SessionReasoningEffortEvent,
   SessionAgentChangedEvent,
   SessionTodosEvent,
@@ -69,7 +71,14 @@ import type {
 } from "./events";
 import { NATIVE_TOOL_TYPES } from "./events";
 import { routingExtrasFromWire } from "./routingDecision";
-import type { ErrorInfo, ModelUsage, RememberScope, Response } from "./types";
+import type {
+  BackgroundTaskInfo,
+  CodexPersistMode,
+  ErrorInfo,
+  ModelUsage,
+  RememberScope,
+  Response,
+} from "./types";
 
 /**
  * Out-param for `parseSseStream`: `sawDone` is set when the server's `[DONE]`
@@ -339,6 +348,32 @@ function normalizeEventType(eventType: string): string {
   return eventType;
 }
 
+const BACKGROUND_TASK_KEYS = ["id", "type", "status", "description", "command"] as const;
+
+/**
+ * Parse the `background_tasks` detail off a `session.status` payload.
+ *
+ * Keeps only the string display fields (see {@link BACKGROUND_TASK_KEYS}) and
+ * drops non-object / field-less entries. Returns `undefined` when the value is
+ * not an array or nothing usable survives, so callers can treat "no detail"
+ * uniformly (the count alone still drives the pill).
+ */
+export function parseBackgroundTasks(raw: unknown): BackgroundTaskInfo[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const tasks: BackgroundTaskInfo[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const info: BackgroundTaskInfo = {};
+    for (const key of BACKGROUND_TASK_KEYS) {
+      const value = record[key];
+      if (typeof value === "string" && value) info[key] = value;
+    }
+    if (Object.keys(info).length > 0) tasks.push(info);
+  }
+  return tasks.length > 0 ? tasks : undefined;
+}
+
 /**
  * Parse one raw SSE-shaped event payload (e.g. an entry from the
  * snapshot's `pending_elicitations` field) into a typed
@@ -467,7 +502,11 @@ export function parseEvent(rawType: string, data: Record<string, unknown>): Stre
 
   // Compaction.
   if (eventType === "response.compaction.in_progress") {
-    return { type: "compaction_in_progress" } satisfies CompactionInProgress;
+    const startedAt = data.started_at;
+    return {
+      type: "compaction_in_progress",
+      ...(typeof startedAt === "number" ? { startedAtS: startedAt } : {}),
+    } satisfies CompactionInProgress;
   }
   if (eventType === "response.compaction.completed") {
     const tt = data.total_tokens;
@@ -519,6 +558,7 @@ export function parseEvent(rawType: string, data: Record<string, unknown>): Stre
         typeof data.background_task_count === "number" && data.background_task_count >= 0
           ? data.background_task_count
           : undefined;
+      const backgroundTasks = parseBackgroundTasks(data.background_tasks);
       const rawError = data.error;
       // Parse via parseErrorInfo so a classified failure's optional
       // title/cause/remediation flow through, but keep the guard that both
@@ -540,6 +580,7 @@ export function parseEvent(rawType: string, data: Record<string, unknown>): Stre
         status,
         responseId,
         backgroundTaskCount,
+        ...(backgroundTasks !== undefined ? { backgroundTasks } : {}),
         ...(blockedOn !== undefined ? { blockedOn } : {}),
         ...(error !== undefined ? { error } : {}),
       } satisfies SessionStatusEvent;
@@ -638,6 +679,28 @@ export function parseEvent(rawType: string, data: Record<string, unknown>): Stre
       conversationId,
       mode,
     } satisfies SessionCollaborationModeEvent;
+  }
+  if (eventType === "session.permission_mode") {
+    const conversationId = data.conversation_id;
+    if (typeof conversationId !== "string" || !conversationId) return null;
+    const permissionMode = data.permission_mode;
+    if (typeof permissionMode !== "string" || !permissionMode) return null;
+    return {
+      type: "session_permission_mode",
+      conversationId,
+      permissionMode,
+    } satisfies SessionPermissionModeEvent;
+  }
+  if (eventType === "session.codex_approval_mode") {
+    const conversationId = data.conversation_id;
+    if (typeof conversationId !== "string" || !conversationId) return null;
+    const approvalMode = data.approval_mode;
+    if (typeof approvalMode !== "string" || !approvalMode) return null;
+    return {
+      type: "session_codex_approval_mode",
+      conversationId,
+      approvalMode,
+    } satisfies SessionCodexApprovalModeEvent;
   }
   if (eventType === "session.agent_changed") {
     const conversationId = data.conversation_id;
@@ -973,6 +1036,23 @@ export function parseEvent(rawType: string, data: Record<string, unknown>): Stre
                 : undefined,
           }
         : null;
+    const codexMetaRaw = p["_meta"];
+    const codexMeta =
+      codexMetaRaw && typeof codexMetaRaw === "object" && !Array.isArray(codexMetaRaw)
+        ? (codexMetaRaw as Record<string, unknown>)
+        : null;
+    const codexPersistRaw =
+      codexMeta?.codex_approval_kind === "mcp_tool_call" ? codexMeta.persist : null;
+    const codexPersistCandidates = Array.isArray(codexPersistRaw)
+      ? codexPersistRaw
+      : [codexPersistRaw];
+    const codexPersistModes = [
+      ...new Set(
+        codexPersistCandidates.filter(
+          (value): value is CodexPersistMode => value === "session" || value === "always",
+        ),
+      ),
+    ];
     return {
       type: "elicitation_request",
       elicitationId,
@@ -1013,6 +1093,7 @@ export function parseEvent(rawType: string, data: Record<string, unknown>): Stre
           : null,
       allowAllEdits,
       rememberScope,
+      codexPersistModes,
     } satisfies ElicitationRequest;
   }
 
@@ -1119,6 +1200,7 @@ function parseOutputItem(data: Record<string, unknown>): StreamEvent | null {
       error: {
         code: String(rec.code ?? ""),
         message: String(rec.message ?? ""),
+        ...(rec.level === "info" ? { level: "info" as const } : {}),
       },
       itemId,
       responseId,
@@ -1259,6 +1341,7 @@ function parseErrorInfo(raw: unknown): ErrorInfo {
     if (typeof r.title === "string" && r.title) info.title = r.title;
     if (typeof r.cause === "string" && r.cause) info.cause = r.cause;
     if (typeof r.remediation === "string" && r.remediation) info.remediation = r.remediation;
+    if (r.level === "info") info.level = "info";
     return info;
   }
   return { code: "", message: String(raw ?? "") };

@@ -14,14 +14,15 @@
 // gracefully when the runner has no OS environment for the session
 // (e.g. cloud-only agents).
 
-import { useEffect, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useRef } from "react";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSessionHostOnline, useSessionRunnerOnline } from "@/hooks/RunnerHealthProvider";
 import { authenticatedFetch } from "@/lib/identity";
+import { isTempConvId } from "@/lib/tempConversationId";
 import { useChatStore } from "@/store/chatStore";
 
 /** True when `id` is the focused conversation and its agent loop is live. */
-function useSessionActive(conversationId: string | undefined): boolean {
+export function useSessionActive(conversationId: string | undefined): boolean {
   const focusedId = useChatStore((s) => s.conversationId);
   const sessionStatus = useChatStore((s) => s.sessionStatus);
   if (!conversationId || conversationId !== focusedId) return false;
@@ -62,7 +63,7 @@ export function useWorkspaceServeable(conversationId: string | undefined): boole
  * invalidate refetches once so the panel reflects end-of-turn state without
  * the user having to reload the page.
  */
-function useTrailingInvalidate(
+export function useTrailingInvalidate(
   conversationId: string | undefined,
   sessionActive: boolean,
   queryKeyPrefix: string,
@@ -357,8 +358,11 @@ async function fetchWorkspaceAllFiles(
   location = "",
 ): Promise<WorkspaceAllFilesResult> {
   const segment = browseLocationSegment(location);
+  const params = new URLSearchParams({ limit: "1000", order: "asc" });
+  const base = browseLocationBase(location);
+  if (base) params.set("base", base);
   const res = await authenticatedFetch(
-    `/v1/sessions/${encodeURIComponent(conversationId)}/resources/environments/${DEFAULT_ENVIRONMENT_ID}/filesystem${segment ? `/${segment}` : ""}?limit=1000&order=asc`,
+    `/v1/sessions/${encodeURIComponent(conversationId)}/resources/environments/${DEFAULT_ENVIRONMENT_ID}/filesystem${segment ? `/${segment}` : ""}?${params}`,
   );
   if (res.status === 404) {
     return { available: false, data: [] };
@@ -420,7 +424,14 @@ export function useWorkspaceAllFiles(
     // the session's `failed` status downstream, not by retries.
     retry: shouldRetryRunnerOffline,
     retryDelay: runnerOfflineRetryDelay,
-    staleTime: 5_000,
+    // Keep the tree warm on revisits: within staleTime a return to a
+    // previously-loaded conversation/location paints its cached tree with no
+    // loading flash. Freshness on turn-completion is still handled by
+    // useTrailingInvalidate above. No cross-key placeholderData — carrying the
+    // previous conversation's tree under a new conversation's key fed stale
+    // files into the folder tree's default-expansion cache; virtualization
+    // already keeps the per-switch render cheap, so the warm-carry isn't needed.
+    staleTime: 30_000,
   });
 }
 
@@ -438,12 +449,29 @@ export function useWorkspaceAllFiles(
  * @returns The encoded path segment to append to a filesystem route.
  */
 export function browseLocationSegment(location: string): string {
-  if (location === "" || location === "/") {
-    return location === "/" ? "%2F" : "";
-  }
-  const absolute = location.startsWith("/");
-  const encoded = location.replace(/^\//, "").split("/").map(encodeURIComponent).join("/");
-  return absolute ? `%2F${encoded}` : encoded;
+  if (location === "" || location === "/") return "";
+  // A per-segment-encoded path with LITERAL slash separators and NO leading
+  // "%2F" — for BOTH workspace-relative and host-absolute locations. An
+  // absolute location's leading slash is stripped here and re-added by the
+  // server, exactly as the host filesystem endpoint does; its base is named
+  // out of band via `?base=host` (see `browseLocationBase`). A "%2F" leading
+  // marker would decode to a "//" that reverse proxies — the Databricks Apps
+  // front door among them — merge back to a single "/", silently turning an
+  // absolute path into a workspace-relative one and listing a nonexistent
+  // path under the workspace.
+  return location.replace(/^\//, "").split("/").map(encodeURIComponent).join("/");
+}
+
+/**
+ * The `base` query value naming how a browse location's `{path}` is rooted:
+ * `"host"` for an absolute path on the host, `null` for a workspace-relative
+ * one (the default, omitted from the URL).
+ *
+ * @param location Browse location, ``""`` for the workspace root.
+ * @returns ``"host"`` when absolute, else ``null``.
+ */
+export function browseLocationBase(location: string): "host" | null {
+  return location.startsWith("/") ? "host" : null;
 }
 
 /**
@@ -500,6 +528,8 @@ async function fetchWorkspaceFileSearch(
   if (include) params.set("include", include);
   if (exclude) params.set("exclude", exclude);
   const segment = browseLocationSegment(location);
+  const base = browseLocationBase(location);
+  if (base) params.set("base", base);
   const res = await authenticatedFetch(
     `/v1/sessions/${encodeURIComponent(conversationId)}/resources/environments/${DEFAULT_ENVIRONMENT_ID}/search${segment ? `/${segment}` : ""}?${params}`,
   );
@@ -564,8 +594,11 @@ async function fetchWorkspaceDirectory(
 ): Promise<WorkspaceFile[]> {
   const target = joinBrowseLocation(location, dirPath);
   const encodedPath = browseLocationSegment(target);
+  const params = new URLSearchParams({ limit: "1000", order: "asc" });
+  const base = browseLocationBase(target);
+  if (base) params.set("base", base);
   const res = await authenticatedFetch(
-    `/v1/sessions/${encodeURIComponent(conversationId)}/resources/environments/${DEFAULT_ENVIRONMENT_ID}/filesystem/${encodedPath}?limit=1000&order=asc`,
+    `/v1/sessions/${encodeURIComponent(conversationId)}/resources/environments/${DEFAULT_ENVIRONMENT_ID}/filesystem/${encodedPath}?${params}`,
   );
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   // The tree addresses children relative to the location it is rooted at, one
@@ -813,9 +846,13 @@ async function fetchWorkspaceEnvironment(conversationId: string): Promise<Worksp
  * (``metadata.root`` absent in the 200 response).
  */
 export function useWorkspaceEnvironment(
-  conversationId: string | undefined,
+  rawConversationId: string | undefined,
   options: WorkspaceQueryOptions = {},
 ) {
+  // A `temp:*` id (navigate-first new-chat window) has no server workspace —
+  // normalize to undefined so nothing (env, and the changed/all-files queries
+  // that gate on its result) hits `/v1/sessions/temp:*/resources/*`.
+  const conversationId = isTempConvId(rawConversationId) ? undefined : rawConversationId;
   const serveable = useWorkspaceServeable(conversationId);
   return useQuery({
     queryKey: ["workspace-environment", conversationId],
@@ -845,5 +882,61 @@ export function useWorkspaceDirectory(
     queryFn: () => fetchWorkspaceDirectory(conversationId!, dirPath!, location),
     enabled: !!conversationId && !!dirPath && serveable !== false,
     staleTime: 5_000,
+  });
+}
+
+/** One expanded lazy directory's fetched children + load/error state. */
+export interface DirectoryResult {
+  data: WorkspaceFile[] | undefined;
+  isLoading: boolean;
+  isError: boolean;
+}
+
+/**
+ * Batched form of {@link useWorkspaceDirectory}: subscribe to the listings of
+ * many expanded lazy directories at once, keyed by path.
+ *
+ * The virtualized tree flattens the visible node list from a central place, so
+ * it can't call one hook per rendered row (rows come and go with scrolling, and
+ * a scrolled-off row unmounting would drop its fetch). Fetching here — once,
+ * for every currently-expanded lazy dir — keeps the queries alive regardless of
+ * which rows are windowed in, and shares the same cache entries as the singular
+ * hook (identical query keys).
+ */
+export function useWorkspaceDirectories(
+  conversationId: string | undefined,
+  dirPaths: string[],
+  location = "",
+): Map<string, DirectoryResult> {
+  const serveable = useWorkspaceServeable(conversationId);
+  const enabled = !!conversationId && serveable !== false;
+  // `combine` lets TanStack memoize the assembled Map. Its recompute gate is a
+  // reference check on the combine fn (`combine !== lastCombine`), so the
+  // callback must be stable — an inline closure is a fresh fn every render and
+  // defeats the gate, rebuilding the Map (and re-running the tree's flatten
+  // memo + widening effect) on every render, including every scroll frame.
+  // Keyed on `dirPaths`, which the caller holds stable at its widening fixpoint.
+  const combine = useCallback(
+    (results: { data?: WorkspaceFile[]; isLoading: boolean; isError: boolean }[]) => {
+      const map = new Map<string, DirectoryResult>();
+      dirPaths.forEach((dirPath, i) => {
+        map.set(dirPath, {
+          data: results[i]?.data,
+          isLoading: results[i]?.isLoading ?? false,
+          isError: results[i]?.isError ?? false,
+        });
+      });
+      return map;
+    },
+    [dirPaths],
+  );
+  return useQueries({
+    queries: dirPaths.map((dirPath) => ({
+      queryKey: ["workspace-dir", conversationId, dirPath, location],
+      queryFn: () => fetchWorkspaceDirectory(conversationId!, dirPath, location),
+      enabled,
+      staleTime: 5_000,
+    })),
+    combine,
   });
 }

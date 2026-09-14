@@ -1513,9 +1513,20 @@ async def test_shared_host_confines_non_owner_to_workroot(
     """On a shared host, a non-owner's filesystem access is jailed to workroot.
 
     A path outside workroot is rejected with 403 before the host is even
-    contacted; a path inside passes the jail (and then 400 WRONG_REPLICA
-    because the freshly-upserted host is live but has no tunnel on this
-    replica — see ``_host_absent_error``). The owner is never jailed.
+    contacted; a path inside passes the jail and only then fails on reaching
+    the host, because the freshly-upserted host has no tunnel on this replica
+    (see ``host_absent_error``). The owner is never jailed.
+
+    That post-jail failure is 409 CONFLICT, not the 400 WRONG_REPLICA this
+    test originally asserted: since upstream v0.13, ``host_absent_error``
+    claims WRONG_REPLICA only on a *sharded* deployment, and this test app is
+    single-replica. The change is deliberate upstream — on one replica there
+    is no other replica to re-address to, so a 400 would drive an endless
+    client poll loop.
+
+    What matters here is only that the request got *past* the jail and went on
+    to contact the host; which status it then fails with is upstream's to
+    decide. The jail itself is what this test guards, and that is the 403s.
     """
     app, _reg, host_store, _cs = multi_user_app
     host_store.upsert_on_connect(
@@ -1543,19 +1554,23 @@ async def test_shared_host_confines_non_owner_to_workroot(
         )
         assert browse_out.status_code == 403, browse_out.text
 
-        # Non-owner, INSIDE workroot -> passes the jail, then 400 WRONG_REPLICA
-        # (host is live but its tunnel isn't on this replica).
+        # Non-owner, INSIDE workroot -> passes the jail, then fails contacting
+        # the host: 409, because this test app is single-replica.
         inside = await client.post(
             "/v1/hosts/e796741f1db43f1a80d4c39e7f07c0a3/directories",
             headers={"x-test-user": "bob@test.com"},
             json={"path": "/srv/work/sub"},
         )
-        assert inside.status_code == 400, inside.text
+        assert inside.status_code == 409, inside.text
+        # Past the jail, not blocked by it — the 403s above are the jail.
+        assert "workroot" not in inside.text
 
-        # Owner is NOT jailed: /etc passes the (absent) jail, then WRONG_REPLICA.
+        # Owner is NOT jailed: /etc passes the (absent) jail, then the same
+        # host-absent failure.
         owner_out = await client.post(
             "/v1/hosts/e796741f1db43f1a80d4c39e7f07c0a3/directories",
             headers={"x-test-user": "alice@test.com"},
             json={"path": "/etc/mine"},
         )
-        assert owner_out.status_code == 400, owner_out.text
+        assert owner_out.status_code == 409, owner_out.text
+        assert "workroot" not in owner_out.text
