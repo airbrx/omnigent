@@ -139,9 +139,34 @@ def test_fake_row_login_command() -> None:
     assert _FAKE_ROW.binary == "fakecli"
 
 
+def test_spawn_env_mirrors_row_omnigent_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rows that opt out of MCP injection must propagate that to the wrap.
+
+    A vendor CLI that rejects ``session/new`` mcpServers (jcode) fails every
+    session if the Omnigent MCP server is advertised, so the row flag has to
+    reach ``HARNESS_ACP_OMNIGENT_MCP`` rather than relying on the wrap's
+    default-on.
+    """
+    no_mcp_row = dataclasses.replace(_FAKE_ROW, omnigent_mcp=False)
+    monkeypatch.setitem(ACP_CLI_HARNESSES, "fakecli", no_mcp_row)
+    env = _build_acp_cli_spawn_env(_spec("fakecli"), harness="fakecli")
+    assert env["HARNESS_ACP_OMNIGENT_MCP"] == "0"
+
+    monkeypatch.setitem(ACP_CLI_HARNESSES, "fakecli", _FAKE_ROW)
+    env = _build_acp_cli_spawn_env(_spec("fakecli"), harness="fakecli")
+    assert env["HARNESS_ACP_OMNIGENT_MCP"] == "1"
+
+
 # ---------------------------------------------------------------------------
 # Per-row registration (parametrized over the real catalog)
 # ---------------------------------------------------------------------------
+
+
+# Rows whose vendor behavior earns their own thin wrap, which injects an
+# AcpExtension into the same shared ACP executor (see omnigent.inner.devin).
+# Listing one here is deliberate: it declares that the row no longer runs the
+# shared wrap and may declare capabilities the generic profile does not.
+_VENDOR_WRAPS = {"devin": "omnigent.inner.devin.harness"}
 
 
 @pytest.mark.parametrize("name", sorted(ACP_CLI_HARNESSES))
@@ -150,10 +175,20 @@ def test_catalog_row_is_fully_registered(name: str) -> None:
     row = ACP_CLI_HARNESSES[name]
 
     assert name in valid_harnesses()
-    assert harness_modules()[name] == "omnigent.inner.acp_harness"
     assert harness_labels()[name] == row.label
-    # Same declared profile as the generic "acp" harness they run through.
-    assert harness_capabilities()[name] == harness_capabilities()["acp"]
+    assert harness_modules()[name] == _VENDOR_WRAPS.get(name, "omnigent.inner.acp_harness")
+
+    caps = harness_capabilities()
+    if name in _VENDOR_WRAPS:
+        # A vendor wrap injects an AcpExtension, so the row may declare more than
+        # the generic profile — but only on the axes that extension implements.
+        # Normalizing those back must reproduce "acp" exactly, so a vendor cannot
+        # quietly diverge on resume, auth, effort, or anything else.
+        assert caps[name].subagents is True, name
+        assert dataclasses.replace(caps[name], subagents=caps["acp"].subagents) == caps["acp"]
+    else:
+        # Same declared profile as the generic "acp" harness they run through.
+        assert caps[name] == caps["acp"]
     assert install_specs()[name] == row.install
     for spelling in (name, *row.aliases):
         assert harness_install_keys()[spelling] == name
@@ -180,6 +215,7 @@ def test_catalog_row_spawn_env_builds(name: str) -> None:
     if row.args:
         assert argv[-len(row.args) :] == list(row.args)
     assert env["HARNESS_ACP_NAME"] == row.label
+    assert env["HARNESS_ACP_OMNIGENT_MCP"] == ("1" if row.omnigent_mcp else "0")
 
 
 # ---------------------------------------------------------------------------

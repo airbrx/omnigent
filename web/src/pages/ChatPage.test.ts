@@ -1028,7 +1028,15 @@ describe("workingIndicatorLabel — parked on a dialog", () => {
     // Being blocked on the user is the one state that needs an action, and the
     // dialog may exist only in the terminal tab — so it must not be buried
     // under a rotating "Cooking…".
-    expect(workingIndicatorLabel(2, "dialog open")).toBe("Blocked on: dialog open");
+    const label = workingIndicatorLabel(2, "dialog open");
+    expect(WORKING_MESSAGES).not.toContain(label);
+  });
+
+  it("points the user at the terminal for a dialog open", () => {
+    // "dialog open" means the agent is waiting on a dialog that lives only in
+    // the terminal tab. A bare "Blocked on: dialog open" leaves the user with
+    // no idea where to respond, so the label must guide them to the terminal.
+    expect(workingIndicatorLabel(2, "dialog open")).toMatch(/terminal/i);
   });
 
   it("falls back to the normal label when not parked", () => {
@@ -1674,7 +1682,7 @@ describe("unboundSessionResumableInApp", () => {
 // client must show no routing control at all, and neither must one while the
 // `/v1/info` probe is still in flight.
 describe("routing eligibility gates", () => {
-  function info(smartRouting: boolean): ServerInfo {
+  function info(smartRouting: boolean, sources?: { external: boolean; oss: boolean }): ServerInfo {
     return {
       accounts_enabled: false,
       single_user: false,
@@ -1683,11 +1691,12 @@ describe("routing eligibility gates", () => {
       databricks_features: false,
       managed_sandboxes_enabled: false,
       sandbox_provider: null,
+      enabled_connections: [],
       sharing_mode: "on",
       public_sharing_enabled: true,
       server_version: null,
       smart_routing_enabled: smartRouting,
-      smart_routing_sources: { external: smartRouting, oss: smartRouting },
+      smart_routing_sources: sources ?? { external: smartRouting, oss: smartRouting },
       features: {},
       harness_install_enabled: false,
       installable_harnesses: [],
@@ -1725,8 +1734,30 @@ describe("routing eligibility gates", () => {
     expect(isSubagentRoutingEligible("loading", nativeSession)).toBe(false);
   });
 
-  it("a native terminal session is excluded from cost routing but not subagent routing", () => {
-    expect(isCostRoutingEligible(info(true), nativeSession)).toBe(false);
+  it("a native pane follows the per-family router sources for cost routing", () => {
+    // The judge answers for any family, gateway-backed or not.
+    expect(isCostRoutingEligible(info(true, { external: false, oss: true }), nativeSession)).toBe(
+      true,
+    );
+    // External-only: the family must be gateway-backed on the session's host.
+    const externalOnly = info(true, { external: true, oss: false });
+    expect(
+      isCostRoutingEligible(externalOnly, nativeSession, {
+        gateway_inference: { "claude-native": false },
+      }),
+    ).toBe(false);
+    expect(
+      isCostRoutingEligible(externalOnly, nativeSession, {
+        gateway_inference: { "claude-native": true },
+      }),
+    ).toBe(true);
+    // An absent host row reads as backed (older host / no row), like the
+    // landing's gate.
+    expect(isCostRoutingEligible(externalOnly, nativeSession)).toBe(true);
+    // No router at all: the option is withheld.
+    expect(isCostRoutingEligible(info(true, { external: false, oss: false }), nativeSession)).toBe(
+      false,
+    );
     expect(isSubagentRoutingEligible(info(true), nativeSession)).toBe(true);
   });
 

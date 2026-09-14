@@ -86,6 +86,21 @@ ssm> cd /opt/omnigent && git pull \
 
 ## Gotchas (operations)
 
+- **Managed terminals need tmux 3.3+ (since upstream v0.13).** They enable
+  `allow-passthrough`, which tmux added in 3.3, and
+  `_require_supported_tmux()` raises at terminal launch on anything older.
+  This does **not** block boot or the deploy health check — the server comes
+  up fine and only web terminals fail — so it will not show up as a failed
+  deploy. Ubuntu 22.04 ships tmux 3.2a (too old); 24.04 ships 3.4. Check with
+  `tmux -V` on the box **and on every connected host**, and upgrade where
+  needed:
+
+  ```bash
+  tmux -V                      # want >= 3.3
+  sudo apt-get update && sudo apt-get install -y tmux
+  ```
+
+
 - **Never run `uv sync` casually on the box.** `psycopg` is installed
   *outside* the lockfile (step 2), so `uv sync` **prunes it** — the next
   restart then crash-loops on the DB connect (500/502). `uv sync` is only
@@ -93,6 +108,25 @@ ssm> cd /opt/omnigent && git pull \
   after: `uv pip install --python /opt/omnigent/.venv/bin/python
   'psycopg[binary]>=3.1,<4'`. The normal dev loop (`git reset` + restart,
   or `pull-webui` + restart) never touches `uv`, so it's safe.
+
+- **Never run anything from the venv as root.** Doing so leaves root-owned
+  `__pycache__/*.pyc` behind, and the next `uv sync` (which runs as `ubuntu`)
+  dies with `failed to remove directory ...: Permission denied`. The CD
+  workflow now `chown`s the venv before syncing, so this is handled — but know
+  the shape of it, because **the box lies to you when it happens**: `git reset`
+  has already landed the new code, the venv is stale, and the service is never
+  restarted, so the site keeps serving the OLD build from memory and looks
+  perfectly healthy. Only the next restart or reboot exposes it, by booting new
+  code against the old venv and crash-looping.
+
+  This broke the v0.13 deploy on 2026-09-14 (127 root-owned files under `boto3`
+  and `google/protobuf`, dating from 2026-07-13 and 2026-09-04). To check and
+  repair by hand:
+
+  ```bash
+  find /opt/omnigent/.venv -not -user ubuntu | wc -l   # want 0
+  chown -R ubuntu:ubuntu /opt/omnigent/.venv
+  ```
 
 - **`omnigent --version` lags the deployed code.** The `(sha, built …)`
   string comes from `omnigent/_build_info.py`, which `setup.py` writes
