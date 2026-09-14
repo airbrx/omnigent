@@ -8754,13 +8754,14 @@
           }
         ],
         "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
+          "204": {
+            "description": "Avatar deleted"
+          },
+          "400": {
+            "description": "agent_name failed validation"
+          },
+          "404": {
+            "description": "No avatar stored for that agent"
           },
           "422": {
             "content": {
@@ -8794,11 +8795,38 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
+              "image/gif": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
               }
             },
-            "description": "Successful Response"
+            "description": "The agent's avatar image"
+          },
+          "400": {
+            "description": "agent_name failed validation"
+          },
+          "404": {
+            "description": "No avatar stored for that agent"
           },
           "422": {
             "content": {
