@@ -6142,10 +6142,7 @@ export function NewChatLandingScreen() {
                         )}
                         {localHosts.map(renderHostMenuItem)}
                         {wakeError && (
-                          <div
-                            className="px-2 py-1 text-[11px] text-destructive"
-                            role="alert"
-                          >
+                          <div className="px-2 py-1 text-[11px] text-destructive" role="alert">
                             {wakeError}
                           </div>
                         )}
