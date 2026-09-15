@@ -91,6 +91,12 @@ def main():
     env = plist.setdefault("EnvironmentVariables", {})
     env["OMNIGENT_IRIS_CONFIG"] = str(config)
     # The host explicitly allowlists this reference, not the PAT.
+    #
+    # The Iris tool subprocess runs on the host's own interpreter, so the `iris`
+    # extra's pinned SDK/MCP versions have to survive an unattended re-install.
+    # A --auto-upgrade host pipes the server's install.sh with no arguments; this
+    # is what keeps the extra attached to that call (install_oss.sh reads it).
+    env.setdefault("OMNIGENT_INSTALL_EXTRAS", "iris")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("wb" if args.force else "xb") as handle:
         handle.write(plistlib.dumps(plist))

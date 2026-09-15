@@ -45,7 +45,12 @@ The `keychain:` resolver uses macOS Keychain, with Omnigent's existing private 0
 
 Set `OMNIGENT_IRIS_CONFIG` to the JSON file path on the coordinator (`/etc/omnigent/server.env`). Startup registers the pinned bundle idempotently and installs the existing portrait if no custom avatar exists. Restart the coordinator through the existing Airbrx deployment flow.
 
-The inspected Mac service is `ai.airbrx.omnigent.host`; its existing `HOME`/`PATH` environment cannot inherit a caller's exports. Prepare a plist that changes the launcher to this checkout's venv and adds **only the config-file path**:
+The Mac execution host runs launchd job **`ai.omnigent.host`**, started as
+`python -m omnigent.host.service_entry --server https://omnigent.airbrx.ai --auto-upgrade`.
+(An earlier `ai.airbrx.omnigent.host` job running `caffeinate -i omnigent host`
+was replaced; its plist is kept under `~/.omnigent/plist-backups-*`.) Its
+`HOME`/`PATH` environment cannot inherit a caller's exports, so the binding file
+path has to be on the job itself:
 
 ```sh
 cd /Users/abramerickson/projects/airbrx/omnigent
@@ -54,18 +59,34 @@ cd /Users/abramerickson/projects/airbrx/omnigent
   --output /Users/abramerickson/.omnigent/iris-host.prepared.plist
 ```
 
-The script validates bindings, secret availability and four-tool registration, then writes the proposed plist without installing or restarting it. `OMNIGENT_IRIS_CONFIG` is explicitly allowlisted in `_build_runner_env`; no broad `PYTHONPATH`/PAT passthrough is needed. The actual runtime resolves the reference per invocation rather than relying on a launcher's environment.
+The script validates bindings, secret availability and four-tool registration,
+then writes the proposed plist without installing or restarting it. Against the
+installed job the result is a **two-key delta**, both non-secret:
+
+| Key | Value | Why |
+|---|---|---|
+| `OMNIGENT_IRIS_CONFIG` | path to the binding file | Explicitly allowlisted in `_build_runner_env`; no broad `PYTHONPATH`/PAT passthrough is needed, and the runtime resolves `pat_ref` per invocation rather than trusting a launcher's environment. |
+| `OMNIGENT_INSTALL_EXTRAS` | `iris` | The Iris tool subprocess runs on the host's **own** interpreter (`sys.executable`), so the extra's pinned `claude-agent-sdk`/`mcp`/`httpx`/`jsonschema` must survive an upgrade. A `--auto-upgrade` host re-installs by piping the server's `install.sh` with **no arguments**, so without this the extra is silently dropped on the next upgrade and Iris runs on whatever the base install happens to carry. |
+
+The launcher itself is deliberately **not** repointed. `--auto-upgrade` installs
+the coordinator's build and re-execs, which is how this host tracks a deploy;
+pinning it at a development checkout's venv disables that silently. Use
+`--launcher` only when taking a host off auto-upgrade on purpose.
 
 After approving the rollout and finishing active work on that host:
 
 ```sh
-cp /Users/abramerickson/Library/LaunchAgents/ai.airbrx.omnigent.host.plist /Users/abramerickson/.omnigent/iris-host.original.plist
-cp /Users/abramerickson/.omnigent/iris-host.prepared.plist /Users/abramerickson/Library/LaunchAgents/ai.airbrx.omnigent.host.plist
-launchctl bootout gui/$(id -u)/ai.airbrx.omnigent.host
-launchctl bootstrap gui/$(id -u) /Users/abramerickson/Library/LaunchAgents/ai.airbrx.omnigent.host.plist
+cp ~/Library/LaunchAgents/ai.omnigent.host.plist ~/.omnigent/iris-host.original.plist
+cp ~/.omnigent/iris-host.prepared.plist ~/Library/LaunchAgents/ai.omnigent.host.plist
+launchctl bootout gui/$(id -u)/ai.omnigent.host
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.omnigent.host.plist
 ```
 
-Restart interrupts sessions served by this host; the service then reconnects to the existing coordinator. Do not use broad `pkill` commands. To roll back the launcher, restore the saved original plist and repeat the two launchctl commands. The code/config rollout must be coordinated; a version endpoint alone does not prove success.
+Restart interrupts sessions served by this host; the service then reconnects to
+the existing coordinator. Do not use broad `pkill` commands. To roll back the
+launcher, restore the saved original plist and repeat the two launchctl
+commands. The code/config rollout must be coordinated; a version endpoint alone
+does not prove success.
 
 ## Verification
 
