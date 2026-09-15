@@ -198,6 +198,8 @@ repos:
       - id: check-merge-conflict
         name: check for merge conflicts
       - id: check-added-large-files
+        # Immutable Iris source + accepted portrait; hash/provenance checked on load.
+        exclude: ^omnigent/airbrx/iris/iris-source\.zip$
         name: prevent large files
         args: ['--maxkb=1000']
       - id: check-case-conflict

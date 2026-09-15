@@ -1406,6 +1406,7 @@ export function AppShell() {
     setSidebarPeek(false);
   }, []);
   const handleBrowseAgents = useCallback(() => setAgentDrawerOpen(true), []);
+  const handleCloseAgents = useCallback(() => setAgentDrawerOpen(false), []);
   const handleSidebarOpen = useCallback(() => {
     setSidebarOpen(true);
     setSidebarPeek(false);
@@ -2212,10 +2213,22 @@ export function AppShell() {
               the mounted screen, after the mount-time draft restore, so it
               also wins over a parked landing draft. */}
               <AgentDrawer
+                onOpenWorkspace={() => {
+                  setAgentDrawerOpen(false);
+                  navigate(
+                    activeSessionMatchesRoute && activeSession?.agentName === "iris"
+                      ? `/iris/${conversationId}`
+                      : "/iris",
+                  );
+                }}
                 open={agentDrawerOpen}
-                onClose={() => setAgentDrawerOpen(false)}
+                onClose={handleCloseAgents}
                 onSelectAgent={(agent) => {
                   setAgentDrawerOpen(false);
+                  if (agent.name === "iris") {
+                    navigate("/iris?mode=chat");
+                    return;
+                  }
                   writeLastAgentId(agent.id);
                   // Carry `project` forward specifically — not the whole query
                   // string. The drawer trigger sits in the same sidebar as the

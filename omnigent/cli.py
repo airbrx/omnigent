@@ -4289,6 +4289,16 @@ def server(
     from omnigent.stores.agent_avatar_store import AgentAvatarStore
 
     agent_avatar_store = AgentAvatarStore(db_uri, artifact_store)
+    from omnigent.airbrx.iris.config import bindings as iris_bindings
+    from omnigent.airbrx.iris.package import bundle_root as iris_bundle
+    from omnigent.airbrx.iris.package import source_root as iris_source
+
+    if iris_bindings():
+        _preregister_agent(iris_bundle(), agent_store, artifact_store, agent_cache)
+        if agent_avatar_store.get("iris") is None:
+            agent_avatar_store.put(
+                "iris", (iris_source() / "ui/assets/iris-portrait.png").read_bytes(), "image/png"
+            )
 
     # Managed sandbox hosts (host_type="managed" sessions): parse the
     # config's `sandbox:` section up front so an operator typo stops

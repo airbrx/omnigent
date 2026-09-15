@@ -1,3 +1,4 @@
+import { IrisWorkspace } from "@/shell/IrisWorkspace";
 import { lazy, Suspense, type ComponentType, type ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { ChatPage as ChatPageImpl } from "@/pages/ChatPage";
@@ -181,6 +182,8 @@ function App({ basename }: AppProps = {}) {
         <Route element={<AppShell />}>
           <Route path={prefix || "/"} element={<ChatPage />} />
           <Route path={`${prefix}/c/:conversationId`} element={<ChatPage />} />
+          <Route path={`${prefix}/iris`} element={<IrisWorkspace />} />
+          <Route path={`${prefix}/iris/:sessionId`} element={<IrisWorkspace />} />
           <Route path={`${prefix}/inbox`} element={<InboxPage />} />
           <Route
             path={`${prefix}/canvas`}

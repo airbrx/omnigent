@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-14T21:52:44.217566+00:00",
+  "status": "review-ready-rollout-pending",
+  "target": {
+    "url": "https://omnigent.airbrx.ai",
+    "observedRevision": "6359361d297f8338611f783d3e164e087797f688",
+    "observedVersion": "0.13.0",
+    "irisRegisteredAtObservation": false
+  },
+  "irisRevision": "fb0c4daa12254a6c7069d347ac4232f21c6d318e",
+  "mount": "/iris/{session_id}",
+  "assetMount": "/v1/iris/sessions/{session_id}/ui/",
+  "checks": {
+    "realSubprocessAndSessionArtifactRoutes": "passed",
+    "crossSessionUserWorkspaceIsolation": "passed",
+    "nativeDispatchPath": "passed-with-synthetic-telemetry",
+    "cancellationAndBudget": "passed",
+    "tenantAndCredentialIsolation": "passed",
+    "pythonIntegrationAndRunnerTests": 26,
+    "claudeSdkRegressionTests": 177,
+    "frontendTests": 16,
+    "frontendLint": "passed",
+    "frontendTypeCheck": "passed",
+    "frontendBuild": "passed",
+    "preCommitAllFiles": "passed",
+    "pinnedArchiveReproduction": "passed-byte-identical"
+  },
+  "preparedHostConfiguration": {
+    "bindingCount": 2,
+    "fixtureBinding": true,
+    "liveBindingFromExistingIrisConfiguration": true,
+    "secretMechanism": "Omnigent keychain reference; PAT resolved only for domain subprocess",
+    "modelPreference": "existing subscription preserved",
+    "launchdPlistPrepared": true,
+    "serviceRestarted": false
+  },
+  "gates": {
+    "productionCodeAndConfigurationRollout": "not_run-approval-required",
+    "actualHostedSdkFixtureTurn": "not_run",
+    "actualHostedLiveOverview": "not_run",
+    "actualHostedDownloads": "not_run",
+    "deployedLightDarkMobileKeyboardScreenshots": "not_run",
+    "monitoring": "unavailable"
+  },
+  "runbook": "RUNBOOK.md",
+  "reviewBranch": "codex/iris-omnigent-integration"
+}
