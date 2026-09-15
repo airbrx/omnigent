@@ -52,26 +52,6 @@ _SECRET = re.compile(
     re.IGNORECASE,
 )
 
-# Identifiers that LOOK like a secret name but are the opposite: the API a caller
-# uses to fetch a credential from the OS keychain by *reference*, never a literal.
-# `_SECRET` is case-insensitive, so `resolve_secret(ref)` satisfies its
-# `[A-Z0-9]+_SECRET` branch and any file that also mentions `httpx` — a type
-# annotation is enough — trips the co-occurrence rule. Same narrowing rationale as
-# the bare ACCESS_TOKEN and `os.environ)` carve-outs above: these are call sites,
-# not credential sources, and leaving them in costs real reviews to noise.
-# Only these exact accessor identifiers are neutralised, so a bare `client_secret`
-# or `CLIENT_SECRET` anywhere in the same file still fires. Stating the cost
-# plainly: `httpx.post(url, json=resolve_secret(ref))` added in one file no longer
-# blocks. That shape was only ever caught incidentally — the rule targets
-# secret-NAMED sources, and an exfiltrator writing `get_token()` or `creds()` was
-# never caught by it — and the docstring is explicit that maintainer review, not
-# this script, is the primary gate. Dataflow from an accessor to a sink is beyond
-# what a regex over added lines can see either way.
-_SECRET_FALSE_POSITIVES = re.compile(
-    r"\b(resolve|store|get|read|load|fetch|require)_secret\b|\bsecret_ref\b",
-    re.IGNORECASE,
-)
-
 # Always-blocking single-line shapes (independent of co-occurrence).
 _STANDALONE = re.compile(
     r"/dev/tcp/"  # bash reverse shell
@@ -133,7 +113,7 @@ def scan_diff(diff: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     for path, added in by_file.items():
         body = "\n".join(added)
         has_net = bool(_NETWORK.search(body))
-        has_secret = bool(_SECRET.search(_SECRET_FALSE_POSITIVES.sub("", body)))
+        has_secret = bool(_SECRET.search(body))
         if has_net and has_secret:
             blocking.append((path, "exfil shape: secret-named source + network sink in one file"))
         for ln in added:
