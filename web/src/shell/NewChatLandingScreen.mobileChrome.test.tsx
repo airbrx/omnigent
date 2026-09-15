@@ -24,7 +24,11 @@ vi.mock("@/lib/routing", () => ({
 }));
 
 vi.mock("@/store/chatStore", () => ({ setPendingInitialPrompt: vi.fn() }));
-vi.mock("@/lib/identity", () => ({ authenticatedFetch: vi.fn() }));
+vi.mock("@/lib/identity", () => ({
+  authenticatedFetch: vi.fn(),
+  getCurrentUserId: vi.fn(() => null),
+  resolveIdentity: vi.fn(async () => null),
+}));
 vi.mock("@/hooks/useHosts", () => ({
   // airbrx: NewChatLandingScreen renders the wake affordance for offline
   // `wakeable` hosts, so this mock must export useWakeHost or the component

@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import cast
 
-from sqlalchemy import Engine, and_, or_, select, update
+from sqlalchemy import Engine, or_, select, tuple_, update
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
@@ -34,6 +34,7 @@ from omnigent.db.utils import (
     get_or_create_engine,
     make_named_managed_session_maker,
     now_epoch,
+    run_write_transaction,
 )
 from omnigent.harness_availability import HarnessAvailability, is_harness_availability
 
@@ -166,6 +167,10 @@ def workroot_jail(host: Host, user_id: str | None) -> str | None:
     return None
 
 
+ManagedSandboxScanCursor = tuple[str, int, str]
+ManagedSandboxScanRow = tuple[int, Host]
+
+
 def host_is_live(host: Host, now: int | None = None) -> bool:
     """
     Return whether a :class:`Host` is online and recently seen.
@@ -278,6 +283,13 @@ class HostStore:
             self._engine,
             query_name_prefix="omnigent.host_store",
         )
+        self._session_immediate = make_named_managed_session_maker(
+            self._engine,
+            query_name_prefix="omnigent.host_store",
+            immediate=True,
+        )
+        # Same immediate maker kept under its own name: lifecycle transitions
+        # (sandbox replacement / deletion) serialize on row locks through it.
         self._lifecycle_session = make_named_managed_session_maker(
             self._engine,
             query_name_prefix="omnigent.host_store",
@@ -359,7 +371,8 @@ class HostStore:
         harnesses_json = (
             json.dumps(configured_harnesses) if configured_harnesses is not None else None
         )
-        with self._session("upsert_host_on_connect") as session:
+
+        def write(session: Session) -> Host:
             if managed_token is not None:
                 result = cast(
                     CursorResult[tuple[object]],
@@ -440,6 +453,7 @@ class HostStore:
                     host_id=host_id,
                     name=name,
                     user_id=user_id,
+                    now=now,
                     configured_harnesses_json=harnesses_json,
                 )
                 if reowned is not None:
@@ -491,6 +505,8 @@ class HostStore:
             )
             session.add(row)
             return _row_to_host(row)
+
+        return run_write_transaction(self._session_immediate, "upsert_host_on_connect", write)
 
     @staticmethod
     def _rotate_host_id(
@@ -604,6 +620,7 @@ class HostStore:
         host_id: str,
         name: str,
         user_id: str,
+        now: int,
         configured_harnesses_json: str | None = None,
     ) -> Host | None:
         """Re-own an existing host_id row under a new ``(user_id, name)``.
@@ -642,7 +659,6 @@ class HostStore:
         if existing is None:
             return None
         created_at = existing.created_at
-        now = now_epoch()
         session.execute(
             update(SqlHost)
             .where(
@@ -680,7 +696,9 @@ class HostStore:
         :param host_id: Host identifier, e.g.
             ``"host_a1b2c3d4..."``.
         """
-        with self._session("set_host_offline") as session:
+        updated_at = now_epoch()
+
+        def write(session: Session) -> None:
             row = session.execute(
                 select(SqlHost).where(
                     SqlHost.workspace_id == current_workspace_id(),
@@ -690,7 +708,9 @@ class HostStore:
             ).scalar_one_or_none()
             if row is not None:
                 row.status = encode_host_status("offline")
-                row.updated_at = now_epoch()
+                row.updated_at = updated_at
+
+        run_write_transaction(self._session_immediate, "set_host_offline", write)
 
     def update_harness_readiness(
         self,
@@ -702,7 +722,10 @@ class HostStore:
         :param host_id: Host identifier, e.g. ``"host_a1b2c3d4..."``.
         :param configured_harnesses: Current readiness keyed by harness spelling.
         """
-        with self._session("update_harness_readiness") as session:
+        harnesses_json = json.dumps(configured_harnesses)
+        updated_at = now_epoch()
+
+        def write(session: Session) -> None:
             session.execute(
                 update(SqlHost)
                 .where(
@@ -711,10 +734,12 @@ class HostStore:
                     SqlHost.deleted_at.is_(None),
                 )
                 .values(
-                    configured_harnesses=json.dumps(configured_harnesses),
-                    updated_at=now_epoch(),
+                    configured_harnesses=harnesses_json,
+                    updated_at=updated_at,
                 )
             )
+
+        run_write_transaction(self._session_immediate, "update_harness_readiness", write)
 
     def heartbeat(self, host_id: str) -> None:
         """
@@ -734,7 +759,9 @@ class HostStore:
         # Single UPDATE rather than SELECT-then-mutate: this runs every
         # ping interval for every connected host, so the extra read is
         # pure overhead. A missing host simply matches no rows (a no-op).
-        with self._session("update_host_heartbeat") as session:
+        updated_at = now_epoch()
+
+        def write(session: Session) -> None:
             session.execute(
                 update(SqlHost)
                 .where(
@@ -742,8 +769,10 @@ class HostStore:
                     SqlHost.host_id == host_id,
                     SqlHost.deleted_at.is_(None),
                 )
-                .values(updated_at=now_epoch())
+                .values(updated_at=updated_at)
             )
+
+        run_write_transaction(self._session_immediate, "update_host_heartbeat", write)
 
     def is_online(self, host_id: str) -> bool:
         """
@@ -900,32 +929,83 @@ class HostStore:
                 ).scalars()
             )
 
-    def list_stale_managed_sandbox_hosts(self, older_than_epoch: int) -> list[Host]:
-        """List stale active and pending managed sandboxes in this workspace.
+    def list_current_managed_sandbox_hosts_page(
+        self,
+        *,
+        after: ManagedSandboxScanCursor | None,
+        limit: int,
+    ) -> list[ManagedSandboxScanRow]:
+        """Page through hosts whose current sandbox-id slot is populated.
 
-        :param older_than_epoch: Latest included host heartbeat timestamp.
-        :returns: Stale generations ordered from oldest to newest.
+        This privileged reaper scan intentionally spans workspaces. Ordering by
+        the indexed ``(sandbox_id, workspace_id, host_id)`` tuple makes every
+        query bounded while allowing a complete deterministic traversal.
+
+        :param after: Exclusive keyset cursor from the prior page.
+        :param limit: Maximum rows returned by this query.
+        :returns: ``(workspace_id, host)`` rows in cursor order.
         """
-        with self._session("list_stale_managed_sandbox_hosts") as session:
-            rows = (
-                session.query(SqlHost)
-                .filter(
-                    SqlHost.workspace_id == current_workspace_id(),
-                    SqlHost.sandbox_provider.is_not(None),
-                    or_(
-                        SqlHost.deleted_at.is_not(None),
-                        SqlHost.terminating_sandbox_id.is_not(None),
-                        and_(
-                            SqlHost.terminating_sandbox_id.is_(None),
-                            SqlHost.sandbox_id.is_not(None),
-                            SqlHost.updated_at <= older_than_epoch,
-                        ),
-                    ),
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        with self._session("list_current_managed_sandbox_hosts_page") as session:
+            stmt = (
+                select(SqlHost)
+                .where(SqlHost.sandbox_id.is_not(None))
+                .order_by(
+                    SqlHost.sandbox_id.asc(),
+                    SqlHost.workspace_id.asc(),
+                    SqlHost.host_id.asc(),
                 )
-                .order_by(SqlHost.updated_at.asc(), SqlHost.host_id.asc())
-                .all()
+                .limit(limit)
             )
-            return [_row_to_host(row) for row in rows]
+            if after is not None:
+                stmt = stmt.where(
+                    tuple_(SqlHost.sandbox_id, SqlHost.workspace_id, SqlHost.host_id) > after
+                )
+            rows = session.execute(stmt).scalars().all()
+            return [(row.workspace_id, _row_to_host(row)) for row in rows]
+
+    def list_terminating_managed_sandbox_hosts_page(
+        self,
+        *,
+        after: ManagedSandboxScanCursor | None,
+        limit: int,
+    ) -> list[ManagedSandboxScanRow]:
+        """Page through hosts whose terminating sandbox-id slot is populated.
+
+        This privileged reaper scan intentionally spans workspaces. Ordering by
+        the indexed ``(terminating_sandbox_id, workspace_id, host_id)`` tuple
+        makes every query bounded while allowing a complete deterministic
+        traversal.
+
+        :param after: Exclusive keyset cursor from the prior page.
+        :param limit: Maximum rows returned by this query.
+        :returns: ``(workspace_id, host)`` rows in cursor order.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        with self._session("list_terminating_managed_sandbox_hosts_page") as session:
+            stmt = (
+                select(SqlHost)
+                .where(SqlHost.terminating_sandbox_id.is_not(None))
+                .order_by(
+                    SqlHost.terminating_sandbox_id.asc(),
+                    SqlHost.workspace_id.asc(),
+                    SqlHost.host_id.asc(),
+                )
+                .limit(limit)
+            )
+            if after is not None:
+                stmt = stmt.where(
+                    tuple_(
+                        SqlHost.terminating_sandbox_id,
+                        SqlHost.workspace_id,
+                        SqlHost.host_id,
+                    )
+                    > after
+                )
+            rows = session.execute(stmt).scalars().all()
+            return [(row.workspace_id, _row_to_host(row)) for row in rows]
 
     def get_host(self, host_id: str) -> Host | None:
         """
@@ -986,7 +1066,8 @@ class HostStore:
         """
         now = now_epoch()
         token_hash = hash_host_launch_token(token)
-        with self._session("register_managed_host") as session:
+
+        def write(session: Session) -> Host:
             row = SqlHost(
                 user_id=user_id,
                 name=name,
@@ -1001,6 +1082,8 @@ class HostStore:
             )
             session.add(row)
             return _row_to_host(row)
+
+        return run_write_transaction(self._session_immediate, "register_managed_host", write)
 
     def replace_managed_host_sandbox(
         self,
@@ -1154,7 +1237,8 @@ class HostStore:
         :param host_id: Host identifier, e.g. ``"host_a1b2c3d4..."``.
         :returns: The latest host snapshot, or ``None`` when already absent.
         """
-        with self._lifecycle_session("delete_host") as session:
+
+        def write(session: Session) -> Host | None:
             row = session.execute(
                 select(SqlHost)
                 .where(
@@ -1189,6 +1273,8 @@ class HostStore:
             row.status = encode_host_status("offline")
             row.deleted_at = row.deleted_at or now_epoch()
             return _row_to_host(row)
+
+        return run_write_transaction(self._lifecycle_session, "delete_host", write)
 
     def detach_stale_managed_sandbox(
         self,
@@ -1291,7 +1377,9 @@ class HostStore:
 
         :param host_id: Host identifier, e.g. ``"host_a1b2c3d4..."``.
         """
-        with self._session("revoke_launch_token") as session:
+        updated_at = now_epoch()
+
+        def write(session: Session) -> None:
             row = session.execute(
                 select(SqlHost).where(
                     SqlHost.workspace_id == current_workspace_id(),
@@ -1303,4 +1391,6 @@ class HostStore:
                 return
             row.token_hash = None
             row.token_expires_at = None
-            row.updated_at = now_epoch()
+            row.updated_at = updated_at
+
+        run_write_transaction(self._session_immediate, "revoke_launch_token", write)
