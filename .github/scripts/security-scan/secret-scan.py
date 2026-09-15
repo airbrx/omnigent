@@ -64,11 +64,43 @@ def shannon_entropy(s: str) -> float:
     return -sum((c / n) * math.log2(c / n) for c in counts.values())
 
 
+# airbrx: two shapes the generic heuristic cannot tell from a credential, and
+# which a credential can never actually be. Both were found by a fork sync,
+# where the PR diff is the whole upstream delta and so presents every upstream
+# fixture as an added line -- but they misfire on ordinary PRs too.
+#
+#  - A dotted identifier path. ``ASSIGN_RE``'s value class has no parentheses,
+#    so ``token = fwd._conversation_item_locks.set({})`` captures the *code*
+#    ``fwd._conversation_item_locks.set``: long, high-entropy, and not a
+#    literal at all. (That one is a contextvars token, not a secret.)
+#  - A short pattern repeated to length, e.g.
+#    ``"1234567890abcdef1234567890abcdef"`` -- 16 distinct characters over 32
+#    lands on exactly 4.0 and trips the ``>=`` threshold. Doubling a string
+#    cannot add entropy, so anything built this way is a fixture.
+#
+# Neither narrows real coverage: a credential is not a dotted identifier, and
+# is not its own first half written twice.
+DOTTED_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$")
+
+
+def is_repeated_pattern(value: str) -> bool:
+    """Is *value* just a shorter string written end to end N times?"""
+    n = len(value)
+    for size in range(1, n // 2 + 1):
+        if n % size == 0 and value[:size] * (n // size) == value:
+            return True
+    return False
+
+
 def scan_value(value: str) -> bool:
     """Generic heuristic: long, high-entropy, not an obvious placeholder."""
     if PLACEHOLDER_RE.search(value):
         return False
     if len(value) < 20:
+        return False
+    if DOTTED_IDENTIFIER_RE.match(value):
+        return False
+    if is_repeated_pattern(value):
         return False
     return shannon_entropy(value) >= 4.0
 
