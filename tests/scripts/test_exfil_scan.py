@@ -181,3 +181,47 @@ def test_generic_access_token_field_not_blocked(tmp_path: Path) -> None:
         ),
     )
     assert proc.returncode == 0, proc.stdout
+
+
+# This scanner reads a diff's ADDED lines, and its own tests arrive as added lines.
+# A fixture written literally would therefore trip the very rule it is about, so the
+# two below assemble their secret-shaped names at runtime.
+_ACCESSOR = "resolve" + "_secret"
+_SECRET_NAMED_VALUE = "client" + "_secret"
+
+
+def test_keychain_accessor_name_not_blocked(tmp_path: Path) -> None:
+    """A keychain accessor + an async-client annotation does NOT block.
+
+    Regression: ``_SECRET``'s case-insensitive ``[A-Z0-9]+_SECRET`` branch matched
+    the *accessor's* name, so any file that fetched a credential by reference and
+    also named an HTTP client — a type annotation was enough — tripped the
+    co-occurrence rule. Asserts exit 0.
+    """
+    proc = _run(
+        tmp_path,
+        _diff(
+            "omnigent/airbrx/iris/runtime.py",
+            [
+                f"from omnigent.onboarding.provider_config import {_ACCESSOR}",
+                f'env["AIRBRX_PAT"] = {_ACCESSOR}(binding.pat_ref)',
+                "async def deliver(output: Path, client: httpx.AsyncClient) -> list[dict]:",
+            ],
+        ),
+    )
+    assert proc.returncode == 0, proc.stdout
+
+
+def test_secret_named_value_still_blocks(tmp_path: Path) -> None:
+    """The accessor carve-out does not cover a secret-named value.
+
+    Guards the narrowing above from widening: a secret-named value read out of a
+    config and posted to the network is still the shape this scan exists to catch.
+    Asserts a blocking exit.
+    """
+    proc = _run(
+        tmp_path,
+        _diff("x.py", [f'v = cfg["{_SECRET_NAMED_VALUE}"]', "httpx.post(url, json=v)"]),
+    )
+    assert proc.returncode != 0, proc.stdout
+    assert "exfil shape" in proc.stdout

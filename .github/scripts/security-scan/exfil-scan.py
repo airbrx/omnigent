@@ -52,6 +52,28 @@ _SECRET = re.compile(
     re.IGNORECASE,
 )
 
+# Identifiers that LOOK like a secret name but are its opposite: the API a caller
+# uses to fetch a credential from the OS keychain by *reference*, never a literal.
+# `_SECRET` is case-insensitive, so an accessor named `<verb>_secret` satisfies its
+# `[A-Z0-9]+_SECRET` branch, and any file that also names an async HTTP client —
+# a type annotation is enough — then trips the co-occurrence rule. Same narrowing
+# rationale as the bare-ACCESS_TOKEN and `helper(os.environ)` carve-outs above:
+# these are call sites, not credential sources, and leaving them in spends real
+# reviews on noise.
+#
+# Only these exact accessor identifiers are neutralised, so a secret-named *value*
+# elsewhere in the same file still fires. The cost, stated rather than buried:
+# posting an accessor's return value to a URL, added in a single file, no longer
+# blocks. That was only ever an incidental catch — the rule targets secret-NAMED
+# sources, and an exfiltrator writing `get_token()` was never caught by it — and
+# dataflow from an accessor to a sink is past what a regex over added lines can
+# see either way. The docstring is explicit that maintainer review, not this
+# script, is the primary gate.
+_SECRET_FALSE_POSITIVES = re.compile(
+    r"\b(resolve|store|get|read|load|fetch|require)_secret\b|\bsecret_ref\b",
+    re.IGNORECASE,
+)
+
 # Always-blocking single-line shapes (independent of co-occurrence).
 _STANDALONE = re.compile(
     r"/dev/tcp/"  # bash reverse shell
@@ -113,7 +135,7 @@ def scan_diff(diff: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     for path, added in by_file.items():
         body = "\n".join(added)
         has_net = bool(_NETWORK.search(body))
-        has_secret = bool(_SECRET.search(body))
+        has_secret = bool(_SECRET.search(_SECRET_FALSE_POSITIVES.sub("", body)))
         if has_net and has_secret:
             blocking.append((path, "exfil shape: secret-named source + network sink in one file"))
         for ln in added:
