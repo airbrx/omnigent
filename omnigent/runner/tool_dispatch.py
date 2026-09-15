@@ -6006,6 +6006,11 @@ async def execute_tool(
         not tracked — shell side-effects cannot be attributed to a session.
     :returns: Tool output string.
     """
+    from omnigent.airbrx.iris.package import is_iris
+    from omnigent.airbrx.iris.runtime import TOOLS as IRIS_TOOLS
+
+    if is_iris(agent_spec) and tool_name not in IRIS_TOOLS:
+        return json.dumps({"error": "Iris permits only its four read-only domain tools"})
     if not arguments.strip():
         return json.dumps({"error": "malformed JSON arguments"})
     args, error = parse_json_object_arguments(arguments)
@@ -6221,20 +6226,31 @@ async def execute_tool(
                 conversation_id=conversation_id,
             )
         elif _is_spec_local_python_tool(tool_name, agent_spec):
-            output = await _execute_local_python_tool(
-                tool_name,
-                arguments,
-                agent_spec=agent_spec,
-                conversation_id=conversation_id,
-                task_id=task_id,
-                agent_id=agent_id,
-                runner_workspace=runner_workspace,
-                local_tool_workdir=(
-                    runner_workspace
-                    if local_tool_workdir is _UNSET_LOCAL_TOOL_WORKDIR
-                    else cast(Path | None, local_tool_workdir)
-                ),
-            )
+            from omnigent.airbrx.iris.runtime import invoke as invoke_iris
+
+            if is_iris(agent_spec):
+                output = await invoke_iris(
+                    tool_name,
+                    arguments,
+                    spec=agent_spec,
+                    session_id=conversation_id,
+                    client=server_client,
+                )
+            else:
+                output = await _execute_local_python_tool(
+                    tool_name,
+                    arguments,
+                    agent_spec=agent_spec,
+                    conversation_id=conversation_id,
+                    task_id=task_id,
+                    agent_id=agent_id,
+                    runner_workspace=runner_workspace,
+                    local_tool_workdir=(
+                        runner_workspace
+                        if local_tool_workdir is _UNSET_LOCAL_TOOL_WORKDIR
+                        else cast(Path | None, local_tool_workdir)
+                    ),
+                )
         elif _is_uc_function_tool(tool_name, agent_spec):
             output = await _execute_uc_function_tool(tool_name, args, agent_spec=agent_spec)
         else:

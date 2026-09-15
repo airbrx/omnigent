@@ -134,6 +134,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+iris = ["mcp==1.28.1", "httpx==0.28.1", "jsonschema==4.26.0", "claude-agent-sdk==0.2.118"]
 # Retained as no-op aliases so existing `--extra` invocations keep
 # working; the underlying packages are now default deps above.
 claude-sdk = []
@@ -451,6 +452,7 @@ where = ["."]
 include = ["omnigent*"]
 
 [tool.setuptools.package-data]
+"omnigent.airbrx.iris" = ["*.zip", "*.json", "*.js"]
 "omnigent.db" = ["alembic.ini"]
 "omnigent.db.migrations" = ["script.py.mako"]
 "omnigent.resources.examples" = ["*.yaml", "*.sh", "debby/**/*", "polly/**/*"]

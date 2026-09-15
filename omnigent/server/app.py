@@ -2660,6 +2660,13 @@ def create_app(
         prefix="/v1",
         tags=["usage"],
     )
+    from omnigent.airbrx.iris.routes import create_iris_router
+
+    app.include_router(
+        create_iris_router(auth_provider=auth_provider, agent_store=agent_store),
+        prefix="/v1",
+        tags=["iris"],
+    )
     # Read-only built-in agent discovery (designs/BUILTIN_AGENTS.md).
     # Successor to the removed GET /api/agents list; lists only
     # built-in (session_id IS NULL) agents for the new-session picker.
