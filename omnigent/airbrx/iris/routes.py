@@ -53,9 +53,44 @@ async def checked(response):
     return response.json()
 
 
+#: Iris tools are registered bare (see :data:`omnigent.airbrx.iris.runtime.TOOLS`)
+#: and dispatched bare, but the model reaches them through the SDK's MCP
+#: namespace, so a recorded session item spells the call
+#: ``mcp__omnigent__iris_overview``. Comparing the recorded spelling against the
+#: registration spelling rejected every correct turn with a 409.
+#:
+#: Only this server's own prefix is removed. A tool served by any other MCP
+#: server -- ``mcp__airbrx__*``, ``mcp__claude_ai_Slack__*`` -- is outside the
+#: Iris boundary and must still be refused, so the guard keeps its meaning.
+_OMNIGENT_TOOL_PREFIX = "mcp__omnigent__"
+
+
+def bare_tool_name(name):
+    """Return the registration name for a recorded tool call."""
+    if not isinstance(name, str):
+        return name
+    return name.removeprefix(_OMNIGENT_TOOL_PREFIX)
+
+
+#: Harness tools a recorded Iris turn may contain without breaching the
+#: boundary. ``ToolSearch`` only loads tool *schemas*; it executes nothing
+#: against a tenant, and any tool it surfaces still has to be called as its own
+#: ``function_call``, which the check below sees and refuses. Iris dispatch
+#: itself is gated separately by :func:`omnigent.airbrx.iris.runtime.invoke`
+#: against :data:`~omnigent.airbrx.iris.runtime.TOOLS`, which is why this set is
+#: kept out of ``TOOLS``: widening the record-side guard must not widen what can
+#: actually be dispatched.
+_HARNESS_TOOLS = frozenset({"ToolSearch"})
+
+#: Everything a recorded turn is allowed to contain.
+_ALLOWED_IN_A_TURN = TOOLS | _HARNESS_TOOLS
+
+
 def completed_answer(items: list[dict]) -> dict | None:
-    tools = [i.get("name") for i in items if i.get("type") == "function_call"]
-    if set(tools) - TOOLS:
+    tools = [
+        bare_tool_name(i.get("name")) for i in items if i.get("type") == "function_call"
+    ]
+    if set(tools) - _ALLOWED_IN_A_TURN:
         raise HTTPException(409, "Unexpected Iris tool boundary; turn rejected")
     answers = [
         i
@@ -73,7 +108,11 @@ def completed_answer(items: list[dict]) -> dict | None:
 
 
 def report_references(items):
-    calls = {i.get("call_id"): i.get("name") for i in items if i.get("type") == "function_call"}
+    calls = {
+        i.get("call_id"): bare_tool_name(i.get("name"))
+        for i in items
+        if i.get("type") == "function_call"
+    }
     references = []
     for item in items:
         if (
