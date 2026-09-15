@@ -3,12 +3,11 @@ import type * as UseConversationsModule from "@/hooks/useConversations";
 import type * as AgentLabelsModule from "@/lib/agentLabels";
 import type * as ChatStoreModule from "@/store/chatStore";
 import type * as NativeBridgeModule from "@/lib/nativeBridge";
-import type { ReactNode } from "react";
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Profiler, type ProfilerOnRenderCallback } from "react";
+import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
