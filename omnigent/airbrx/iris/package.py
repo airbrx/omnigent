@@ -57,7 +57,17 @@ def bundle_root() -> Path:
 
 
 def is_iris(spec) -> bool:
-    return bool(spec and (spec.name == "iris" or (spec.name or "").startswith("iris (fork ")))
+    """Is this spec Iris (or a fork of her)?
+
+    Read ``name`` defensively. This gates *every* tool dispatch
+    (``runner/tool_dispatch.execute_tool``), so it is handed whatever spec
+    object the caller has — including duck-typed stand-ins that carry only the
+    fields their own code path needs. Reaching straight for ``spec.name`` made
+    an absent attribute an ``AttributeError`` that took down the dispatch for
+    every agent, Iris or not.
+    """
+    name = getattr(spec, "name", None) or ""
+    return bool(spec and (name == "iris" or name.startswith("iris (fork ")))
 
 
 def validate_spec(spec) -> None:

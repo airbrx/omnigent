@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from omnigent.harnesses.claude_native import bridge as claude_bridge
 from omnigent.harnesses.claude_native.bridge import (
     REQUEST_SESSION_ID_ENV_VAR,
     ClaudePromptTimeout,
@@ -207,56 +209,106 @@ async def test_run_turn_rejects_stale_session_after_clear(
 
 
 @pytest.mark.asyncio
-async def test_run_turn_injects_when_active_id_prefix_differs(
+@pytest.mark.parametrize("command", ["/login", "/logout"])
+async def test_run_turn_points_auth_commands_at_omni_setup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    command: str,
 ) -> None:
     """
-    A ``conv_``-prefix mismatch is the SAME session — the send must land.
+    ``/login`` must not be typed into the pane as a prompt.
 
-    The harness spawns with a bare ``REQUEST_SESSION_ID`` while some write
-    paths (the /clear rotation, a prefixed launch id) persist a
-    ``conv_``-prefixed ``active_session_id``. A strict compare then rejects
-    every send for the live session with the bogus "no longer active after
-    /clear" error (the Signal/Gateway breakage). The guard normalises the
-    prefix, so the injection proceeds.
+    Claude Code's sign-in is an interactive TUI handoff the bridge
+    cannot drive, so the bridge escapes ``/login`` into plain text and
+    the CLI answers it as an ordinary message. On an expired login that
+    answer is "Login expired · Please run /login" — the instruction the
+    user just followed, so the turn is wasted and the session is stuck.
+    Fail the turn with the host command that does re-authenticate.
     """
-    (tmp_path / "bridge.json").write_text(
-        '{"active_session_id": "conv_abc123"}',
-        encoding="utf-8",
-    )
-    monkeypatch.setenv(REQUEST_SESSION_ID_ENV_VAR, "abc123")
 
-    injected: list[str] = []
-
-    def record_inject_user_message(
+    def fail_inject_user_message(
         bridge_dir_arg: Path,
         *,
         content: str,
         timeout_s: float = 30.0,
     ) -> None:
-        """Record the injected text instead of driving tmux."""
-        del bridge_dir_arg, timeout_s
-        injected.append(content)
+        """
+        Fail if an auth command reaches tmux injection.
+
+        :param bridge_dir_arg: Bridge directory passed by the executor.
+        :param content: Text that would be typed into tmux.
+        :param timeout_s: tmux-target readiness timeout.
+        :returns: Never returns.
+        """
+        del bridge_dir_arg, content, timeout_s
+        raise AssertionError("auth slash command injected into tmux")
 
     monkeypatch.setattr(
         claude_native_executor,
         "inject_user_message",
-        record_inject_user_message,
+        fail_inject_user_message,
     )
 
     executor = ClaudeNativeExecutor(tmp_path)
     events = [
         event
         async for event in executor.run_turn(
-            messages=[{"role": "user", "content": "hello live session"}],
+            messages=[{"role": "user", "content": command}],
             tools=[],
             system_prompt="ignored",
         )
     ]
 
-    assert events == [TurnComplete(response=None)]
-    assert injected == ["hello live session"]
+    assert len(events) == 1
+    assert isinstance(events[0], ExecutorError)
+    assert "omni setup" in events[0].message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/login", "/logout"])
+async def test_enqueue_session_message_refuses_auth_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+) -> None:
+    """
+    A live-steered ``/login`` must not be typed into the pane either.
+
+    ``enqueue_session_message`` is the second injection path: a message
+    sent while a turn is active. Refusing it (``False``) leaves the
+    runner's buffered copy undelivered, so the message arrives as the
+    next turn and ``run_turn``'s short-circuit answers it with the
+    ``omni setup`` guidance. The monkeypatched injector raises, so this
+    test fails if anything reaches tmux.
+    """
+
+    def fail_inject_user_message(
+        bridge_dir_arg: Path,
+        *,
+        content: str,
+        timeout_s: float = 30.0,
+    ) -> None:
+        """
+        Fail if an auth command reaches tmux injection.
+
+        :param bridge_dir_arg: Bridge directory passed by the executor.
+        :param content: Text that would be typed into tmux.
+        :param timeout_s: tmux-target readiness timeout.
+        :returns: Never returns.
+        """
+        del bridge_dir_arg, content, timeout_s
+        raise AssertionError("auth slash command injected into tmux")
+
+    monkeypatch.setattr(
+        claude_native_executor,
+        "inject_user_message",
+        fail_inject_user_message,
+    )
+
+    executor = ClaudeNativeExecutor(tmp_path)
+    accepted = await executor.enqueue_session_message("session-key", command)
+
+    assert accepted is False
 
 
 @pytest.mark.asyncio
@@ -1319,6 +1371,97 @@ async def test_run_turn_reaps_tmux_before_reporting_prompt_timeout(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("delivery", ["message", "steering", "model"])
+@pytest.mark.parametrize("watchdog", [False, True])
+async def test_cancelled_delivery_drains_worker_before_unlocking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    delivery: str,
+    watchdog: bool,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    commands: list[tuple[str, ...]] = []
+    reaped: list[Path] = []
+
+    def capture(socket_path: str, tmux_target: str) -> str:
+        started.set()
+        assert release.wait(5), "test did not release the in-flight capture"
+        return "────────────────\n❯ \n────────────────\n"
+
+    def inject(*args: Any, **kwargs: Any) -> None:
+        try:
+            claude_bridge._wait_for_claude_prompt_ready("/tmp/sock", "main", timeout_s=30)
+            claude_bridge._run_tmux("/tmp/sock", "send-keys", "late message", "Enter")
+        finally:
+            finished.set()
+
+    def reap(bridge_dir: Path, *, timeout_s: float) -> None:
+        assert finished.is_set()
+        claude_bridge._check_injection_cancelled()
+        reaped.append(bridge_dir)
+
+    def run(cmd: list[str], **kwargs: Any) -> Any:
+        commands.append(tuple(cmd))
+        raise AssertionError("cancelled delivery sent keystrokes")
+
+    monkeypatch.setattr(claude_bridge, "_capture_pane", capture)
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr(claude_native_executor, "inject_user_message", inject)
+    monkeypatch.setattr(claude_native_executor, "inject_slash_command", inject)
+    monkeypatch.setattr(claude_native_executor, "kill_session", reap)
+    executor = ClaudeNativeExecutor(tmp_path / "bridge")
+    monkeypatch.setattr(
+        executor, "_model_command_arg", lambda model: "sonnet" if delivery == "model" else None
+    )
+
+    async def deliver() -> None:
+        async with asyncio.timeout(0.1 if watchdog else 5):
+            if delivery == "steering":
+                await executor.enqueue_session_message("session", "hello")
+            else:
+                async for _event in executor.run_turn(
+                    messages=[{"role": "user", "content": "hello"}],
+                    tools=[],
+                    system_prompt="",
+                ):
+                    raise AssertionError("cancelled turn emitted a completion")
+
+    task = asyncio.create_task(deliver())
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        if not watchdog:
+            task.cancel()
+        async with asyncio.timeout(2):
+            while not task.cancelling():
+                await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert executor._inject_lock.locked()
+        if not watchdog:
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+        release.set()
+        await asyncio.wait({task}, timeout=2)
+        assert task.done(), "cancelled delivery did not finish after its capture was released"
+        with pytest.raises(TimeoutError if watchdog else asyncio.CancelledError):
+            task.result()
+        assert finished.is_set()
+        assert not executor._inject_lock.locked()
+        assert reaped == [tmp_path / "bridge"]
+        assert commands == []
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.wait({task})
+        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            task.result()
+
+
+@pytest.mark.asyncio
 async def test_run_turn_does_not_reap_unrelated_runtime_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1414,3 +1557,56 @@ async def test_run_turn_ignores_missing_tmux_during_timeout_reap(
 
     assert isinstance(events[0], ExecutorError)
     assert events[0].message == "terminal did not become ready"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_injects_when_active_id_prefix_differs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    A ``conv_``-prefix mismatch is the SAME session — the send must land.
+
+    The harness spawns with a bare ``REQUEST_SESSION_ID`` while some write
+    paths (the /clear rotation, a prefixed launch id) persist a
+    ``conv_``-prefixed ``active_session_id``. A strict compare then rejects
+    every send for the live session with the bogus "no longer active after
+    /clear" error (the Signal/Gateway breakage). The guard normalises the
+    prefix, so the injection proceeds.
+    """
+    (tmp_path / "bridge.json").write_text(
+        '{"active_session_id": "conv_abc123"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(REQUEST_SESSION_ID_ENV_VAR, "abc123")
+
+    injected: list[str] = []
+
+    def record_inject_user_message(
+        bridge_dir_arg: Path,
+        *,
+        content: str,
+        timeout_s: float = 30.0,
+    ) -> None:
+        """Record the injected text instead of driving tmux."""
+        del bridge_dir_arg, timeout_s
+        injected.append(content)
+
+    monkeypatch.setattr(
+        claude_native_executor,
+        "inject_user_message",
+        record_inject_user_message,
+    )
+
+    executor = ClaudeNativeExecutor(tmp_path)
+    events = [
+        event
+        async for event in executor.run_turn(
+            messages=[{"role": "user", "content": "hello live session"}],
+            tools=[],
+            system_prompt="ignored",
+        )
+    ]
+
+    assert events == [TurnComplete(response=None)]
+    assert injected == ["hello live session"]

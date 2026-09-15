@@ -53,6 +53,7 @@ from . import _proc
 from ._subprocess_lifecycle import close_subprocess_transport
 from .async_utils import run_sync_on_thread
 from .codex_goal_command import goal_objective_from_content as _goal_objective_from_content
+from .codex_goal_command import goal_objective_length_error as _goal_objective_length_error
 from .databricks_executor import (
     _databricks_gateway_host,
 )
@@ -497,12 +498,17 @@ def _clean_codex_env(extra_allow: Iterable[str] = ()) -> dict[str, str]:
     codex signals back out of it, so those names have to survive the filter
     (see :data:`_CODEX_OMNIGENT_LAUNCH_ENV_VARS`).
 
+    Resource attributes retain deployment metadata and identify these launches
+    with ``launch_mode=omni``. Exporter endpoints and credentials remain filtered;
+    Codex's own telemetry configuration controls whether and where it exports.
+
     :returns: Filtered environment dict.
     """
-    return clean_agent_env(
+    env = clean_agent_env(
         allow_prefixes=("OPENAI_", "REQUESTS_", "CODEX_HOME"),
         allow_exact=(
             "PYTHONUTF8",
+            "OTEL_RESOURCE_ATTRIBUTES",
             "DATABRICKS_BEARER",  # explicit CI/integration bearer used by auth.command
             "DATABRICKS_CODEX_TOKEN",  # env_key in ~/.codex/config.toml's DB provider
             # Service-principal M2M credentials, so a Databricks-gateway
@@ -519,6 +525,13 @@ def _clean_codex_env(extra_allow: Iterable[str] = ()) -> dict[str, str]:
         deny_exact=_CODEX_ENV_DENY_EXACT,
         extra_allowed=extra_allow,
     )
+    resource_attributes = [
+        attribute
+        for attribute in env.get("OTEL_RESOURCE_ATTRIBUTES", "").split(",")
+        if attribute.strip() and attribute.partition("=")[0].strip() != "launch_mode"
+    ]
+    env["OTEL_RESOURCE_ATTRIBUTES"] = ",".join([*resource_attributes, "launch_mode=omni"])
+    return env
 
 
 def codex_skill_sources(
@@ -2631,6 +2644,13 @@ class _CodexAppServerSession:
         assert self.thread_id is not None
         latest_user_content = _extract_latest_user_content(messages)
         goal_objective = _goal_objective_from_content(latest_user_content)
+        if goal_objective is not None:
+            # Reject over-long objectives here so the app-server's raw
+            # JSON-RPC -32600 error never reaches the user.
+            length_error = _goal_objective_length_error(goal_objective)
+            if length_error is not None:
+                yield ExecutorError(message=length_error)
+                return
         prompt_messages = messages
         if goal_objective is not None:
             await self._request(
