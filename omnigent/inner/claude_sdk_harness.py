@@ -333,11 +333,16 @@ def _build_claude_sdk_executor() -> Executor:
         # policy denies `load_skill`, and `tests/test_host.py` has asserted that
         # refusal since it shipped. So the `Skill` tool is redundant for her.
         #
-        # It is also ungated. Measured on production session 35340ac1: the CLI
-        # does not consult `can_use_tool` for harness built-ins - `ToolSearch`
-        # ran with no policy evaluation before it - so the `load_skill` refusal
-        # can never fire. A policy can only refuse what it is asked about.
-        # Taking the tool off the surface does not depend on being asked.
+        # Removing it is defence in depth, not a repair for a gate known to
+        # be absent. Whether `can_use_tool` is consulted for harness built-ins
+        # is UNSETTLED. On production session 35340ac1 the SDK's own
+        # `CanUseToolShadowedWarning` named only the four `mcp__omnigent__*`
+        # tools, so `ToolSearch` is not pre-approved and should be asked
+        # about. Nothing was logged before it ran - but only DENY verdicts
+        # were logged then, so that silence is equally consistent with an
+        # ALLOW. Since #30 the ALLOW is logged too, which makes this a
+        # question one turn and one grep can settle. Until someone runs
+        # that, do not write either reading down as fact.
         #
         # `ToolSearch` is deliberately left: she uses it to find her own tools,
         # it returns references and executes nothing. Skill loading is
