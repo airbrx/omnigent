@@ -1143,7 +1143,17 @@ function SidebarImpl({
                   SIDEBAR_HOVER_HIGHLIGHT,
                 )}
                 data-testid="browse-agents-button"
-                onClick={() => onBrowseAgents?.()}
+                onClick={() => {
+                  // On mobile the sidebar is itself a full-bleed overlay, so
+                  // leaving it open behind the roster means closing the roster
+                  // drops the user back into the sidebar instead of the session
+                  // they came from. Every other primary-nav row dismisses it via
+                  // onNavClick; that handler is typed for the Link rows' anchor
+                  // events, and the only condition that applies to a button is
+                  // the viewport one, so it is inlined rather than widened.
+                  if (isMobileViewport()) onClose();
+                  onBrowseAgents?.();
+                }}
               >
                 <UsersIcon className="ui-icon text-muted-foreground" />
                 Agents

@@ -18,12 +18,43 @@ parser.add_argument(
 )
 args = parser.parse_args()
 source = args.source.resolve()
-revision = subprocess.check_output(
-    ["git", "-C", str(source), "rev-parse", "--verify", f"{args.revision}^{{commit}}"], text=True
-).strip()
+try:
+    revision = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "--verify", f"{args.revision}^{{commit}}"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    ).strip()
+except subprocess.CalledProcessError:
+    # Say what is actually wrong. The default for --revision is whatever
+    # source.json already pins, and a pinned revision can be rebased or
+    # squashed out of existence after the archive is cut — at which point this
+    # died in a subprocess traceback reading "exit status 128", and working out
+    # that the commit simply was not in the repository took hashing all 44
+    # archive members against every commit in it.
+    raise SystemExit(
+        f"{args.revision!r} is not a commit in {source}.\n"
+        f"If that is the revision currently pinned in source.json, it is no longer reachable "
+        f"in this repository — rebased or squashed away after the archive was built. Re-pin "
+        f"against a reviewed revision explicitly:\n"
+        f"    python {Path(__file__).name} {source} --revision <reviewed sha or branch>"
+    ) from None
 files = subprocess.check_output(
     ["git", "-C", str(source), "ls-tree", "-r", "--name-only", revision], text=True
 ).splitlines()
+# The app, and the evidence a session produces for itself. No captures.
+#
+# `ui/iris-state.json` was never vendored, because it is someone's captured
+# tenant evidence. `ui/demo-state.json` is out for a subtler reason that turns
+# out to be the same one: app.js boots through a fallback chain — live host
+# evidence, then a captured report, then this synthetic demo, then nothing — so
+# shipping it meant a fresh, authenticated, tenant-bound session could open on a
+# complete fabricated cache report behind a small "Synthetic demo" chip, and
+# `ask()` then answered questions from it without ever calling the host.
+#
+# The hosted route already refuses to serve it. This removes the rung itself, so
+# the next person to write a serving path does not inherit the trap. The file
+# stays in the repository — the local development bridge serves `ui/` straight
+# from a checkout and its demo is useful there. It just does not travel.
 allowed = [
     p
     for p in files
@@ -34,7 +65,6 @@ allowed = [
         "ui/app.js",
         "ui/style.css",
         "ui/theme.js",
-        "ui/demo-state.json",
         "pyproject.toml",
     }
 ]

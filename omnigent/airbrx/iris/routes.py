@@ -227,6 +227,32 @@ def create_iris_router(*, auth_provider, agent_store):
             ],
         }
 
+    @router.get("/iris/portrait", include_in_schema=False)
+    async def portrait(request: Request):
+        """Iris's portrait, read from her pinned package, for the agent drawer.
+
+        The avatar store can hold a picture for her and on at least one host it
+        does: an operator uploaded one at 16:36 on 2026-09-15 whose SHA-256 is
+        byte-for-byte this same packaged file. That upload still wins — the
+        drawer prefers a stored avatar — but it is a hand-made duplicate of a
+        file the package already pins, and nothing keeps the two in step. When
+        the package's portrait changes, the copy in the store goes quietly
+        stale and no one is told.
+
+        So this is the source of truth and the store is the override. It also
+        means a host where nobody has uploaded anything still shows her face
+        instead of two grey initials. Read from the verified archive rather
+        than a copy committed into the web assets, and behind the same
+        authentication as every other route here.
+        """
+        if require_user(request, auth_provider) is None:
+            raise HTTPException(401, "Iris requires host authentication")
+        return FileResponse(
+            source_root() / "ui/assets/iris-portrait.png",
+            media_type="image/png",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
     @router.post(
         "/iris/sessions/{session_id}/ui/api/chat",
         dependencies=[Depends(require_json_content_type)],
@@ -303,6 +329,60 @@ def create_iris_router(*, auth_provider, agent_store):
                 "monitoring": None,
             }
 
+    @router.get("/iris/sessions/{session_id}/ui/api/readiness")
+    async def readiness(request: Request, session_id: str):
+        """What this host has actually checked about running a turn here.
+
+        Deliberately not a prediction. Whether the execution host can reach the
+        model is not knowable from the server side until a turn runs, so this
+        reports the preconditions it did verify, whether a turn has ever
+        completed in this session, and whether the session recorded a failure —
+        and names the rest as unverified rather than letting the workspace show
+        a hopeful spinner over an unproven connection.
+
+        The host's own error text is deliberately not forwarded: the rest of
+        this module refuses to reflect execution diagnostics, which can carry
+        credential material. The workspace is told a failure happened and where
+        the authoritative record is, which is what it needs to stop claiming.
+        """
+        async with session_client(request) as client:
+            session, binding = await authorize(request, session_id, client)
+            page = await checked(
+                await client.get(
+                    f"/v1/sessions/{session_id}/items",
+                    params={"limit": 1000, "order": "desc"},
+                )
+            )
+            completed = any(
+                item.get("type") == "message"
+                and item.get("role") == "assistant"
+                and item.get("status") == "completed"
+                for item in page["data"]
+            )
+            scope = " (synthetic fixture)" if binding.fixture else " (read-only)"
+            return {
+                "tenant_id": binding.tenant_id,
+                "fixture": binding.fixture,
+                "session_status": session.get("status"),
+                "turn_completed_here": completed,
+                "last_task_failed": bool(session.get("last_task_error")),
+                "verified": [
+                    "you are authenticated to this Omnigent host",
+                    "Iris is a registered agent on this host",
+                    "this session belongs to Iris and you may run turns in it",
+                    f"tenant {binding.tenant_id} is bound to this session's workspace{scope}",
+                ],
+                "unverified": (
+                    []
+                    if completed
+                    else [
+                        "no turn has completed in this session, so whether the execution "
+                        "host can reach the model is unknown; it cannot be known from here "
+                        "until a turn actually runs"
+                    ]
+                ),
+            }
+
     @router.get("/iris/sessions/{session_id}/ui/api/state")
     async def state(request: Request, session_id: str):
         return await read_state(request, session_id)
@@ -327,12 +407,31 @@ def create_iris_router(*, auth_provider, agent_store):
                 html, headers={"Cache-Control": "no-store", "X-Frame-Options": "SAMEORIGIN"}
             )
         if asset == "host.js":
-            return FileResponse(HERE / "host.js", media_type="text/javascript")
+            # No-store, unlike the pinned assets below: this adapter is part of
+            # the host build, not the verified package, and a cached copy would
+            # keep reporting a readiness contract the server has moved past.
+            return FileResponse(
+                HERE / "host.js",
+                media_type="text/javascript",
+                headers={"Cache-Control": "no-store"},
+            )
+        # The app, not captures. `iris-state.json` is already withheld because
+        # it is someone's captured tenant evidence; `demo-state.json` is
+        # withheld for a subtler reason that is the same reason.
+        #
+        # app.js boots through a fallback chain: `api/state`, then
+        # `iris-state.json`, then `demo-state.json`. On a hosted mount the
+        # first 409s until a turn has produced an overview and the second is
+        # 404. Serving the third meant a fresh tenant-bound session opened
+        # showing a complete, entirely synthetic cache report - hit rate,
+        # findings, a tenant line - behind nothing but a small "Synthetic
+        # demo" chip, and `ask()` then answered questions from it locally
+        # without ever calling the host. A session shows its own evidence or
+        # it shows nothing and says so.
         allowed = {
             "app.js",
             "theme.js",
             "style.css",
-            "demo-state.json",
             "assets/iris-portrait.png",
             "assets/airbrx-logo.png",
         }

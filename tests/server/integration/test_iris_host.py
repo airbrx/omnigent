@@ -201,6 +201,15 @@ async def test_authenticated_mount_and_private_capture_exclusion(iris_secure_cli
     assert page.status_code == 200, page.text
     assert 'src="host.js"' in page.text
     assert (await iris_secure_client.get(url + "iris-state.json")).status_code == 404
+    # Same principle, less obvious: app.js falls back iris-state -> demo-state,
+    # so serving the synthetic capture opened a fresh tenant-bound session on a
+    # complete fabricated report behind a small chip, and made ask() answer from
+    # it without calling the host. The app is served; captures are not.
+    assert (await iris_secure_client.get(url + "demo-state.json")).status_code == 404
+    # The assets the page genuinely needs are still served, theme.js included -
+    # it is what makes the light/dark picker work.
+    for asset in ("app.js", "theme.js", "style.css", "host.js", "assets/iris-portrait.png"):
+        assert (await iris_secure_client.get(url + asset)).status_code == 200, asset
     assert (await iris_secure_client.get(url + "api/state")).status_code == 409
     iris_secure_client.headers["X-Forwarded-Email"] = "other-user"
     assert (await iris_secure_client.get(url)).status_code == 404
@@ -400,7 +409,7 @@ async def iris_protocol_client(iris_session, monkeypatch):
 
     _, session, root, _ = iris_session
     recorded = []
-    mode = {"status": "idle", "answer": True}
+    mode = {"status": "idle", "answer": True, "task_error": None}
 
     def native(request):
         if request.method == "POST":
@@ -428,6 +437,7 @@ async def iris_protocol_client(iris_session, monkeypatch):
                 "permission_level": 4,
                 "host_id": "a" * 32,
                 "workspace": str(root),
+                "last_task_error": mode["task_error"],
             },
         )
 
@@ -504,3 +514,78 @@ async def test_busy_and_refresh_without_new_evidence_fail_honestly(iris_protocol
     assert (await client.post(path + "/refresh", json={})).status_code == 409
     assert (await client.post(path + "/cancel", json={})).status_code == 200
     assert recorded[-1]["type"] == "interrupt"
+
+
+async def test_readiness_reports_an_unrun_session_as_unverified(iris_protocol_client):
+    """An unrun session must say so, not imply a working connection.
+
+    The workspace's own fallback answers a refused turn from the captured
+    report, in the assistant's voice. host.js replaces that with the host's
+    actual refusal, and this endpoint is what lets it state the standing
+    position before anyone asks a question.
+    """
+    client, path, _, mode = iris_protocol_client
+    mode["answer"] = False
+    response = await client.get(path + "/readiness")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["turn_completed_here"] is False
+    assert body["last_task_failed"] is False
+    # Unknown is not zero: the model path is not claimed either way.
+    assert len(body["unverified"]) == 1
+    assert "unknown" in body["unverified"][0]
+    # And only what was genuinely checked is listed as verified.
+    assert any("registered agent" in line for line in body["verified"])
+    assert any(body["tenant_id"] in line for line in body["verified"])
+
+
+async def test_readiness_reports_a_session_that_has_actually_answered(iris_protocol_client):
+    client, path, _, mode = iris_protocol_client
+    mode["answer"] = True
+    body = (await client.get(path + "/readiness")).json()
+    assert body["turn_completed_here"] is True
+    assert body["unverified"] == []
+
+
+async def test_readiness_surfaces_a_recorded_task_failure_without_echoing_it(
+    iris_protocol_client,
+):
+    """A failure is reported; the host's error text is not forwarded.
+
+    The rest of this module refuses to reflect execution diagnostics because
+    they can carry credential material, and a readiness banner is no place to
+    make an exception.
+    """
+    client, path, _, mode = iris_protocol_client
+    mode["task_error"] = "boom: AIRBRX_PAT=super-secret rejected"
+    body = (await client.get(path + "/readiness")).json()
+    assert body["last_task_failed"] is True
+    assert "super-secret" not in json.dumps(body)
+
+
+async def test_readiness_refuses_a_session_that_is_not_the_caller_s_iris(iris_secure_client):
+    """Readiness is behind the same authorization as every other hosted route."""
+    client = iris_secure_client
+    assert (
+        await client.get("/v1/iris/sessions/not-a-session/ui/api/readiness")
+    ).status_code >= 400
+
+
+async def test_portrait_comes_from_the_pinned_package_and_needs_authentication(
+    iris_secure_client,
+):
+    """The drawer's picture of Iris is the one her verified package ships.
+
+    Not a copy committed into the web assets, which would drift from the
+    package silently, and not an open endpoint: it goes out under the same
+    authentication as everything else in this module.
+    """
+    response = await iris_secure_client.get("/v1/iris/portrait")
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "image/png"
+    assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    anonymous = await iris_secure_client.get(
+        "/v1/iris/portrait", headers={"X-Forwarded-Email": ""}
+    )
+    assert anonymous.status_code == 401

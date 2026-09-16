@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
+import { getOmnigentHostConfig } from "@/lib/host";
 import { authenticatedFetch } from "@/lib/identity";
 import { IrisWorkspace } from "./IrisWorkspace";
 
@@ -15,11 +16,18 @@ vi.mock("@/lib/routing", () => ({
   useSearchParams: () => [routing.search],
 }));
 vi.mock("@/lib/identity", () => ({ authenticatedFetch: vi.fn() }));
+vi.mock("@/lib/host", () => ({ getOmnigentHostConfig: vi.fn(() => ({})) }));
+const theme = vi.hoisted(() => ({ mode: "dark" as "light" | "dark" }));
+vi.mock("@/components/theme/useResolvedThemeMode", () => ({
+  useResolvedThemeMode: () => theme.mode,
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
   routing.params = {};
   routing.search = new URLSearchParams();
+  theme.mode = "dark";
+  vi.mocked(getOmnigentHostConfig).mockReturnValue({} as never);
 });
 function show() {
   return render(
@@ -89,14 +97,47 @@ it("opens native chat through the same tenant-bound create", async () => {
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/c/native-session"));
 });
 
-it("mounts the accepted UI at the authenticated session route", () => {
+it("mounts the accepted UI at the authenticated session route, in the shell's appearance", () => {
   routing.params = { sessionId: "owned-session" };
   vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
   show();
+  // The packaged workspace treats "system" as the OS preference, which inside
+  // a drawer is the wrong system: the shell is. Carrying the resolved mode in
+  // the mount URL is what makes the two agree on first paint.
   expect(screen.getByTitle("Iris workspace")).toHaveAttribute(
     "src",
-    "/v1/iris/sessions/owned-session/ui/",
+    "/v1/iris/sessions/owned-session/ui/?theme=dark",
   );
+});
+
+it("tells the mounted workspace about a theme change instead of reloading it", () => {
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  const { rerender } = render(
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <IrisWorkspace />
+    </QueryClientProvider>,
+  );
+  const frame = screen.getByTitle("Iris workspace") as HTMLIFrameElement;
+  const posted: unknown[] = [];
+  Object.defineProperty(frame, "contentWindow", {
+    value: { postMessage: (message: unknown) => posted.push(message) },
+    configurable: true,
+  });
+  theme.mode = "light";
+  rerender(
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <IrisWorkspace />
+    </QueryClientProvider>,
+  );
+  expect(posted).toContainEqual({ irisHostTheme: "light" });
+  // Reloading the iframe would discard the conversation inside it, which is
+  // the one thing on this page that cannot be recovered.
+  expect(frame).toHaveAttribute("src", "/v1/iris/sessions/owned-session/ui/?theme=dark");
 });
 
 it("reports missing authorization without offering a synthetic connection", async () => {
@@ -106,4 +147,18 @@ it("reports missing authorization without offering a synthetic connection", asyn
   show();
   expect(await screen.findByRole("alert")).toHaveTextContent("no authorized host binding");
   expect(screen.queryByRole("button", { name: "Open workspace" })).not.toBeInTheDocument();
+});
+
+it("refuses to frame the workspace in an embedded host, and offers the same session's chat", () => {
+  // An <iframe src> cannot be routed through the host's `fetcher`, so the page
+  // would resolve against the wrong origin and render an empty rectangle. An
+  // empty rectangle is a worse answer than "not available here".
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(getOmnigentHostConfig).mockReturnValue({ fetcher: vi.fn() } as never);
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  show();
+  expect(screen.queryByTitle("Iris workspace")).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("a framed page cannot use");
+  fireEvent.click(screen.getByRole("button", { name: "Open native chat instead" }));
+  expect(routing.navigate).toHaveBeenCalledWith("/c/owned-session");
 });
