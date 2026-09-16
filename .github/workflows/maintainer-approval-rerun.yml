@@ -24,10 +24,13 @@ jobs:
     # it red. Skip COMMENTED reviews (they don't change review state), and skip
     # entirely where the gate itself isn't enforced (see maintainer-approval.yml)
     # -- re-running a check that never runs is noise on every review.
+    #
+    # Continuation lines stay at the block indent: an extra space would make a
+    # folded scalar treat the line as literal and embed a newline in the expression.
     if: >-
       github.event.review.state != 'commented' &&
       (github.repository == 'omnigent-ai/omnigent' ||
-       vars.ENFORCE_MAINTAINER_APPROVAL == 'true')
+      vars.ENFORCE_MAINTAINER_APPROVAL == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
