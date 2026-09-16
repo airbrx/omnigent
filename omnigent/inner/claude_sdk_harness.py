@@ -333,11 +333,27 @@ def _build_claude_sdk_executor() -> Executor:
         # policy denies `load_skill`, and `tests/test_host.py` has asserted that
         # refusal since it shipped. So the `Skill` tool is redundant for her.
         #
-        # It is also ungated. Measured on production session 35340ac1: the CLI
-        # does not consult `can_use_tool` for harness built-ins - `ToolSearch`
-        # ran with no policy evaluation before it - so the `load_skill` refusal
-        # can never fire. A policy can only refuse what it is asked about.
-        # Taking the tool off the surface does not depend on being asked.
+        # It is also, as far as one measured turn shows, ungated. On
+        # production session 35340ac1 (host 605f4d3d, so #30's ALLOW logging
+        # was live) `ToolSearch` ran at 09:23:31 and the turn made no
+        # `/policies/evaluate` call for it - its only two bracket the turn,
+        # where the LLM-request and LLM-response phases sit. Invocation
+        # implies that POST: `_can_use_tool_gate` -> `_evaluate_tool_call_policy`
+        # has no branch that skips it for a non-`mcp__omnigent__` tool once an
+        # evaluator is wired, and one was, because those two calls happened.
+        # So the callback was not invoked, and the `load_skill` refusal it
+        # would have carried could not fire.
+        #
+        # Do NOT re-derive the opposite from `CanUseToolShadowedWarning`. That
+        # warning is computed only from `allowed_tools` entries that allow a
+        # whole tool; it lists what IS shadowed and implies nothing about
+        # anything else. Its own text says settings-file allow rules "can also
+        # shadow the callback but are not visible here". A tool's absence from
+        # it is not evidence the callback runs for that tool. Two of us read it
+        # that way and were wrong.
+        #
+        # Even so, removing `Skill` is defence in depth first: it holds whether
+        # or not the gate is consulted, which is why it is worth doing.
         #
         # `ToolSearch` is deliberately left: she uses it to find her own tools,
         # it returns references and executes nothing. Skill loading is
