@@ -221,3 +221,31 @@ it("still refuses to let a refusal be answered when the chrome cannot mount", as
   expect(fallback.textContent).toContain("Iris requires host authentication");
   expect(fallback.textContent).not.toContain("Snapshot answer");
 });
+
+it("names what kind of failure it was, rather than collapsing them to one sentence", async () => {
+  // The readiness line used to say "the host could not be reached" for every
+  // failure, so a timeout and an unreachable host read identically. That is the
+  // same defect O1 removed from the packaged app.js, and leaving it here while
+  // fixing it there would have been inconsistent in the direction that flatters
+  // this file.
+  const seen: string[] = [];
+  for (const [name, expected] of [
+    ["TimeoutError", /did not respond in time/],
+    ["TypeError", /could not be reached/],
+    ["AbortError", /was cancelled/],
+  ] as const) {
+    document.body.innerHTML = `<div class="shell"><div class="chat" id="chat"></div></div>`;
+    window.fetch = vi.fn(async () => {
+      const error = Error("boom");
+      error.name = name;
+      throw error;
+    }) as never;
+    mountAdapter();
+    await vi.waitFor(() =>
+      expect(document.querySelector(".host-status")?.textContent).toMatch(expected),
+    );
+    seen.push(document.querySelector(".host-status")?.textContent ?? "");
+    while (mounted.length) mounted.pop()?.();
+  }
+  expect(new Set(seen).size).toBe(3);
+});

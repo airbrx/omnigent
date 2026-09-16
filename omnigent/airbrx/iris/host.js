@@ -76,6 +76,28 @@
   let pendingRefusal = null;
   let lastRefusal = null;
 
+  /**
+   * Why a call failed, in words safe to show a user.
+   *
+   * Never the host's own exception text: `routes.py` refuses to reflect
+   * execution diagnostics because they can carry credential material, and this
+   * adapter must not be the hole in that. Compared by `name` rather than with
+   * `instanceof` — this page runs inside an iframe, and an error raised in
+   * another realm is not an instance of this realm's constructor, so
+   * `instanceof` fails silently across that boundary.
+   */
+  function whyFailed(error) {
+    // A reason chosen here wins over the class name. Without this, a throw that
+    // already knew "the host returned 404" came back out as "the request failed
+    // (Error)" - a known reason rendered as an unknown one, which is the same
+    // dishonesty as the reverse and is easier to introduce by accident.
+    if (error && error.hostReason) return error.hostReason;
+    if (error && error.name === "TimeoutError") return "the host did not respond in time";
+    if (error && error.name === "AbortError") return "the request was cancelled";
+    if (error && error.name === "TypeError") return "the host could not be reached";
+    return `the request failed (${(error && error.name) || "unknown error"})`;
+  }
+
   async function refusalOf(response) {
     // FastAPI puts the reason in `detail`; the development bridge used `error`.
     try {
@@ -225,8 +247,13 @@
         readiness = await response.json();
         readinessError = null;
       }
-    } catch {
-      readinessError = "the host could not be reached";
+    } catch (error) {
+      // Bound and named. An earlier version said "the host could not be
+      // reached" for every failure, which reported a timeout and a DNS failure
+      // as the same thing - and is the exact pattern O1 was sent to remove from
+      // the packaged app.js. Leaving it here while fixing it there would have
+      // been inconsistent in the direction that flatters this file.
+      readinessError = whyFailed(error);
     }
     renderState();
   }
@@ -299,8 +326,8 @@
         outcome.textContent = res.ok
           ? "Cancellation requested. Open native chat to resume."
           : `Cancellation refused: ${await refusalOf(res)}`;
-      } catch {
-        outcome.textContent = "Connection unavailable. Open native chat to check the turn.";
+      } catch (error) {
+        outcome.textContent = `Cancellation could not be sent: ${whyFailed(error)}. Open native chat to check the turn.`;
       }
       loadReadiness();
     });
@@ -308,7 +335,11 @@
     const downloads = control("Show session downloads", async () => {
       try {
         const res = await nativeFetch(`/v1/sessions/${session}/resources/files?limit=100`);
-        if (!res.ok) throw Error();
+        if (!res.ok) {
+          const refused = Error(`the host returned ${res.status}`);
+          refused.hostReason = `the host returned ${res.status}`;
+          throw refused;
+        }
         const data = await res.json();
         files.replaceChildren();
         for (const file of data.data.filter((f) =>
@@ -323,8 +354,8 @@
         if (!files.childNodes.length) {
           files.textContent = "No reports in this session yet. Use Refresh from host.";
         }
-      } catch {
-        files.textContent = "Downloads unavailable; check the native session.";
+      } catch (error) {
+        files.textContent = `Downloads unavailable: ${whyFailed(error)}. Check the native session.`;
       }
     });
 
