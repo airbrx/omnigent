@@ -227,6 +227,25 @@ def create_iris_router(*, auth_provider, agent_store):
             ],
         }
 
+    @router.get("/iris/portrait", include_in_schema=False)
+    async def portrait(request: Request):
+        """Iris's portrait, read from her pinned package, for the agent drawer.
+
+        The drawer's avatar store is an upload surface and nothing has been
+        uploaded to it, so without this the one agent who actually ships a
+        portrait would sit in the roster as two grey initials. Served from the
+        verified archive rather than a copy committed into the web assets, so
+        it cannot drift from the package it belongs to, and behind the same
+        authentication as every other route in this module.
+        """
+        if require_user(request, auth_provider) is None:
+            raise HTTPException(401, "Iris requires host authentication")
+        return FileResponse(
+            source_root() / "ui/assets/iris-portrait.png",
+            media_type="image/png",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
     @router.post(
         "/iris/sessions/{session_id}/ui/api/chat",
         dependencies=[Depends(require_json_content_type)],
@@ -303,6 +322,60 @@ def create_iris_router(*, auth_provider, agent_store):
                 "monitoring": None,
             }
 
+    @router.get("/iris/sessions/{session_id}/ui/api/readiness")
+    async def readiness(request: Request, session_id: str):
+        """What this host has actually checked about running a turn here.
+
+        Deliberately not a prediction. Whether the execution host can reach the
+        model is not knowable from the server side until a turn runs, so this
+        reports the preconditions it did verify, whether a turn has ever
+        completed in this session, and whether the session recorded a failure —
+        and names the rest as unverified rather than letting the workspace show
+        a hopeful spinner over an unproven connection.
+
+        The host's own error text is deliberately not forwarded: the rest of
+        this module refuses to reflect execution diagnostics, which can carry
+        credential material. The workspace is told a failure happened and where
+        the authoritative record is, which is what it needs to stop claiming.
+        """
+        async with session_client(request) as client:
+            session, binding = await authorize(request, session_id, client)
+            page = await checked(
+                await client.get(
+                    f"/v1/sessions/{session_id}/items",
+                    params={"limit": 1000, "order": "desc"},
+                )
+            )
+            completed = any(
+                item.get("type") == "message"
+                and item.get("role") == "assistant"
+                and item.get("status") == "completed"
+                for item in page["data"]
+            )
+            scope = " (synthetic fixture)" if binding.fixture else " (read-only)"
+            return {
+                "tenant_id": binding.tenant_id,
+                "fixture": binding.fixture,
+                "session_status": session.get("status"),
+                "turn_completed_here": completed,
+                "last_task_failed": bool(session.get("last_task_error")),
+                "verified": [
+                    "you are authenticated to this Omnigent host",
+                    "Iris is a registered agent on this host",
+                    "this session belongs to Iris and you may run turns in it",
+                    f"tenant {binding.tenant_id} is bound to this session's workspace{scope}",
+                ],
+                "unverified": (
+                    []
+                    if completed
+                    else [
+                        "no turn has completed in this session, so whether the execution "
+                        "host can reach the model is unknown; it cannot be known from here "
+                        "until a turn actually runs"
+                    ]
+                ),
+            }
+
     @router.get("/iris/sessions/{session_id}/ui/api/state")
     async def state(request: Request, session_id: str):
         return await read_state(request, session_id)
@@ -327,7 +400,14 @@ def create_iris_router(*, auth_provider, agent_store):
                 html, headers={"Cache-Control": "no-store", "X-Frame-Options": "SAMEORIGIN"}
             )
         if asset == "host.js":
-            return FileResponse(HERE / "host.js", media_type="text/javascript")
+            # No-store, unlike the pinned assets below: this adapter is part of
+            # the host build, not the verified package, and a cached copy would
+            # keep reporting a readiness contract the server has moved past.
+            return FileResponse(
+                HERE / "host.js",
+                media_type="text/javascript",
+                headers={"Cache-Control": "no-store"},
+            )
         allowed = {
             "app.js",
             "theme.js",

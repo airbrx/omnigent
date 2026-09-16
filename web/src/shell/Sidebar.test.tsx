@@ -1641,6 +1641,17 @@ describe("Sidebar browse-agents trigger", () => {
     fireEvent.click(screen.getByTestId("browse-agents-button"));
     expect(onBrowseAgents).toHaveBeenCalledTimes(1);
   });
+
+  // Deferred from #16: this row was the one primary-nav row that left the
+  // mobile sidebar open under what it opened, so dismissing the roster
+  // returned the user to the sidebar rather than their session.
+  it("dismisses the mobile sidebar as every other primary-nav row does", () => {
+    mockConversations([]);
+    const onClose = vi.fn();
+    renderSidebar(true, "/", undefined, undefined, [], onClose, vi.fn());
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
 });
 
 // The sidebar splits sessions across two tabs: "My sessions" (owned, with the

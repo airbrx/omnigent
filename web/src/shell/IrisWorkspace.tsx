@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useResolvedThemeMode } from "@/components/theme/useResolvedThemeMode";
 import { Button } from "@/components/ui/button";
 import { authenticatedFetch } from "@/lib/identity";
 import { useNavigate, useParams, useSearchParams } from "@/lib/routing";
@@ -21,6 +22,19 @@ export function IrisWorkspace() {
   const [searchParams] = useSearchParams();
   const chatMode = searchParams.get("mode") === "chat";
   const [selected, setSelected] = useState("");
+  const mode = useResolvedThemeMode();
+  const frame = useRef<HTMLIFrameElement>(null);
+  // The workspace mounts with the shell's appearance in its URL and is told
+  // about later changes by message. Rewriting `src` would reload the iframe
+  // and discard the conversation inside it, which is the one thing on this
+  // page that cannot be recovered — so the mount value is captured once.
+  const [mountTheme] = useState(mode);
+  // next-themes resolves after first paint, so the mount value can be a guess.
+  // Posting on every change (and again on load, since a message sent before
+  // the document exists goes nowhere) corrects it without a reload.
+  useEffect(() => {
+    frame.current?.contentWindow?.postMessage({ irisHostTheme: mode }, window.location.origin);
+  }, [mode]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const { data, isLoading } = useQuery({
@@ -60,11 +74,15 @@ export function IrisWorkspace() {
   if (sessionId)
     return (
       <iframe
+        ref={frame}
         title="Iris workspace"
         // oxlint-disable-next-line iframe-missing-sandbox -- Pinned same-origin host UI needs scripts and session cookies.
         sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-top-navigation-by-user-activation"
         className="h-full min-h-0 w-full flex-1 border-0"
-        src={`/v1/iris/sessions/${encodeURIComponent(sessionId)}/ui/`}
+        onLoad={() =>
+          frame.current?.contentWindow?.postMessage({ irisHostTheme: mode }, window.location.origin)
+        }
+        src={`/v1/iris/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}`}
       />
     );
   return (

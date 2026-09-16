@@ -15,11 +15,16 @@ vi.mock("@/lib/routing", () => ({
   useSearchParams: () => [routing.search],
 }));
 vi.mock("@/lib/identity", () => ({ authenticatedFetch: vi.fn() }));
+const theme = vi.hoisted(() => ({ mode: "dark" as "light" | "dark" }));
+vi.mock("@/components/theme/useResolvedThemeMode", () => ({
+  useResolvedThemeMode: () => theme.mode,
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
   routing.params = {};
   routing.search = new URLSearchParams();
+  theme.mode = "dark";
 });
 function show() {
   return render(
@@ -89,14 +94,47 @@ it("opens native chat through the same tenant-bound create", async () => {
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/c/native-session"));
 });
 
-it("mounts the accepted UI at the authenticated session route", () => {
+it("mounts the accepted UI at the authenticated session route, in the shell's appearance", () => {
   routing.params = { sessionId: "owned-session" };
   vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
   show();
+  // The packaged workspace treats "system" as the OS preference, which inside
+  // a drawer is the wrong system: the shell is. Carrying the resolved mode in
+  // the mount URL is what makes the two agree on first paint.
   expect(screen.getByTitle("Iris workspace")).toHaveAttribute(
     "src",
-    "/v1/iris/sessions/owned-session/ui/",
+    "/v1/iris/sessions/owned-session/ui/?theme=dark",
   );
+});
+
+it("tells the mounted workspace about a theme change instead of reloading it", () => {
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  const { rerender } = render(
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <IrisWorkspace />
+    </QueryClientProvider>,
+  );
+  const frame = screen.getByTitle("Iris workspace") as HTMLIFrameElement;
+  const posted: unknown[] = [];
+  Object.defineProperty(frame, "contentWindow", {
+    value: { postMessage: (message: unknown) => posted.push(message) },
+    configurable: true,
+  });
+  theme.mode = "light";
+  rerender(
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <IrisWorkspace />
+    </QueryClientProvider>,
+  );
+  expect(posted).toContainEqual({ irisHostTheme: "light" });
+  // Reloading the iframe would discard the conversation inside it, which is
+  // the one thing on this page that cannot be recovered.
+  expect(frame).toHaveAttribute("src", "/v1/iris/sessions/owned-session/ui/?theme=dark");
 });
 
 it("reports missing authorization without offering a synthetic connection", async () => {
