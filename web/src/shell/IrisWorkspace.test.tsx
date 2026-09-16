@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
+import { getOmnigentHostConfig } from "@/lib/host";
 import { authenticatedFetch } from "@/lib/identity";
 import { IrisWorkspace } from "./IrisWorkspace";
 
@@ -15,6 +16,7 @@ vi.mock("@/lib/routing", () => ({
   useSearchParams: () => [routing.search],
 }));
 vi.mock("@/lib/identity", () => ({ authenticatedFetch: vi.fn() }));
+vi.mock("@/lib/host", () => ({ getOmnigentHostConfig: vi.fn(() => ({})) }));
 const theme = vi.hoisted(() => ({ mode: "dark" as "light" | "dark" }));
 vi.mock("@/components/theme/useResolvedThemeMode", () => ({
   useResolvedThemeMode: () => theme.mode,
@@ -25,6 +27,7 @@ beforeEach(() => {
   routing.params = {};
   routing.search = new URLSearchParams();
   theme.mode = "dark";
+  vi.mocked(getOmnigentHostConfig).mockReturnValue({} as never);
 });
 function show() {
   return render(
@@ -144,4 +147,18 @@ it("reports missing authorization without offering a synthetic connection", asyn
   show();
   expect(await screen.findByRole("alert")).toHaveTextContent("no authorized host binding");
   expect(screen.queryByRole("button", { name: "Open workspace" })).not.toBeInTheDocument();
+});
+
+it("refuses to frame the workspace in an embedded host, and offers the same session's chat", () => {
+  // An <iframe src> cannot be routed through the host's `fetcher`, so the page
+  // would resolve against the wrong origin and render an empty rectangle. An
+  // empty rectangle is a worse answer than "not available here".
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(getOmnigentHostConfig).mockReturnValue({ fetcher: vi.fn() } as never);
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  show();
+  expect(screen.queryByTitle("Iris workspace")).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("a framed page cannot use");
+  fireEvent.click(screen.getByRole("button", { name: "Open native chat instead" }));
+  expect(routing.navigate).toHaveBeenCalledWith("/c/owned-session");
 });

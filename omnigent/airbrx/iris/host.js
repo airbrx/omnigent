@@ -240,6 +240,12 @@
     if (!match) return;
     const session = encodeURIComponent(decodeURIComponent(match[1]));
 
+    // Installed first, and deliberately before anything that touches the
+    // packaged page's layout. The bar below is chrome; this is the part that
+    // stops a refused turn being answered by the page itself, and it must not
+    // be lost because the markup moved a class around.
+    watchTranscript();
+
     const style = document.createElement("style");
     style.textContent = `
       .host-bar { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex;
@@ -321,9 +327,15 @@
 
     actions.append(chat, cancel, downloads, recheck, outcome);
     bar.append(statusLine, detailList, actions, files);
-    document.querySelector(".shell").prepend(bar);
+    const shell = document.querySelector(".shell");
+    if (!shell) {
+      // The pinned package changed shape under the host. Fail where someone
+      // will see it rather than quietly serving a page with no way to say
+      // whether the host works.
+      throw new Error("Iris host adapter: the packaged workspace has no .shell to mount into");
+    }
+    shell.prepend(bar);
 
-    watchTranscript();
     renderState();
     loadReadiness();
   });

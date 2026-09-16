@@ -31,13 +31,42 @@ function packagedPage() {
     </div>`;
 }
 
-/** Evaluate the adapter, then fire the load event it waits for. */
+/**
+ * Evaluate the adapter and run its load handler — that one instance's, not
+ * every instance's.
+ *
+ * jsdom keeps one window for the whole file, so dispatching a real
+ * DOMContentLoaded would also re-run every adapter an earlier test mounted,
+ * against a document those tests no longer own. Capturing the handler keeps
+ * each case testing exactly one adapter. The returned disposer drops the
+ * listeners it did register, so a later test's window is clean.
+ */
 function mountAdapter() {
+  const realAdd = window.addEventListener.bind(window);
+  const registered: [string, EventListener][] = [];
+  // A holder rather than a bare `let`: TypeScript narrows a local assigned only
+  // inside a callback to `never` at the call site below.
+  const ready: { handler?: EventListener } = {};
+  window.addEventListener = ((type: string, listener: EventListener, options?: unknown) => {
+    if (type === "DOMContentLoaded") {
+      ready.handler = listener;
+      return;
+    }
+    registered.push([type, listener]);
+    realAdd(type, listener, options as never);
+  }) as never;
   // Indirect eval: the adapter is an IIFE written for a browser <script>, and
   // this runs it against the same jsdom globals a real page would give it.
   (0, eval)(adapterSource);
-  window.dispatchEvent(new Event("DOMContentLoaded"));
+  window.addEventListener = realAdd as never;
+  ready.handler?.(new Event("DOMContentLoaded"));
+  mounted.push(() => {
+    for (const [type, listener] of registered) window.removeEventListener(type, listener);
+  });
 }
+
+/** Disposers for the adapters this test mounted. */
+const mounted: (() => void)[] = [];
 
 /** What the packaged page does on a failed turn, reduced to its essentials. */
 function pageFallback(text: string) {
@@ -57,6 +86,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  while (mounted.length) mounted.pop()?.();
   window.fetch = realFetch;
   vi.restoreAllMocks();
 });
@@ -170,4 +200,24 @@ it("offers native chat for the same session, so the two views are one conversati
   const link = document.querySelector<HTMLAnchorElement>(".host-bar a");
   expect(link?.getAttribute("href")).toBe("/c/owned-session");
   expect(link?.target).toBe("_top");
+});
+
+it("still refuses to let a refusal be answered when the chrome cannot mount", async () => {
+  // The status bar is chrome; the substitution is the point. If the pinned
+  // package moves a class and the bar has nowhere to go, the page must not
+  // quietly go back to answering questions it could not ask.
+  document.body.innerHTML = `<div class="chat" id="chat"></div>`;
+  window.fetch = vi.fn(async () =>
+    Response.json({ detail: "Iris requires host authentication" }, { status: 401 }),
+  ) as never;
+  // Loud, not soft: a page whose shape moved out from under the adapter should
+  // say so where someone will see it.
+  expect(() => mountAdapter()).toThrow(/no \.shell to mount into/);
+  expect(document.querySelector(".host-bar")).toBeNull();
+
+  await window.fetch("api/chat", { method: "POST", body: "{}" });
+  const fallback = pageFallback("The host could not complete a verified turn. Snapshot answer — …");
+  await vi.waitFor(() => expect(fallback.dataset.hostRefusal).toBe("401"));
+  expect(fallback.textContent).toContain("Iris requires host authentication");
+  expect(fallback.textContent).not.toContain("Snapshot answer");
 });
