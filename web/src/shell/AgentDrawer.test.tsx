@@ -178,7 +178,13 @@ describe("AgentDrawer avatars in the embedded target", () => {
 
   it("pulls the bytes through the host fetcher instead of a bare <img> src", async () => {
     vi.mocked(authenticatedFetch).mockResolvedValue(
-      new Response(new Blob(["avatar-bytes"], { type: "image/png" })),
+      // A string body, not a `new Blob(...)`. jsdom installs its own Blob, and
+      // under the Node the CI runner uses it has no `.stream()`, so passing one
+      // to `Response` throws "object.stream is not a function". It happens to
+      // work on a newer local Node, which is exactly the kind of test that
+      // passes for its author and fails for everyone else. `.blob()` on the
+      // response still returns a real Blob, which is what the component reads.
+      new Response("avatar-bytes", { headers: { "Content-Type": "image/png" } }),
     );
     renderDrawer();
     const img = await screen.findByAltText("researcher");
@@ -198,7 +204,13 @@ describe("AgentDrawer avatars in the embedded target", () => {
 
   it("releases the object URL when the drawer unmounts", async () => {
     vi.mocked(authenticatedFetch).mockResolvedValue(
-      new Response(new Blob(["avatar-bytes"], { type: "image/png" })),
+      // A string body, not a `new Blob(...)`. jsdom installs its own Blob, and
+      // under the Node the CI runner uses it has no `.stream()`, so passing one
+      // to `Response` throws "object.stream is not a function". It happens to
+      // work on a newer local Node, which is exactly the kind of test that
+      // passes for its author and fails for everyone else. `.blob()` on the
+      // response still returns a real Blob, which is what the component reads.
+      new Response("avatar-bytes", { headers: { "Content-Type": "image/png" } }),
     );
     const { unmount } = render(
       <QueryClientProvider client={new QueryClient()}>
