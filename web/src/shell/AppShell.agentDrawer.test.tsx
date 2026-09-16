@@ -87,6 +87,7 @@ import { AppShell } from "./AppShell";
 import { useAvailableAgents } from "@/hooks/useAvailableAgents";
 import { useAgentAvatars } from "@/hooks/useAgentAvatars";
 import { readLastAgentId } from "@/lib/agentPreferences";
+import { useSession } from "@/hooks/useSession";
 
 function LocationDisplay() {
   const location = useLocation();
@@ -119,6 +120,8 @@ function renderShell(path = "/") {
                   </>
                 }
               />
+              <Route path="iris" element={<LocationDisplay />} />
+              <Route path="iris/:sessionId" element={<LocationDisplay />} />
             </Route>
           </Routes>
         </MemoryRouter>
@@ -133,6 +136,7 @@ beforeEach(() => {
     data: [
       { id: "a1", name: "researcher", display_name: "Researcher", description: "" },
       { id: "a2", name: "coder", display_name: "Coder", description: "" },
+      { id: "a3", name: "iris", display_name: "Iris", description: "" },
     ],
   } as never);
   vi.mocked(useAgentAvatars).mockReturnValue({ data: {} } as never);
@@ -141,6 +145,52 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   localStorage.clear();
+});
+
+// The drawer's "Open workspace" is half of the brief's second acceptance
+// criterion — her row offers a native chat or her workspace, and **both land in
+// the same session**. The mechanism is the ternary in AppShell's
+// `onOpenWorkspace`, and until these cases it had no test at all: nothing
+// asserted that opening the workspace from inside an Iris session keeps you in
+// that session rather than dropping you on the tenant picker to start a second
+// one. A claim in a "done" list resting on an untested branch is the thing this
+// crew spent the night hunting, so it is tested here even though it is my own.
+describe("AppShell: the workspace and the chat are one session", () => {
+  function withActiveSession(session: unknown) {
+    vi.mocked(useSession).mockReturnValue({
+      session,
+      isLoading: false,
+      error: null,
+    } as never);
+  }
+
+  it("keeps you in the session you are already in", () => {
+    withActiveSession({ id: "conv_iris", agentName: "iris", parentSessionId: null });
+    renderShell("/c/conv_iris");
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+    fireEvent.click(screen.getByRole("button", { name: "Open Iris workspace" }));
+    // Not "/iris" — that is the picker, and it would start a SECOND session,
+    // so the workspace would read a different conversation's reports than the
+    // chat the user just came from.
+    expect(screen.getByTestId("location")).toHaveTextContent("/iris/conv_iris");
+  });
+
+  it("falls back to the picker when the open session is not hers", () => {
+    withActiveSession({ id: "conv_other", agentName: "claude-native-ui", parentSessionId: null });
+    renderShell("/c/conv_other");
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+    fireEvent.click(screen.getByRole("button", { name: "Open Iris workspace" }));
+    expect(screen.getByTestId("location")).toHaveTextContent("/iris");
+    expect(screen.getByTestId("location")).not.toHaveTextContent("/iris/conv_other");
+  });
+
+  it("falls back to the picker from the landing screen, where there is no session", () => {
+    withActiveSession(null);
+    renderShell("/");
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+    fireEvent.click(screen.getByRole("button", { name: "Open Iris workspace" }));
+    expect(screen.getByTestId("location")).toHaveTextContent("/iris");
+  });
 });
 
 describe("AppShell agent drawer wiring", () => {
