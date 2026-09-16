@@ -327,10 +327,13 @@ export function AgentDrawer({ open, onClose, onSelectAgent, onOpenWorkspace }: A
                   <AgentAvatar
                     name={agent.name}
                     // Iris ships her own portrait inside her pinned package and
-                    // the host serves it; an uploaded avatar still wins, and a
+                    // the host serves it. An uploaded avatar still wins — one
+                    // host already has a stored copy of these exact bytes — but
+                    // that copy is hand-made and can drift from the package,
+                    // and a host where nobody uploaded anything would otherwise
+                    // show the one agent with a portrait as grey initials. A
                     // host without the Iris package 404s straight through to
-                    // the initials chip. No other agent has a portrait to fall
-                    // back to.
+                    // the chip. No other agent has a portrait to fall back to.
                     url={
                       avatars?.[agent.name] ??
                       (agent.name === "iris" ? "/v1/iris/portrait" : undefined)

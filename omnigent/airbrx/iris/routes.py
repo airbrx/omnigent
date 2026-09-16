@@ -231,12 +231,19 @@ def create_iris_router(*, auth_provider, agent_store):
     async def portrait(request: Request):
         """Iris's portrait, read from her pinned package, for the agent drawer.
 
-        The drawer's avatar store is an upload surface and nothing has been
-        uploaded to it, so without this the one agent who actually ships a
-        portrait would sit in the roster as two grey initials. Served from the
-        verified archive rather than a copy committed into the web assets, so
-        it cannot drift from the package it belongs to, and behind the same
-        authentication as every other route in this module.
+        The avatar store can hold a picture for her and on at least one host it
+        does: an operator uploaded one at 16:36 on 2026-09-15 whose SHA-256 is
+        byte-for-byte this same packaged file. That upload still wins — the
+        drawer prefers a stored avatar — but it is a hand-made duplicate of a
+        file the package already pins, and nothing keeps the two in step. When
+        the package's portrait changes, the copy in the store goes quietly
+        stale and no one is told.
+
+        So this is the source of truth and the store is the override. It also
+        means a host where nobody has uploaded anything still shows her face
+        instead of two grey initials. Read from the verified archive rather
+        than a copy committed into the web assets, and behind the same
+        authentication as every other route here.
         """
         if require_user(request, auth_provider) is None:
             raise HTTPException(401, "Iris requires host authentication")
@@ -408,11 +415,23 @@ def create_iris_router(*, auth_provider, agent_store):
                 media_type="text/javascript",
                 headers={"Cache-Control": "no-store"},
             )
+        # The app, not captures. `iris-state.json` is already withheld because
+        # it is someone's captured tenant evidence; `demo-state.json` is
+        # withheld for a subtler reason that is the same reason.
+        #
+        # app.js boots through a fallback chain: `api/state`, then
+        # `iris-state.json`, then `demo-state.json`. On a hosted mount the
+        # first 409s until a turn has produced an overview and the second is
+        # 404. Serving the third meant a fresh tenant-bound session opened
+        # showing a complete, entirely synthetic cache report - hit rate,
+        # findings, a tenant line - behind nothing but a small "Synthetic
+        # demo" chip, and `ask()` then answered questions from it locally
+        # without ever calling the host. A session shows its own evidence or
+        # it shows nothing and says so.
         allowed = {
             "app.js",
             "theme.js",
             "style.css",
-            "demo-state.json",
             "assets/iris-portrait.png",
             "assets/airbrx-logo.png",
         }

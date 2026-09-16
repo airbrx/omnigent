@@ -155,6 +155,15 @@ async def test_authenticated_mount_and_private_capture_exclusion(iris_secure_cli
     assert page.status_code == 200, page.text
     assert 'src="host.js"' in page.text
     assert (await iris_secure_client.get(url + "iris-state.json")).status_code == 404
+    # Same principle, less obvious: app.js falls back iris-state -> demo-state,
+    # so serving the synthetic capture opened a fresh tenant-bound session on a
+    # complete fabricated report behind a small chip, and made ask() answer from
+    # it without calling the host. The app is served; captures are not.
+    assert (await iris_secure_client.get(url + "demo-state.json")).status_code == 404
+    # The assets the page genuinely needs are still served, theme.js included -
+    # it is what makes the light/dark picker work.
+    for asset in ("app.js", "theme.js", "style.css", "host.js", "assets/iris-portrait.png"):
+        assert (await iris_secure_client.get(url + asset)).status_code == 200, asset
     assert (await iris_secure_client.get(url + "api/state")).status_code == 409
     iris_secure_client.headers["X-Forwarded-Email"] = "other-user"
     assert (await iris_secure_client.get(url)).status_code == 404

@@ -175,7 +175,12 @@
     } else if (readiness.turn_completed_here) {
       headline = "A turn has completed in this session, so hosted turns work here.";
     } else {
-      headline = "No turn has ever completed in this session.";
+      // The page will say "No report loaded", because the hosted mount serves
+      // the app and not captures. That is correct and it is not an error, so
+      // say what it means and what closes it.
+      headline =
+        "No turn has ever completed in this session, so there is nothing here" +
+        " yet. Use \u201cRefresh from host\u201d to collect this session\u2019s first overview.";
     }
     statusLine.textContent = headline;
     statusLine.dataset.state = readinessError

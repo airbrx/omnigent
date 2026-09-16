@@ -106,8 +106,8 @@ it("states plainly that no turn has ever completed in this session", async () =>
   ) as never;
   mountAdapter();
   await vi.waitFor(() =>
-    expect(document.querySelector(".host-status")?.textContent).toBe(
-      "No turn has ever completed in this session.",
+    expect(document.querySelector(".host-status")?.textContent).toContain(
+      "No turn has ever completed in this session",
     ),
   );
   expect(document.querySelector(".host-bar")?.textContent).toContain(
