@@ -520,7 +520,9 @@ async def test_readiness_surfaces_a_recorded_task_failure_without_echoing_it(
 async def test_readiness_refuses_a_session_that_is_not_the_caller_s_iris(iris_secure_client):
     """Readiness is behind the same authorization as every other hosted route."""
     client = iris_secure_client
-    assert (await client.get("/v1/iris/sessions/not-a-session/ui/api/readiness")).status_code >= 400
+    assert (
+        await client.get("/v1/iris/sessions/not-a-session/ui/api/readiness")
+    ).status_code >= 400
 
 
 async def test_portrait_comes_from_the_pinned_package_and_needs_authentication(
@@ -537,5 +539,7 @@ async def test_portrait_comes_from_the_pinned_package_and_needs_authentication(
     assert response.headers["content-type"] == "image/png"
     assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
 
-    anonymous = await iris_secure_client.get("/v1/iris/portrait", headers={"X-Forwarded-Email": ""})
+    anonymous = await iris_secure_client.get(
+        "/v1/iris/portrait", headers={"X-Forwarded-Email": ""}
+    )
     assert anonymous.status_code == 401
