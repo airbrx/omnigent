@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 
 from omnigent.airbrx.iris.routes import completed_answer, report_references
+from omnigent.airbrx.iris.runtime import TOOLS
 from omnigent.cli_auth import load_token
 
 
@@ -78,7 +79,16 @@ async def main():
         response.raise_for_status()
         items = (await get(f"/v1/sessions/{session}/items", params={"limit": 1000}))["data"]
         answer = completed_answer(items)
-        if not answer or answer["tools"] != ["iris_overview"]:
+        # Assert on the Iris tools only. `completed_answer` returns every name the
+        # boundary allows, and that set deliberately includes harness tools:
+        # ToolSearch loads tool *schemas* and executes nothing against a tenant,
+        # and it shows up in most real turns. Comparing the whole list against
+        # ["iris_overview"] failed a correct run, which is the wrong direction for
+        # an acceptance check to fail in — it would have read as a dispatch defect.
+        # The full list is still recorded below as tools_called; the record keeps
+        # everything, the assertion narrows.
+        iris_tools = [t for t in (answer or {}).get("tools", []) if t in TOOLS]
+        if not answer or iris_tools != ["iris_overview"]:
             raise SystemExit("Native overview dispatch was not observed exactly once")
         refs = report_references(items)
         if not refs:
