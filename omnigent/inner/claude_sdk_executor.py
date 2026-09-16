@@ -1560,6 +1560,7 @@ class ClaudeSDKExecutor(Executor):
         agent_name: str | None = None,
         skills_filter: str | list[str] = "all",
         strict_mcp_config: bool = False,
+        disallowed_tools: list[str] | None = None,
         api_key_helper: str | None = None,
     ) -> None:
         """Create a ClaudeSDKExecutor.
@@ -1616,6 +1617,12 @@ class ClaudeSDKExecutor(Executor):
                 ``<agent-name>:<skill-name>`` namespaced labels in
                 Claude's skill listing (instead of being labeled by
                 the bundle's tmp-dir basename).
+            disallowed_tools: Tool names the CLI must not expose at all,
+                e.g. ``["Skill"]``. Removing a tool from the surface is
+                not the same as denying it at call time: a TOOL_CALL
+                policy can only refuse what it is asked about, and the
+                CLI does not consult ``can_use_tool`` for harness
+                built-ins. ``None`` leaves the surface untouched.
             strict_mcp_config: When ``True``, the CLI uses ONLY the MCP
                 servers this executor passes and ignores every other MCP
                 configuration it would otherwise load — project
@@ -1667,6 +1674,7 @@ class ClaudeSDKExecutor(Executor):
         self._agent_name = agent_name
         self._skills_filter = skills_filter
         self._strict_mcp_config = strict_mcp_config
+        self._disallowed_tools = disallowed_tools
         # Write the bundle's plugin manifest now (idempotent) so that
         # ``--plugin-dir <bundle>`` produces clean
         # ``<agent-name>:<skill-name>`` labels in Claude's skill
@@ -2583,6 +2591,7 @@ class ClaudeSDKExecutor(Executor):
             "system_prompt": system_prompt or None,
             "mcp_servers": mcp_servers if mcp_servers else {},
             "strict_mcp_config": self._strict_mcp_config,
+            "disallowed_tools": list(self._disallowed_tools or []),
             "allowed_tools": allowed_tools,
             "permission_mode": self._permission_mode,
             "max_turns": cfg.extra.get("max_turns"),

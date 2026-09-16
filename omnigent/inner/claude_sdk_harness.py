@@ -327,6 +327,22 @@ def _build_claude_sdk_executor() -> Executor:
         # behaviour, because an agent the operator built around their own
         # connectors has a legitimate claim to them and Iris does not.
         strict_mcp_config=_is_iris_agent(agent_name),
+        # Iris declares `skills: none`, and her three bundled skills reach her
+        # as INSTRUCTIONS, not as something to invoke: `bundle_root()` folds
+        # every SKILL.md body into AGENTS.md (1728 -> 5780 characters). Her own
+        # policy denies `load_skill`, and `tests/test_host.py` has asserted that
+        # refusal since it shipped. So the `Skill` tool is redundant for her.
+        #
+        # It is also ungated. Measured on production session 35340ac1: the CLI
+        # does not consult `can_use_tool` for harness built-ins - `ToolSearch`
+        # ran with no policy evaluation before it - so the `load_skill` refusal
+        # can never fire. A policy can only refuse what it is asked about.
+        # Taking the tool off the surface does not depend on being asked.
+        #
+        # `ToolSearch` is deliberately left: she uses it to find her own tools,
+        # it returns references and executes nothing. Skill loading is
+        # execution surface, which is the whole difference.
+        disallowed_tools=["Skill"] if _is_iris_agent(agent_name) else None,
         api_key_helper=os.environ.get(_ENV_API_KEY_HELPER) or None,
     )
 

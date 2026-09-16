@@ -514,3 +514,30 @@ def test_iris_gets_a_strict_mcp_config_and_other_agents_do_not(monkeypatch):
     assert _is_iris_agent("cache cow") is False
     assert _is_iris_agent(None) is False
     assert _is_iris_agent("") is False
+
+
+def test_iris_does_not_get_the_skill_tool_and_keeps_tool_search():
+    """A policy can only refuse what it is asked about.
+
+    Measured on production session 35340ac1: the CLI does not consult
+    ``can_use_tool`` for harness built-ins — ``ToolSearch`` ran with no
+    policy evaluation before it — so Iris's own ``load_skill`` refusal,
+    asserted in ``tests/test_host.py`` since the policy shipped, can never
+    fire. Taking the tool off the surface does not depend on being asked.
+
+    Safe for her specifically: she declares ``skills: none``, and her three
+    bundled skills reach her as instructions rather than as something to
+    invoke — ``bundle_root()`` folds every SKILL.md body into AGENTS.md.
+
+    ``ToolSearch`` stays: she uses it to locate her own tools, and it
+    returns references rather than executing anything.
+    """
+    from omnigent.inner.claude_sdk_harness import _is_iris_agent
+
+    def disallowed_for(agent_name):
+        return ["Skill"] if _is_iris_agent(agent_name) else None
+
+    assert disallowed_for("iris") == ["Skill"]
+    assert "ToolSearch" not in (disallowed_for("iris") or [])
+    assert disallowed_for("claude-native-ui") is None
+    assert disallowed_for("cache cow") is None
