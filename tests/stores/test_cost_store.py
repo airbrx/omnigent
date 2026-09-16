@@ -60,10 +60,7 @@ def _write_raw_usage(db_uri: str, conversation_id: str, raw: str) -> None:
     engine = get_or_create_engine(db_uri)
     with engine.begin() as connection:
         result = connection.execute(
-            text(
-                "UPDATE omnigent_conversation_metadata "
-                "SET session_usage = :raw WHERE id = :id"
-            ),
+            text("UPDATE omnigent_conversation_metadata SET session_usage = :raw WHERE id = :id"),
             # session_usage is a CompressedText column: framed bytes, not
             # plain text. Go through the real encoder so these tests exercise
             # the storage format the store actually reads.
@@ -93,9 +90,7 @@ def test_priced_sessions_sum_and_report_full_coverage(cost_store, conversation_s
 def test_an_unpriced_session_is_unknown_not_zero(cost_store, conversation_store):
     """A model missing from the pricing catalog yields tokens but no price."""
     priced = conversation_store.create_conversation(agent_id=IRIS)
-    conversation_store.set_session_usage(
-        priced.id, {"total_tokens": 100, "total_cost_usd": 1.0}
-    )
+    conversation_store.set_session_usage(priced.id, {"total_tokens": 100, "total_cost_usd": 1.0})
     unpriced = conversation_store.create_conversation(agent_id=IRIS)
     conversation_store.set_session_usage(unpriced.id, {"total_tokens": 900})
 
@@ -111,9 +106,7 @@ def test_an_unpriced_session_is_unknown_not_zero(cost_store, conversation_store)
     assert agent.unpriced_tokens == 900
 
 
-def test_no_priced_session_reports_none_rather_than_zero_dollars(
-    cost_store, conversation_store
-):
+def test_no_priced_session_reports_none_rather_than_zero_dollars(cost_store, conversation_store):
     """The distinction the whole module exists for."""
     conversation = conversation_store.create_conversation(agent_id=IRIS)
     conversation_store.set_session_usage(conversation.id, {"total_tokens": 500})
@@ -129,9 +122,7 @@ def test_a_count_arriving_as_a_string_is_refused_not_coerced(
 ):
     """``"7"`` is a changed transport, not a seven."""
     conversation = conversation_store.create_conversation(agent_id=IRIS)
-    _write_raw_usage(
-        db_uri, conversation.id, '{"total_tokens": "700", "total_cost_usd": 0.5}'
-    )
+    _write_raw_usage(db_uri, conversation.id, '{"total_tokens": "700", "total_cost_usd": 0.5}')
 
     (agent,) = cost_store.window(*WINDOW).agents
     assert agent.malformed_sessions == 1
@@ -149,9 +140,7 @@ def test_a_boolean_is_not_a_number(cost_store, conversation_store, db_uri):
     assert agent.cost_usd is None
 
 
-def test_an_unparseable_blob_is_reported_not_skipped(
-    cost_store, conversation_store, db_uri
-):
+def test_an_unparseable_blob_is_reported_not_skipped(cost_store, conversation_store, db_uri):
     conversation = conversation_store.create_conversation(agent_id=IRIS)
     _write_raw_usage(db_uri, conversation.id, "{not json at all")
 
@@ -161,9 +150,7 @@ def test_an_unparseable_blob_is_reported_not_skipped(
     assert agent.cost_usd is None
 
 
-def test_a_session_that_never_ran_is_unpriced_not_malformed(
-    cost_store, conversation_store
-):
+def test_a_session_that_never_ran_is_unpriced_not_malformed(cost_store, conversation_store):
     """A fresh session has no usage yet; that is not a data defect."""
     conversation_store.create_conversation(agent_id=IRIS)
 
@@ -173,18 +160,12 @@ def test_a_session_that_never_ran_is_unpriced_not_malformed(
     assert agent.unpriced_sessions == 1
 
 
-def test_sessions_outside_the_window_are_excluded(
-    cost_store, conversation_store, db_uri
-):
+def test_sessions_outside_the_window_are_excluded(cost_store, conversation_store, db_uri):
     inside = conversation_store.create_conversation(agent_id=IRIS)
-    conversation_store.set_session_usage(
-        inside.id, {"total_tokens": 10, "total_cost_usd": 1.0}
-    )
+    conversation_store.set_session_usage(inside.id, {"total_tokens": 10, "total_cost_usd": 1.0})
     _set_created_at(db_uri, inside.id, 1_500)
     outside = conversation_store.create_conversation(agent_id=IRIS)
-    conversation_store.set_session_usage(
-        outside.id, {"total_tokens": 10, "total_cost_usd": 99.0}
-    )
+    conversation_store.set_session_usage(outside.id, {"total_tokens": 10, "total_cost_usd": 99.0})
     _set_created_at(db_uri, outside.id, 5_000)
 
     (agent,) = cost_store.window(1_000, 2_000).agents
@@ -195,18 +176,14 @@ def test_sessions_outside_the_window_are_excluded(
 def test_sub_agent_sessions_are_not_counted_twice(cost_store, conversation_store):
     """A native harness folds sub-agent usage into the parent's blob."""
     parent = conversation_store.create_conversation(agent_id=IRIS)
-    conversation_store.set_session_usage(
-        parent.id, {"total_tokens": 100, "total_cost_usd": 2.0}
-    )
+    conversation_store.set_session_usage(parent.id, {"total_tokens": 100, "total_cost_usd": 2.0})
     child = conversation_store.create_conversation(
         kind="sub_agent",
         parent_conversation_id=parent.id,
         agent_id=IRIS,
         sub_agent_name="researcher",
     )
-    conversation_store.set_session_usage(
-        child.id, {"total_tokens": 100, "total_cost_usd": 2.0}
-    )
+    conversation_store.set_session_usage(child.id, {"total_tokens": 100, "total_cost_usd": 2.0})
 
     window = cost_store.window(*WINDOW)
     (agent,) = window.agents
@@ -214,17 +191,11 @@ def test_sub_agent_sessions_are_not_counted_twice(cost_store, conversation_store
     assert window.cost_usd == pytest.approx(2.0)
 
 
-def test_agents_are_grouped_and_ordered_by_measured_cost(
-    cost_store, conversation_store
-):
+def test_agents_are_grouped_and_ordered_by_measured_cost(cost_store, conversation_store):
     cheap = conversation_store.create_conversation(agent_id=CHEAP)
-    conversation_store.set_session_usage(
-        cheap.id, {"total_tokens": 1, "total_cost_usd": 0.01}
-    )
+    conversation_store.set_session_usage(cheap.id, {"total_tokens": 1, "total_cost_usd": 0.01})
     dear = conversation_store.create_conversation(agent_id=DEAR)
-    conversation_store.set_session_usage(
-        dear.id, {"total_tokens": 1, "total_cost_usd": 5.00}
-    )
+    conversation_store.set_session_usage(dear.id, {"total_tokens": 1, "total_cost_usd": 5.00})
 
     window = cost_store.window(*WINDOW)
     assert [a.agent_id for a in window.agents] == [DEAR, CHEAP]
@@ -248,9 +219,7 @@ class TestMeteredBasis:
             conversation.id, {"total_tokens": 1_000, "total_cost_usd": 3.0}
         )
 
-    def test_subscription_spend_is_avoided_not_billed(
-        self, cost_store, conversation_store
-    ):
+    def test_subscription_spend_is_avoided_not_billed(self, cost_store, conversation_store):
         self._one_priced_session(conversation_store)
         window = cost_store.window(*WINDOW, provider_kind="subscription")
         assert window.metered is False
