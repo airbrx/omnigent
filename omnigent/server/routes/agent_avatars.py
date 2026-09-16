@@ -106,13 +106,45 @@ def create_agent_avatars_router(
     avatar_store: AgentAvatarStore,
     *,
     auth_provider: AuthProvider | None = None,
+    agent_store: Any | None = None,
 ) -> APIRouter:
-    """Build the router for ``/v1/agent-avatars``."""
+    """Build the router for ``/v1/agent-avatars``.
+
+    ``agent_store`` is optional so every existing caller and test keeps
+    working unchanged; when it is supplied, the listing drops rows whose
+    agent no longer exists. See :func:`list_agent_avatars`.
+    """
     router = APIRouter()
 
     @router.get("/agent-avatars")
     async def list_agent_avatars(request: Request) -> dict[str, Any]:
+        """Avatars for agents that still exist.
+
+        Rows are keyed by ``agent_name`` and nothing deletes one when its
+        agent goes away, so a name that is later reused inherits the previous
+        agent's face — silently, and the drawer has no way to tell. Filtering
+        the listing fixes what a user can actually see, because the drawer
+        reads only this endpoint.
+
+        Two things this deliberately does NOT do.
+
+        It does not delete the orphan. A listing that destroys uploaded images
+        as a side effect will eventually meet a transiently empty or
+        differently scoped agent store and take pictures that should have
+        lived; a read should not be able to lose data. The bytes stay until an
+        explicit ``DELETE`` or a retention sweep.
+
+        And it asks by name, one row at a time, rather than enumerating agents
+        once. ``AgentStore.list`` is cursor-paginated with a default limit of
+        20 — using it would make a workspace's 21st agent look deleted and
+        hide a perfectly good avatar. Avatars are bounded by how many agents
+        ever had a picture uploaded, so the extra lookups are cheap and the
+        answer is exact.
+        """
         require_user(request, auth_provider)
+        rows = avatar_store.list_all()
+        if agent_store is not None:
+            rows = [a for a in rows if agent_store.get_by_name(a.agent_name) is not None]
         return {
             "data": [
                 {
@@ -120,7 +152,7 @@ def create_agent_avatars_router(
                     "url": f"/v1/agent-avatars/{quote(a.agent_name, safe='')}",
                     "updated_at": a.updated_at,
                 }
-                for a in avatar_store.list_all()
+                for a in rows
             ]
         }
 
