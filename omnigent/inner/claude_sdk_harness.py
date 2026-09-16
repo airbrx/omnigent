@@ -333,16 +333,27 @@ def _build_claude_sdk_executor() -> Executor:
         # policy denies `load_skill`, and `tests/test_host.py` has asserted that
         # refusal since it shipped. So the `Skill` tool is redundant for her.
         #
-        # Removing it is defence in depth, not a repair for a gate known to
-        # be absent. Whether `can_use_tool` is consulted for harness built-ins
-        # is UNSETTLED. On production session 35340ac1 the SDK's own
-        # `CanUseToolShadowedWarning` named only the four `mcp__omnigent__*`
-        # tools, so `ToolSearch` is not pre-approved and should be asked
-        # about. Nothing was logged before it ran - but only DENY verdicts
-        # were logged then, so that silence is equally consistent with an
-        # ALLOW. Since #30 the ALLOW is logged too, which makes this a
-        # question one turn and one grep can settle. Until someone runs
-        # that, do not write either reading down as fact.
+        # It is also, as far as one measured turn shows, ungated. On
+        # production session 35340ac1 (host 605f4d3d, so #30's ALLOW logging
+        # was live) `ToolSearch` ran at 09:23:31 and the turn made no
+        # `/policies/evaluate` call for it - its only two bracket the turn,
+        # where the LLM-request and LLM-response phases sit. Invocation
+        # implies that POST: `_can_use_tool_gate` -> `_evaluate_tool_call_policy`
+        # has no branch that skips it for a non-`mcp__omnigent__` tool once an
+        # evaluator is wired, and one was, because those two calls happened.
+        # So the callback was not invoked, and the `load_skill` refusal it
+        # would have carried could not fire.
+        #
+        # Do NOT re-derive the opposite from `CanUseToolShadowedWarning`. That
+        # warning is computed only from `allowed_tools` entries that allow a
+        # whole tool; it lists what IS shadowed and implies nothing about
+        # anything else. Its own text says settings-file allow rules "can also
+        # shadow the callback but are not visible here". A tool's absence from
+        # it is not evidence the callback runs for that tool. Two of us read it
+        # that way and were wrong.
+        #
+        # Even so, removing `Skill` is defence in depth first: it holds whether
+        # or not the gate is consulted, which is why it is worth doing.
         #
         # `ToolSearch` is deliberately left: she uses it to find her own tools,
         # it returns references and executes nothing. Skill loading is

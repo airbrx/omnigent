@@ -519,15 +519,22 @@ def test_iris_gets_a_strict_mcp_config_and_other_agents_do_not(monkeypatch):
 def test_iris_does_not_get_the_skill_tool_and_keeps_tool_search():
     """A policy can only refuse what it is asked about.
 
-    Defence in depth, not a repair for a gate known to be absent. Whether
-    the CLI consults ``can_use_tool`` for harness built-ins is unsettled:
-    production session 35340ac1 logged no evaluation before ``ToolSearch``
-    ran, but only DENY verdicts were logged then, so that silence is
-    equally consistent with an ALLOW — and the SDK's own
-    ``CanUseToolShadowedWarning`` on that session named only the four
-    ``mcp__omnigent__*`` tools, which says ``ToolSearch`` is *not*
-    pre-approved and should be asked about. Removing the tool holds either
-    way, which is why it is worth doing before the question is answered.
+    Measured on production session 35340ac1, on a host carrying #30's ALLOW
+    logging: ``ToolSearch`` ran and the turn made no ``/policies/evaluate``
+    call for it. Invocation would have forced one — ``_can_use_tool_gate``
+    reaches the evaluator for any non-``mcp__omnigent__`` tool — and an
+    evaluator was wired, since the turn's other two evaluate calls happened.
+    So the callback was not invoked for it, and a ``load_skill`` refusal
+    carried there could not fire.
+
+    ``CanUseToolShadowedWarning`` does not say otherwise: it is computed only
+    from ``allowed_tools`` whole-tool entries, so it lists what IS shadowed
+    and implies nothing about tools absent from it.
+
+    Removing ``Skill`` is defence in depth regardless — it holds whether or
+    not the gate is consulted. Safe for her specifically: she declares
+    ``skills: none``, and ``bundle_root()`` folds every SKILL.md body into
+    AGENTS.md, so her bundled skills reach her as instructions.
 
     Safe for her specifically: she declares ``skills: none``, and her three
     bundled skills reach her as instructions rather than as something to
