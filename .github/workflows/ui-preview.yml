@@ -585,6 +585,23 @@ jobs:
           fi
           APP_NAME="omnigent-ui-preview-pr-$PR_NUMBER"
 
+          # Previews are deployed with these same credentials, so if the host is
+          # unset no app can ever have been created and there is provably
+          # nothing to delete. Without this, every PR close in a repo that has
+          # not configured previews fails on `oauth-m2m auth: not configured` --
+          # a red check for work the job was never able to do.
+          #
+          # Only the host is checked. An unset host means previews were never
+          # configured; a host present but credentials missing is a real,
+          # broken configuration that should still fail loudly here rather than
+          # leak apps.
+          if [[ -z "${DATABRICKS_HOST:-}" ]]; then
+            echo 'DATABRICKS_HOST is not set: UI previews are not configured for this repository.'
+            echo 'No preview app can exist, so there is nothing to delete.'
+            record_result unconfigured 'databricks host not configured'
+            exit 0
+          fi
+
           databricks apps list -o json > "$INVENTORY"
           if ! jq -e --arg name "$APP_NAME" '.[] | select(.name == $name)' \
               "$INVENTORY" > "$APP_JSON"; then
