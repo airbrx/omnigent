@@ -491,3 +491,26 @@ def test_bundle_dir_unset_passes_none(
 
     assert captured["bundle_dir"] is None
     assert captured["agent_name"] is None
+
+
+def test_iris_gets_a_strict_mcp_config_and_other_agents_do_not(monkeypatch):
+    """Iris's contract is four read-only tools and no ambient ones.
+
+    Without ``strict_mcp_config`` the CLI loads the operator's own MCP
+    configuration on top of the servers we pass. A verified fixture turn
+    carried 154 tools: Iris's four plus 150 from personal connectors,
+    including ``Gmail__send_message`` and ``Calendar__delete_event``, on a
+    session whose tool-boundary guardrail had failed to load.
+
+    Scoped to Iris on purpose — an agent an operator built around their own
+    connectors has a claim to them, and Iris does not. So this asserts both
+    halves: on for her, off for everyone else.
+    """
+    from omnigent.inner.claude_sdk_harness import _is_iris_agent
+
+    assert _is_iris_agent("iris") is True
+    assert _is_iris_agent("iris (fork of iris)") is True
+    assert _is_iris_agent("claude-native-ui") is False
+    assert _is_iris_agent("cache cow") is False
+    assert _is_iris_agent(None) is False
+    assert _is_iris_agent("") is False

@@ -1559,6 +1559,7 @@ class ClaudeSDKExecutor(Executor):
         bundle_dir: pathlib.Path | None = None,
         agent_name: str | None = None,
         skills_filter: str | list[str] = "all",
+        strict_mcp_config: bool = False,
         api_key_helper: str | None = None,
     ) -> None:
         """Create a ClaudeSDKExecutor.
@@ -1615,6 +1616,12 @@ class ClaudeSDKExecutor(Executor):
                 ``<agent-name>:<skill-name>`` namespaced labels in
                 Claude's skill listing (instead of being labeled by
                 the bundle's tmp-dir basename).
+            strict_mcp_config: When ``True``, the CLI uses ONLY the MCP
+                servers this executor passes and ignores every other MCP
+                configuration it would otherwise load — project
+                ``.mcp.json``, user/global settings, plugin-provided
+                servers. Off by default, which is the CLI's own default
+                and the behaviour every existing agent has today.
             skills_filter: Host-skill filter (``"all"`` / ``"none"`` /
                 ``list[str]``). Maps to the SDK's ``skills`` option:
                 ``"all"`` → enable every host-discovered skill,
@@ -1659,6 +1666,7 @@ class ClaudeSDKExecutor(Executor):
         self._bundle_dir = bundle_dir
         self._agent_name = agent_name
         self._skills_filter = skills_filter
+        self._strict_mcp_config = strict_mcp_config
         # Write the bundle's plugin manifest now (idempotent) so that
         # ``--plugin-dir <bundle>`` produces clean
         # ``<agent-name>:<skill-name>`` labels in Claude's skill
@@ -2574,6 +2582,7 @@ class ClaudeSDKExecutor(Executor):
             "tools": base_tools,
             "system_prompt": system_prompt or None,
             "mcp_servers": mcp_servers if mcp_servers else {},
+            "strict_mcp_config": self._strict_mcp_config,
             "allowed_tools": allowed_tools,
             "permission_mode": self._permission_mode,
             "max_turns": cfg.extra.get("max_turns"),
