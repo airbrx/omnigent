@@ -214,6 +214,26 @@ def _resolve_retry_policy() -> RetryPolicy:
         return RetryPolicy()
 
 
+def _is_iris_agent(agent_name: str | None) -> bool:
+    """Is this harness running Iris (or a fork of her)?
+
+    Defers to ``airbrx.iris.package.is_iris`` rather than re-deriving the
+    name test, so the two cannot drift; that helper already gates every
+    Iris tool dispatch. Imported lazily and failing open to ``False``,
+    because this harness must start for every other agent even if the
+    airbrx package is absent from the install.
+    """
+    if not agent_name:
+        return False
+    try:
+        from types import SimpleNamespace
+
+        from omnigent.airbrx.iris.package import is_iris
+    except ImportError:
+        return False
+    return is_iris(SimpleNamespace(name=agent_name))
+
+
 def _resolve_skills_filter() -> str | list[str]:
     """
     Resolve the inner-executor ``skills_filter`` from env config.
@@ -295,6 +315,18 @@ def _build_claude_sdk_executor() -> Executor:
         bundle_dir=bundle_dir,
         agent_name=agent_name,
         skills_filter=_resolve_skills_filter(),
+        # Iris's contract is four read-only tools and no ambient ones. Without
+        # this the CLI also loads the operator's own MCP configuration, and a
+        # verified fixture turn carried 154 tools: Iris's four plus 150 from
+        # personal connectors, including Gmail send_message and trash_message,
+        # Calendar delete_event and Drive trash_file — on a session whose
+        # tool-boundary guardrail had failed to load. `skills: none` already
+        # closes the equivalent hole for host skills; nothing closed it for MCP.
+        #
+        # Scoped to Iris deliberately. Every other agent keeps today's
+        # behaviour, because an agent the operator built around their own
+        # connectors has a legitimate claim to them and Iris does not.
+        strict_mcp_config=_is_iris_agent(agent_name),
         api_key_helper=os.environ.get(_ENV_API_KEY_HELPER) or None,
     )
 
