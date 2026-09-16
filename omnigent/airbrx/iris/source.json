@@ -1,7 +1,7 @@
 {
   "repository": "airbrx/iris",
-  "revision": "fb0c4daa12254a6c7069d347ac4232f21c6d318e",
-  "sha256": "8974e57ad15dfdd8c0da433bd1cdef1834f5ffa8450a3beb6aefd14495de87bb",
+  "revision": "bd8ac0a4f54bbf0b364391ed3c592f91de6cfa1c",
+  "sha256": "c1437e8f0fd9281cac11c1b73511cb436133dd90d996cfda1791a7a9fa7e9e5c",
   "files": [
     "iris/__init__.py",
     "iris/artifacts.py",
@@ -29,6 +29,7 @@
     "iris/tenants.py",
     "iris/tools.py",
     "iris/ui_bridge.py",
+    "iris/watch.py",
     "omnigent/AGENTS.md",
     "omnigent/config.yaml",
     "omnigent/skills/airbrx-rule-author/SKILL.md",
@@ -43,7 +44,6 @@
     "ui/assets/PROVENANCE.md",
     "ui/assets/airbrx-logo.png",
     "ui/assets/iris-portrait.png",
-    "ui/demo-state.json",
     "ui/index.html",
     "ui/style.css",
     "ui/theme.js"
