@@ -89,5 +89,26 @@ def validate_spec(spec) -> None:
             if path.read_bytes() != (bundle_root() / expected_tool["path"]).read_bytes():
                 raise ValueError("Iris tool source differs from the pinned bundle")
             tool["path"] = expected_tool["path"]
+    # The same normalisation the tools above have had all along, for skills.
+    #
+    # `source_root()` extracts the verified archive into a per-process
+    # `mkdtemp`, and `spec/parser.py` sets `skill_dir` to the absolute
+    # directory it parsed the SKILL.md from (`spec/types.py` documents it as
+    # absolute). So the registering process and the validating process produce
+    # the same skills at different absolute paths, `actual != expected` below
+    # is true for that reason alone, and EVERY Iris tool dispatch fails with
+    # "Iris requires the pinned registered bundle without overrides" — which is
+    # what shipped: zero Iris tools on a live production session.
+    #
+    # Unlike `local_tools[].path`, this does not need to read bytes to be safe.
+    # A skill's identity is already in the comparison: `name`, `description`
+    # and the full `content` of its SKILL.md are all fields of the same
+    # dataclass and are all still compared. A genuinely different skill still
+    # fails. `skill_dir` is the one field that cannot survive a temp directory,
+    # and it is the only one being set aside.
+    for skill in actual["skills"]:
+        expected_skill = next((s for s in expected["skills"] if s["name"] == skill["name"]), None)
+        if expected_skill and Path(skill["skill_dir"]).is_absolute():
+            skill["skill_dir"] = expected_skill["skill_dir"]
     if actual != expected:
         raise ValueError("Iris requires the pinned registered bundle without overrides")
