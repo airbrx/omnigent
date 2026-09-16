@@ -43,6 +43,64 @@ from omnigent.db.db_models import (
 )
 from omnigent.db.utils import get_or_create_engine, make_named_managed_session_maker
 
+#: Published LIST prices, for converting warehouse quantities to dollars.
+#:
+#: These are vendor list rates, not anyone's contract rate. Committed-use and
+#: negotiated agreements are routinely below list, so a figure derived from
+#: these is an UPPER BOUND on list terms and must be labelled as such wherever
+#: it is shown. An operator who knows their real rate should override it.
+#:
+#: Snowflake: USD per credit, AWS US East (N. Virginia), on-demand, from the
+#: Snowflake Service Consumption Table effective 2026-09-01.
+SNOWFLAKE_LIST_USD_PER_CREDIT = {
+    "standard": 2.00,
+    "enterprise": 3.00,
+    "business_critical": 4.00,
+    "vps": 6.00,
+}
+
+#: Databricks: USD per DBU, AWS, Premium tier, on-demand. The SKU matters more
+#: than the edition does -- SQL Serverless is roughly 3x SQL Classic -- so the
+#: caller must name one rather than get a default that flatters or punishes.
+DATABRICKS_LIST_USD_PER_DBU = {
+    "jobs_light": 0.07,
+    "jobs_compute": 0.15,
+    "sql_classic": 0.22,
+    "all_purpose": 0.55,
+    "sql_pro": 0.55,
+    "sql_serverless": 0.70,
+}
+
+#: Where the numbers above came from, carried into the API response so a reader
+#: can check them rather than trust them.
+WAREHOUSE_RATE_SOURCE = (
+    "Vendor list prices: Snowflake Service Consumption Table (AWS US East, "
+    "on-demand, effective 2026-09-01) and Databricks AWS Premium-tier published "
+    "DBU rates. List, not contract: negotiated and committed-use rates are "
+    "routinely lower, so any figure derived from these is an upper bound on "
+    "list terms."
+)
+
+
+def warehouse_rate(vendor, plan):
+    """USD per unit for *vendor*, or ``None`` when the plan is unrecognised.
+
+    Refuses rather than defaults. Picking a plan on the caller's behalf is how
+    a cost page ends up quoting SQL Serverless money for SQL Classic work.
+
+    :param vendor: ``"snowflake"`` or ``"databricks"``.
+    :param plan: Edition (Snowflake) or compute SKU (Databricks).
+    :returns: USD per credit or per DBU, or ``None``.
+    """
+    table = {
+        "snowflake": SNOWFLAKE_LIST_USD_PER_CREDIT,
+        "databricks": DATABRICKS_LIST_USD_PER_DBU,
+    }.get(vendor)
+    if table is None:
+        return None
+    return table.get(plan)
+
+
 #: Provider kinds whose token cost is NOT billed per token. A session run
 #: under one of these still reports a ``total_cost_usd`` — the harness
 #: computes it from catalog rates — but that figure is what the tokens

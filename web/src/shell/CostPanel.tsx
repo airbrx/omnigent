@@ -53,7 +53,15 @@ export interface CostResponse {
   warehouse: {
     standing: string;
     available: boolean;
-    requires: string[];
+    rates: {
+      known: boolean;
+      basis: string;
+      source: string;
+      snowflake_per_credit: Record<string, number>;
+      databricks_per_dbu: Record<string, number>;
+      caveat: string;
+    };
+    quantity: { known: boolean; missing: string[]; explanation: string };
     explanation: string;
   };
 }
@@ -203,14 +211,38 @@ export function CostPanel({ cost }: { cost: CostResponse | undefined }) {
       </Section>
 
       <Section title="Warehouse cost, Airbrx versus direct" standing="unavailable">
-        {/* No number here at all — not even a zero. The panel's job in this
-            state is to say what it would need. */}
+        {/* Still no total — not even a zero. But the two halves of "cannot be
+            computed" are shown separately, because one of them is solved and
+            showing them as one list is what made the price look like the
+            blocker when the measurement was. */}
         <p className="text-sm" role="note">
           {cost.warehouse.explanation}
         </p>
-        <ul className="text-muted-foreground mt-2 list-disc pl-5 text-xs">
-          {cost.warehouse.requires.map((requirement) => (
-            <li key={requirement}>{requirement}</li>
+
+        <p className="mt-3 text-xs font-medium">
+          Rates: {cost.warehouse.rates.known ? "known" : "unknown"} ({cost.warehouse.rates.basis})
+        </p>
+        <ul className="text-muted-foreground mt-1 space-y-0.5 text-xs">
+          {Object.entries(cost.warehouse.rates.snowflake_per_credit).map(([plan, rate]) => (
+            <li key={`sf-${plan}`}>
+              Snowflake {plan.replace(/_/g, " ")}: {usd.format(rate)} per credit
+            </li>
+          ))}
+          {Object.entries(cost.warehouse.rates.databricks_per_dbu).map(([sku, rate]) => (
+            <li key={`db-${sku}`}>
+              Databricks {sku.replace(/_/g, " ")}: {usd.format(rate)} per DBU
+            </li>
+          ))}
+        </ul>
+        <p className="text-muted-foreground mt-1 text-xs italic">{cost.warehouse.rates.caveat}</p>
+
+        <p className="mt-3 text-xs font-medium">
+          Consumption: {cost.warehouse.quantity.known ? "measured" : "not measured"}
+        </p>
+        <p className="text-muted-foreground mt-1 text-xs">{cost.warehouse.quantity.explanation}</p>
+        <ul className="text-muted-foreground mt-1 list-disc pl-5 text-xs">
+          {cost.warehouse.quantity.missing.map((item) => (
+            <li key={item}>{item}</li>
           ))}
         </ul>
       </Section>

@@ -30,22 +30,38 @@ from fastapi.responses import JSONResponse
 from omnigent.server.auth import AuthProvider
 from omnigent.server.routes._auth_helpers import require_user
 from omnigent.stores.agent_store import AgentStore
-from omnigent.stores.cost_store import AgentTokenCost, CostStore, CostWindow
+from omnigent.stores.cost_store import (
+    DATABRICKS_LIST_USD_PER_DBU,
+    SNOWFLAKE_LIST_USD_PER_CREDIT,
+    WAREHOUSE_RATE_SOURCE,
+    AgentTokenCost,
+    CostStore,
+    CostWindow,
+)
 
 #: Widest window the endpoint will answer, in seconds (366 days). A
 #: request for "everything" is a table scan of every session ever run;
 #: it is refused with a stated limit rather than served slowly.
 MAX_WINDOW_SECONDS = 366 * 24 * 60 * 60
 
-#: Shown wherever the warehouse block appears. The two rates are contract
-#: terms that live in nothing this server can read, and a list-price guess
-#: on a money page is the one thing this surface must never ship.
+#: Shown wherever the warehouse block appears.
+#:
+#: This previously said the blocker was the cost basis. That was incomplete, and
+#: the correction is worth keeping visible: published list rates ARE lookupable
+#: and are now carried in `cost_store`, so the price was the SOLVABLE unknown.
+#: The binding one is the quantity -- the gateway evidence reports
+#: `warehouse_time_ms: None` and `executions: None`, so there is no measured
+#: warehouse consumption to price at any rate. Converting nothing at a known
+#: rate still yields nothing.
 WAREHOUSE_REQUIREMENT = (
     "Warehouse cost through Airbrx versus direct to Snowflake or Databricks "
-    "needs an operator-supplied cost basis: USD per Snowflake credit and USD "
-    "per Databricks DBU. Neither is derivable from anything this server can "
-    "read, and a list-price estimate on a cost page reads as a measurement. "
-    "Supply the rates to enable this figure."
+    "cannot be computed, and the missing piece is the measurement, not the "
+    "price. Published list rates are available and are included below. What is "
+    "absent is consumption: the gateway evidence reports no warehouse time and "
+    "no execution count, so there is no quantity to price. A figure would also "
+    "need the warehouse size or instance SKU, since credits and DBUs accrue per "
+    "hour at a rate set by that. Supplying a contract rate alone will not "
+    "produce this number."
 )
 
 
@@ -175,10 +191,35 @@ def create_cost_router(
             "warehouse": {
                 "standing": "unavailable",
                 "available": False,
-                "requires": [
-                    "usd_per_snowflake_credit",
-                    "usd_per_databricks_dbu",
-                ],
+                # Split deliberately: one of these is solved and one is not, and
+                # collapsing them into a single "requires" list is what let the
+                # price look like the blocker.
+                "rates": {
+                    "known": True,
+                    "basis": "list",
+                    "source": WAREHOUSE_RATE_SOURCE,
+                    "snowflake_per_credit": dict(SNOWFLAKE_LIST_USD_PER_CREDIT),
+                    "databricks_per_dbu": dict(DATABRICKS_LIST_USD_PER_DBU),
+                    "caveat": (
+                        "List prices, not this tenant's contract rate. Committed-use "
+                        "and negotiated agreements are routinely below list, so any "
+                        "figure derived from these is an upper bound on list terms."
+                    ),
+                },
+                "quantity": {
+                    "known": False,
+                    "missing": [
+                        "warehouse_time_ms",
+                        "executions",
+                        "warehouse_size_or_sku",
+                    ],
+                    "explanation": (
+                        "The gateway evidence reports warehouse_time_ms and "
+                        "executions as unavailable, not as zero. Credits and DBUs "
+                        "also accrue per hour at a rate set by the warehouse size "
+                        "or instance SKU, which no source here reports."
+                    ),
+                },
                 "explanation": WAREHOUSE_REQUIREMENT,
             },
         }

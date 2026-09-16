@@ -139,20 +139,42 @@ async def test_metered_routing_reports_spend_and_no_avoidance(cost_store, conver
     assert body["cost_avoided"]["modelled_usd"] == pytest.approx(0.0)
 
 
-async def test_warehouse_comparison_states_its_requirement_and_shows_nothing(client):
-    """The panel that cannot be computed tonight must say why."""
+async def test_warehouse_carries_known_rates_but_no_computed_total(client):
+    """Rates are solved; the quantity is not, and the block must say which."""
     warehouse = (await _get(client))["warehouse"]
     assert warehouse["available"] is False
     assert warehouse["standing"] == "unavailable"
-    assert warehouse["requires"] == [
-        "usd_per_snowflake_credit",
-        "usd_per_databricks_dbu",
-    ]
-    assert "cost basis" in warehouse["explanation"]
-    # No dollar figure may appear anywhere in this block.
+
+    # The price is no longer the blocker: published list rates are carried.
+    assert warehouse["rates"]["known"] is True
+    assert warehouse["rates"]["basis"] == "list"
+    assert warehouse["rates"]["snowflake_per_credit"]["enterprise"] == 3.00
+    assert warehouse["rates"]["databricks_per_dbu"]["sql_serverless"] == 0.70
+    # And they are never presented as this tenant's contract rate.
+    assert "not this tenant's contract rate" in warehouse["rates"]["caveat"]
+
+    # The quantity is the real blocker, named rather than implied.
+    assert warehouse["quantity"]["known"] is False
+    assert "warehouse_time_ms" in warehouse["quantity"]["missing"]
+    assert "not as zero" in warehouse["quantity"]["explanation"]
+
+    # Still no computed dollar total: a known rate times an unknown quantity is
+    # not a number, and this assertion is what keeps it that way.
+    assert "total_usd" not in warehouse
     assert not any(key.endswith("_usd") for key in warehouse), (
-        "the warehouse block must not carry a dollar figure it cannot support"
+        "the warehouse block must not carry a total it cannot support"
     )
+
+
+async def test_warehouse_rates_refuse_an_unknown_plan_rather_than_defaulting(client):
+    """Choosing a SKU for the caller is how SQL Serverless money gets quoted
+    for SQL Classic work."""
+    from omnigent.stores.cost_store import warehouse_rate
+
+    assert warehouse_rate("snowflake", "enterprise") == 3.00
+    assert warehouse_rate("snowflake", "platinum") is None
+    assert warehouse_rate("databricks", "sql_classic") == 0.22
+    assert warehouse_rate("oracle", "whatever") is None
 
 
 async def test_an_unresolvable_agent_is_marked_not_blanked(client, conversations):

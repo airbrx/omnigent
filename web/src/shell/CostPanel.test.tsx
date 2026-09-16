@@ -39,8 +39,20 @@ function envelope(overrides: Partial<CostResponse> = {}): CostResponse {
     warehouse: {
       standing: "unavailable",
       available: false,
-      requires: ["usd_per_snowflake_credit", "usd_per_databricks_dbu"],
-      explanation: "Needs an operator-supplied cost basis.",
+      rates: {
+        known: true,
+        basis: "list",
+        source: "Vendor list prices.",
+        snowflake_per_credit: { standard: 2.0, enterprise: 3.0 },
+        databricks_per_dbu: { sql_classic: 0.22, sql_serverless: 0.7 },
+        caveat: "List prices, not this tenant's contract rate.",
+      },
+      quantity: {
+        known: false,
+        missing: ["warehouse_time_ms", "executions"],
+        explanation: "The gateway reports warehouse_time_ms as unavailable, not as zero.",
+      },
+      explanation: "The missing piece is the measurement, not the price.",
     },
     ...overrides,
   };
@@ -126,11 +138,23 @@ describe("CostPanel", () => {
     expect(screen.getByText("Not applicable: this spend was billed per token")).toBeInTheDocument();
   });
 
-  it("shows no dollar figure at all in the warehouse section", () => {
+  it("shows the known rates and the unmeasured consumption as separate things", () => {
     render(<CostPanel cost={envelope()} />);
-    const requirements = screen.getByText("usd_per_snowflake_credit");
-    expect(requirements).toBeInTheDocument();
-    expect(screen.getByText("Needs an operator-supplied cost basis.")).toBeInTheDocument();
+    const warehouse = section("Warehouse cost, Airbrx versus direct");
+
+    // The price is solved, and shown.
+    expect(within(warehouse).getByText(/Rates: known/)).toBeInTheDocument();
+    expect(
+      within(warehouse).getByText(/Snowflake enterprise: \$3\.00 per credit/),
+    ).toBeInTheDocument();
+    expect(
+      within(warehouse).getByText("List prices, not this tenant's contract rate."),
+    ).toBeInTheDocument();
+
+    // The measurement is not, and that is named as the actual blocker.
+    expect(within(warehouse).getByText(/Consumption: not measured/)).toBeInTheDocument();
+    expect(within(warehouse).getByText(/not as zero/)).toBeInTheDocument();
+    expect(within(warehouse).getByText("warehouse_time_ms")).toBeInTheDocument();
   });
 
   it("names an unresolved agent instead of rendering a blank row", () => {
