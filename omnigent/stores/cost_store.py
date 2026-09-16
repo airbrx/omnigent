@@ -268,6 +268,16 @@ class CostStore:
         """
         if end_utc <= start_utc:
             raise ValueError("Cost window must be a non-empty [start, end) range")
+        # `conversations.created_at` is an INTEGER column, which is 32-bit on
+        # PostgreSQL. A bound outside that range reaches the driver as an opaque
+        # NumericValueOutOfRange rather than anything a caller can act on, and
+        # SQLite accepts it silently, so the two backends disagree about whether
+        # the same query is valid. Refuse it here, in terms of the input.
+        if not (-(2**31) <= start_utc <= 2**31 - 1 and -(2**31) <= end_utc <= 2**31 - 1):
+            raise ValueError(
+                "Cost window bounds must be 32-bit epoch seconds; "
+                f"got start={start_utc}, end={end_utc}"
+            )
         with self._session("cost_window") as session:
             rows = session.execute(
                 select(

@@ -14,7 +14,10 @@ from omnigent.db.compression import encode as encode_text
 from omnigent.db.utils import get_or_create_engine
 from omnigent.stores.cost_store import CostStore
 
-WINDOW = (0, 4_000_000_000)
+# `conversations.created_at` is an INTEGER column: 32-bit on PostgreSQL, so an
+# epoch bound above 2_147_483_647 is a DataError there while SQLite's dynamic
+# typing accepts it silently. This window must stay inside int32.
+WINDOW = (0, 2_000_000_000)
 
 # ``agent_id`` is a Uuid16 column: 32-char hex, not a display name. Resolving
 # an id back to a name is the route's job, not the store's.
@@ -245,3 +248,14 @@ class TestMeteredBasis:
         assert window.avoided_usd is None
         # The measured cost itself is still known; only its split is not.
         assert window.cost_usd == pytest.approx(3.0)
+
+
+def test_a_bound_outside_int32_is_refused_in_terms_of_the_input(cost_store):
+    """PostgreSQL's created_at is 32-bit; SQLite's is not.
+
+    Without this the same call is a silent success on one backend and an
+    opaque psycopg NumericValueOutOfRange on the other -- which is exactly
+    how it reached CI green locally and red on PostgreSQL.
+    """
+    with pytest.raises(ValueError, match="32-bit epoch seconds"):
+        cost_store.window(0, 4_000_000_000)
