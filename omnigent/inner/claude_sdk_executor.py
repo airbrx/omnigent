@@ -2338,6 +2338,26 @@ class ClaudeSDKExecutor(Executor):
         )
         _action = getattr(_verdict, "action", None)
         if _action in ("POLICY_ACTION_ALLOW", "POLICY_ACTION_UNSPECIFIED"):
+            # Log the permit as well as the refusals. Every other branch below
+            # records its outcome; this one returned silently, so a tool that
+            # policy ALLOWED was indistinguishable in the logs from a tool that
+            # never reached the gate at all.
+            #
+            # That cost real time. On a production Iris turn, `ToolSearch` ran
+            # while the server's own /policies/evaluate denies it on request.
+            # Deciding whether the gate had allowed it or never seen it was
+            # impossible from the logs — the two look identical — and the whole
+            # boundary turns on a value nothing recorded.
+            #
+            # INFO rather than DEBUG deliberately: a handful of lines per turn,
+            # and for a security boundary "what did it permit, and why" is worth
+            # exactly as much as "what did it refuse".
+            logger.info(
+                "TOOL_CALL policy allowed tool=%s action=%s reason=%s",
+                tool_name,
+                _action,
+                getattr(_verdict, "reason", None),
+            )
             # ALLOW / no-match — fall through (caller decides whether to also
             # run the human-consent elicitation gate).
             return None
