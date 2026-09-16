@@ -118,29 +118,32 @@ def create_agent_avatars_router(
 
     @router.get("/agent-avatars")
     async def list_agent_avatars(request: Request) -> dict[str, Any]:
-        """Avatars for agents that still exist.
-
-        Rows are keyed by ``agent_name`` and nothing deletes one when its
-        agent goes away, so a name that is later reused inherits the previous
-        agent's face — silently, and the drawer has no way to tell. Filtering
-        the listing fixes what a user can actually see, because the drawer
-        reads only this endpoint.
-
-        Two things this deliberately does NOT do.
-
-        It does not delete the orphan. A listing that destroys uploaded images
-        as a side effect will eventually meet a transiently empty or
-        differently scoped agent store and take pictures that should have
-        lived; a read should not be able to lose data. The bytes stay until an
-        explicit ``DELETE`` or a retention sweep.
-
-        And it asks by name, one row at a time, rather than enumerating agents
-        once. ``AgentStore.list`` is cursor-paginated with a default limit of
-        20 — using it would make a workspace's 21st agent look deleted and
-        hide a perfectly good avatar. Avatars are bounded by how many agents
-        ever had a picture uploaded, so the extra lookups are cheap and the
-        answer is exact.
-        """
+        """List avatars for agents that still exist."""
+        # FastAPI publishes this function's docstring as the endpoint
+        # description in openapi.json, which CI syncs to the docs site — so the
+        # reasoning below is a comment. An API consumer needs the sentence
+        # above; they do not need our bug history.
+        #
+        # Rows are keyed by `agent_name` and nothing deletes one when its agent
+        # goes away, so a name that is later reused inherits the previous
+        # agent's face — silently, and the drawer has no way to tell. Filtering
+        # the listing fixes what a user can actually see, because the drawer
+        # reads only this endpoint.
+        #
+        # Two things this deliberately does NOT do.
+        #
+        # It does not delete the orphan. A listing that destroys uploaded
+        # images as a side effect will eventually meet a transiently empty or
+        # differently scoped agent store and take pictures that should have
+        # lived; a read should not be able to lose data. The bytes stay until
+        # an explicit DELETE or a retention sweep.
+        #
+        # And it asks by name, one row at a time, rather than enumerating
+        # agents once. `AgentStore.list` is cursor-paginated with a default
+        # limit of 20 — using it would make a workspace's 21st agent look
+        # deleted and hide a perfectly good avatar. Avatars are bounded by how
+        # many agents ever had a picture uploaded, so the lookups are cheap and
+        # the answer is exact.
         require_user(request, auth_provider)
         rows = avatar_store.list_all()
         if agent_store is not None:
