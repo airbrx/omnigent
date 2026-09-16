@@ -142,8 +142,7 @@ class ReportReferencesNamespacing(unittest.TestCase):
         output = json.dumps({"downloads": [{"filename": "report.json", "file_id": "f1"}]})
         return [
             call(name, "c1"),
-            {"type": "function_call_output", "call_id": "c1", "output": output,
-             "created_at": 7},
+            {"type": "function_call_output", "call_id": "c1", "output": output, "created_at": 7},
         ]
 
     def test_a_namespaced_call_yields_its_report_reference(self):
@@ -157,8 +156,9 @@ class ReportReferencesNamespacing(unittest.TestCase):
         # Unrelated to namespacing, pinned because a budget-expired run sets
         # error_code and the resulting empty list reads as a missing report.
         items = self.items("mcp__omnigent__iris_overview")
-        items[1]["output"] = json.dumps({"error_code": "budget", "downloads": [
-            {"filename": "report.json", "file_id": "f1"}]})
+        items[1]["output"] = json.dumps(
+            {"error_code": "budget", "downloads": [{"filename": "report.json", "file_id": "f1"}]}
+        )
         self.assertEqual(report_references(items), [])
 
 

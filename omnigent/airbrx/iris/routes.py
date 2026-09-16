@@ -87,9 +87,7 @@ _ALLOWED_IN_A_TURN = TOOLS | _HARNESS_TOOLS
 
 
 def completed_answer(items: list[dict]) -> dict | None:
-    tools = [
-        bare_tool_name(i.get("name")) for i in items if i.get("type") == "function_call"
-    ]
+    tools = [bare_tool_name(i.get("name")) for i in items if i.get("type") == "function_call"]
     if set(tools) - _ALLOWED_IN_A_TURN:
         raise HTTPException(409, "Unexpected Iris tool boundary; turn rejected")
     answers = [
