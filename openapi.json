@@ -10486,6 +10486,47 @@
         ]
       }
     },
+    "/v1/iris/sessions/{session_id}/ui/api/readiness": {
+      "get": {
+        "description": "What this host has actually checked about running a turn here.\n\nDeliberately not a prediction. Whether the execution host can reach the\nmodel is not knowable from the server side until a turn runs, so this\nreports the preconditions it did verify, whether a turn has ever\ncompleted in this session, and whether the session recorded a failure \u2014\nand names the rest as unverified rather than letting the workspace show\na hopeful spinner over an unproven connection.\n\nThe host's own error text is deliberately not forwarded: the rest of\nthis module refuses to reflect execution diagnostics, which can carry\ncredential material. The workspace is told a failure happened and where\nthe authoritative record is, which is what it needs to stop claiming.",
+        "operationId": "readiness_v1_iris_sessions__session_id__ui_api_readiness_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "iris"
+        ]
+      }
+    },
     "/v1/iris/sessions/{session_id}/ui/api/refresh": {
       "post": {
         "operationId": "refresh_v1_iris_sessions__session_id__ui_api_refresh_post",
