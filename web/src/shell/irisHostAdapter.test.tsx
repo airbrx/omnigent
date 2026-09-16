@@ -228,12 +228,7 @@ it("names what kind of failure it was, rather than collapsing them to one senten
   // same defect O1 removed from the packaged app.js, and leaving it here while
   // fixing it there would have been inconsistent in the direction that flatters
   // this file.
-  const seen: string[] = [];
-  for (const [name, expected] of [
-    ["TimeoutError", /did not respond in time/],
-    ["TypeError", /could not be reached/],
-    ["AbortError", /was cancelled/],
-  ] as const) {
+  async function readinessSaying(name: string, expected: RegExp) {
     document.body.innerHTML = `<div class="shell"><div class="chat" id="chat"></div></div>`;
     window.fetch = vi.fn(async () => {
       const error = Error("boom");
@@ -244,8 +239,15 @@ it("names what kind of failure it was, rather than collapsing them to one senten
     await vi.waitFor(() =>
       expect(document.querySelector(".host-status")?.textContent).toMatch(expected),
     );
-    seen.push(document.querySelector(".host-status")?.textContent ?? "");
+    const said = document.querySelector(".host-status")?.textContent ?? "";
     while (mounted.length) mounted.pop()?.();
+    return said;
   }
-  expect(new Set(seen).size).toBe(3);
+
+  // Sequential by necessity, not by preference: each case mounts an adapter
+  // against the one jsdom document and reads it back, so they cannot overlap.
+  const timedOut = await readinessSaying("TimeoutError", /did not respond in time/);
+  const unreachable = await readinessSaying("TypeError", /could not be reached/);
+  const cancelled = await readinessSaying("AbortError", /was cancelled/);
+  expect(new Set([timedOut, unreachable, cancelled]).size).toBe(3);
 });
