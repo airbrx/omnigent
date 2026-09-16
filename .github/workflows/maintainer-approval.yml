@@ -20,6 +20,13 @@ name: Maintainer Approval
 # An approval is carried across later commits only when every push since it was
 # made by trusted automation, judged by the authenticated actor of each head's
 # `pull_request_target` run (hence `actions: read`), never by the commit email.
+#
+# The gate is enforced only where it can be satisfied. `.github/MAINTAINER` lists
+# the upstream project's maintainers, so in a fork no approver is ever present:
+# the check stays red on every push forever and mails a failure to whoever
+# pushed. It gates nothing in that state -- it isn't a required check downstream,
+# so PRs merge red -- leaving only the noise. A fork that keeps its own roster
+# opts back in with the `ENFORCE_MAINTAINER_APPROVAL` repository variable.
 
 on:
   pull_request_target:
@@ -43,7 +50,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
+      - name: Decide whether the gate applies here
+        id: applies
+        env:
+          REPO:     ${{ github.repository }}
+          UPSTREAM: omnigent-ai/omnigent
+          OPT_IN:   ${{ vars.ENFORCE_MAINTAINER_APPROVAL }}
+        run: |
+          # The job reports the `Maintainer Approval` check either way, so branch
+          # protection always resolves; only enforcement is conditional.
+          if [ "$REPO" = "$UPSTREAM" ] || [ "$OPT_IN" = "true" ]; then
+            echo "enforce=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enforce=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Maintainer Approval not enforced::$REPO keeps no maintainer roster of its own. List approvers in .github/MAINTAINER and set the ENFORCE_MAINTAINER_APPROVAL repository variable to 'true' to turn the gate back on."
+          fi
+
       - name: Check out approval evaluator
+        if: steps.applies.outputs.enforce == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: main
@@ -51,6 +75,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Require maintainer approval
+        if: steps.applies.outputs.enforce == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO:     ${{ github.repository }}
