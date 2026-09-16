@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useAgentAvatars } from "@/hooks/useAgentAvatars";
 import { type AvailableAgent, useAvailableAgents } from "@/hooks/useAvailableAgents";
+import { partitionAgentsByKind, selectableSessionAgents } from "@/lib/agentGrouping";
 import { agentAvatarColor, agentInitials } from "@/lib/agentInitials";
 import { getOmnigentHostConfig } from "@/lib/host";
 import { authenticatedFetch } from "@/lib/identity";
@@ -225,6 +226,29 @@ export function AgentDrawer({ open, onClose, onSelectAgent, onOpenWorkspace }: A
   // Off by default: the roster is for picking an agent, and a Change/Remove
   // pair on every row would put housekeeping in front of that on every open.
   const [editingAvatars, setEditingAvatars] = useState(false);
+  // Abram: "custom agents like the Cache Cow and Iris in a menu and the coding
+  // CLIs in another area instead of one big long list." On this server that
+  // list is already 20 rows and two unlike things are shown as one kind: agents
+  // picked for what they *know*, and harnesses picked for what they *do*.
+  //
+  // No new field, and no new grouping rule: `partitionAgentsByKind` is the
+  // split the new-session picker and the fork picker already use, keyed on the
+  // server's own `builtin` with a name allowlist as the older-server fallback.
+  // This drawer was simply the one surface that never adopted it.
+  //
+  // `selectableSessionAgents` for the same reason — clicking a row here starts
+  // a session, so offering an agent the composer would refuse to start (the
+  // superseded `nessie`, the headless `kimi` harnesses) is an inconsistency
+  // this drawer had and the other two did not.
+  //
+  // Deliberate divergence, flagged rather than silent: the other pickers list
+  // built-ins first. Here the custom agents come first, because that is the
+  // half this drawer exists to make findable and the half the request names.
+  const { builtins, customs } = partitionAgentsByKind(selectableSessionAgents(agents ?? []));
+  const groups = [
+    { heading: "Custom agents", slug: "custom", rows: customs },
+    { heading: "Coding CLIs", slug: "clis", rows: builtins },
+  ];
 
   const drawerRef = useRef<HTMLElement>(null);
 
@@ -314,64 +338,81 @@ export function AgentDrawer({ open, onClose, onSelectAgent, onOpenWorkspace }: A
         </header>
 
         <div className="flex-1 overflow-y-auto p-2">
-          {(agents ?? []).map((agent) => {
-            return (
-              <div key={agent.id}>
-                <button
-                  type="button"
-                  aria-label={agent.name === "iris" ? "Start chat with Iris" : undefined}
-                  data-testid={`agent-drawer-row-${agent.name}`}
-                  onClick={() => onSelectAgent(agent)}
-                  className="flex w-full items-center gap-3 rounded-md p-2 text-left hover:bg-muted"
+          {groups.map(({ heading, slug, rows }) =>
+            rows.length === 0 ? null : (
+              // `aria-labelledby` is a space-separated LIST of id references,
+              // so a heading id containing a space ("agent-group-Custom
+              // agents") is read as two ids, neither of which exists — the
+              // section then has no accessible name, silently loses its
+              // implicit `region` role, and a screen-reader user gets an
+              // unlabelled group. Hence the slug. Caught by the test, not by
+              // eye, which is the only way this kind of thing is ever caught.
+              <section key={slug} aria-labelledby={`agent-group-${slug}`}>
+                <h3
+                  id={`agent-group-${slug}`}
+                  className="px-2 pt-3 pb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide"
                 >
-                  <AgentAvatar
-                    name={agent.name}
-                    // Iris ships her own portrait inside her pinned package and
-                    // the host serves it. An uploaded avatar still wins — one
-                    // host already has a stored copy of these exact bytes — but
-                    // that copy is hand-made and can drift from the package,
-                    // and a host where nobody uploaded anything would otherwise
-                    // show the one agent with a portrait as grey initials. A
-                    // host without the Iris package 404s straight through to
-                    // the chip. No other agent has a portrait to fall back to.
-                    url={
-                      avatars?.[agent.name] ??
-                      (agent.name === "iris" ? "/v1/iris/portrait" : undefined)
-                    }
-                  />
-                  <span className="min-w-0">
-                    {/* Label from display_name so the drawer reads the same as
+                  {heading}
+                </h3>
+                {rows.map((agent) => (
+                  <div key={agent.id}>
+                    <button
+                      type="button"
+                      aria-label={agent.name === "iris" ? "Start chat with Iris" : undefined}
+                      data-testid={`agent-drawer-row-${agent.name}`}
+                      onClick={() => onSelectAgent(agent)}
+                      className="flex w-full items-center gap-3 rounded-md p-2 text-left hover:bg-muted"
+                    >
+                      <AgentAvatar
+                        name={agent.name}
+                        // Iris ships her own portrait inside her pinned package and
+                        // the host serves it. An uploaded avatar still wins — one
+                        // host already has a stored copy of these exact bytes — but
+                        // that copy is hand-made and can drift from the package,
+                        // and a host where nobody uploaded anything would otherwise
+                        // show the one agent with a portrait as grey initials. A
+                        // host without the Iris package 404s straight through to
+                        // the chip. No other agent has a portrait to fall back to.
+                        url={
+                          avatars?.[agent.name] ??
+                          (agent.name === "iris" ? "/v1/iris/portrait" : undefined)
+                        }
+                      />
+                      <span className="min-w-0">
+                        {/* Label from display_name so the drawer reads the same as
                       the picker; the avatar keys on `name`, which is what
                       the server stores. */}
-                    <span className="block truncate font-medium text-ui">
-                      {agent.display_name || agent.name}
-                    </span>
-                    {agent.description ? (
-                      <span className="block truncate text-muted-foreground text-xs">
-                        {agent.description}
+                        <span className="block truncate font-medium text-ui">
+                          {agent.display_name || agent.name}
+                        </span>
+                        {agent.description ? (
+                          <span className="block truncate text-muted-foreground text-xs">
+                            {agent.description}
+                          </span>
+                        ) : null}
                       </span>
-                    ) : null}
-                  </span>
-                </button>
-                {agent.name === "iris" && onOpenWorkspace && (
-                  <Button
-                    variant="ghost"
-                    className="ml-12"
-                    aria-label="Open Iris workspace"
-                    onClick={onOpenWorkspace}
-                  >
-                    Open workspace
-                  </Button>
-                )}
-                {editingAvatars && (
-                  <AvatarControls
-                    name={agent.name}
-                    hasStoredAvatar={Boolean(avatars?.[agent.name])}
-                  />
-                )}
-              </div>
-            );
-          })}
+                    </button>
+                    {agent.name === "iris" && onOpenWorkspace && (
+                      <Button
+                        variant="ghost"
+                        className="ml-12"
+                        aria-label="Open Iris workspace"
+                        onClick={onOpenWorkspace}
+                      >
+                        Open workspace
+                      </Button>
+                    )}
+                    {editingAvatars && (
+                      <AvatarControls
+                        name={agent.name}
+                        hasStoredAvatar={Boolean(avatars?.[agent.name])}
+                      />
+                    )}
+                  </div>
+                ))}
+              </section>
+            ),
+          )}
         </div>
       </aside>
     </>
