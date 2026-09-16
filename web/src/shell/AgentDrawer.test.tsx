@@ -336,3 +336,71 @@ describe("setting an agent's picture", () => {
     expect(alert).toHaveTextContent("the host could not be reached");
   });
 });
+
+// Abram: "custom agents like the Cache Cow and Iris in a menu and the coding
+// CLIs in another area instead of one big long list."
+describe("grouping the roster", () => {
+  const ROSTER = [
+    { id: "i", name: "iris", display_name: "Iris", description: "Cache analyst", builtin: false },
+    { id: "c", name: "cache cow", display_name: "Cache Cow", description: "Leads", builtin: false },
+    {
+      id: "cc",
+      name: "claude-native-ui",
+      display_name: "Claude Code",
+      description: "",
+      builtin: true,
+    },
+    { id: "cx", name: "codex-native-ui", display_name: "Codex", description: "", builtin: true },
+  ];
+
+  function headings() {
+    return screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+  }
+
+  it("separates agents picked for what they know from harnesses picked for what they do", () => {
+    vi.mocked(useAvailableAgents).mockReturnValue({ data: ROSTER } as never);
+    renderDrawer();
+    expect(headings()).toEqual(["Custom agents", "Coding CLIs"]);
+
+    const custom = screen.getByRole("region", { name: "Custom agents" });
+    const clis = screen.getByRole("region", { name: "Coding CLIs" });
+    expect(custom).toContainElement(screen.getByTestId("agent-drawer-row-iris"));
+    expect(custom).toContainElement(screen.getByTestId("agent-drawer-row-cache cow"));
+    expect(clis).toContainElement(screen.getByTestId("agent-drawer-row-claude-native-ui"));
+    expect(clis).toContainElement(screen.getByTestId("agent-drawer-row-codex-native-ui"));
+  });
+
+  it("puts the custom agents first, which is the half this drawer exists to surface", () => {
+    vi.mocked(useAvailableAgents).mockReturnValue({ data: ROSTER } as never);
+    renderDrawer();
+    // A deliberate divergence from the other pickers, so assert it rather than
+    // letting a later refactor quietly reorder it back.
+    expect(headings()[0]).toBe("Custom agents");
+  });
+
+  it("keeps Iris's portrait through the grouping", () => {
+    vi.mocked(useAvailableAgents).mockReturnValue({ data: ROSTER } as never);
+    renderDrawer();
+    expect(screen.getByRole("region", { name: "Custom agents" })).toContainElement(
+      screen.getByAltText("iris"),
+    );
+  });
+
+  it("does not offer an agent the composer would refuse to start", () => {
+    // `nessie` is superseded and the bare `kimi` harnesses are headless; the
+    // other pickers already hide them, and a click here starts a session.
+    vi.mocked(useAvailableAgents).mockReturnValue({
+      data: [...ROSTER, { id: "n", name: "nessie", display_name: "Nessie", description: "" }],
+    } as never);
+    renderDrawer();
+    expect(screen.queryByTestId("agent-drawer-row-nessie")).toBeNull();
+  });
+
+  it("renders no heading for a group with nothing in it", () => {
+    vi.mocked(useAvailableAgents).mockReturnValue({
+      data: ROSTER.filter((a) => a.builtin === false),
+    } as never);
+    renderDrawer();
+    expect(headings()).toEqual(["Custom agents"]);
+  });
+});
