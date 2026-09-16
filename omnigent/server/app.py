@@ -2844,6 +2844,7 @@ def create_app(
             create_agent_avatars_router(
                 agent_avatar_store,
                 auth_provider=auth_provider,
+                agent_store=agent_store,
             ),
             prefix="/v1",
             tags=["agent-avatars"],

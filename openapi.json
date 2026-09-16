@@ -8928,6 +8928,7 @@
     },
     "/v1/agent-avatars": {
       "get": {
+        "description": "List avatars for agents that still exist.",
         "operationId": "list_agent_avatars_v1_agent_avatars_get",
         "responses": {
           "200": {

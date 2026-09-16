@@ -250,3 +250,53 @@ async def test_put_requires_auth(unauth_avatar_client):
 async def test_delete_requires_auth(unauth_avatar_client):
     r = await unauth_avatar_client.delete("/v1/agent-avatars/researcher")
     assert r.status_code == 401, r.text
+
+
+async def test_listing_hides_an_avatar_whose_agent_is_gone(avatar_store, db_uri, tmp_path):
+    """A reused agent name must not inherit the previous agent's face.
+
+    Avatar rows are keyed by ``agent_name`` and nothing deletes one when the
+    agent goes away. The drawer reads only this listing, so filtering it is
+    what fixes the behaviour a person can actually see.
+    """
+    from types import SimpleNamespace
+
+    avatar_store.put("still-here", PNG, "image/png")
+    avatar_store.put("long-gone", PNG, "image/png")
+
+    live = {"still-here"}
+    agent_store = SimpleNamespace(
+        get_by_name=lambda name: SimpleNamespace(id=name) if name in live else None
+    )
+    app = FastAPI()
+    app.include_router(
+        create_agent_avatars_router(avatar_store, agent_store=agent_store), prefix="/v1"
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        names = [
+            row["agent_name"] for row in (await client.get("/v1/agent-avatars")).json()["data"]
+        ]
+        assert names == ["still-here"]
+
+        # The bytes are NOT destroyed by a read. A listing that deleted would
+        # eventually meet a transiently empty or differently scoped agent
+        # store and take pictures that should have lived.
+        assert avatar_store.get("long-gone") is not None
+
+        # And the orphan comes back the moment its name is registered again,
+        # which is the proof that nothing was silently thrown away.
+        live.add("long-gone")
+        names = [
+            row["agent_name"] for row in (await client.get("/v1/agent-avatars")).json()["data"]
+        ]
+        assert names == ["long-gone", "still-here"]
+
+
+async def test_listing_without_an_agent_store_is_unchanged(avatar_client, avatar_store):
+    """Every existing caller keeps working: no agent_store, no filtering."""
+    avatar_store.put("orphan", PNG, "image/png")
+    names = [
+        row["agent_name"] for row in (await avatar_client.get("/v1/agent-avatars")).json()["data"]
+    ]
+    assert "orphan" in names
