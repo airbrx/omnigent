@@ -251,3 +251,77 @@ it("names what kind of failure it was, rather than collapsing them to one senten
   const cancelled = await readinessSaying("AbortError", /was cancelled/);
   expect(new Set([timedOut, unreachable, cancelled]).size).toBe(3);
 });
+
+/** The host bar control whose label is exactly `label`. */
+function control(label: string) {
+  return [...document.querySelectorAll<HTMLButtonElement>(".host-bar button")].find(
+    (b) => b.textContent === label,
+  );
+}
+
+it("says the downloads list is empty of files, not of reports", async () => {
+  // Q11. This lists what the native session has written to its resources, and
+  // it rendered "No reports in this session yet" directly above a workspace
+  // showing a full report — telling a reader their report did not exist.
+  window.fetch = vi.fn(async (input: RequestInfo | URL) =>
+    String(input).includes("readiness")
+      ? Response.json({ turn_completed_here: false, verified: [], unverified: [] })
+      : Response.json({ data: [] }),
+  ) as never;
+  mountAdapter();
+
+  control("Show session downloads")?.click();
+  await vi.waitFor(() =>
+    expect(document.querySelector(".host-files")?.textContent).toContain(
+      "No downloadable report files",
+    ),
+  );
+  const said = document.querySelector(".host-files")?.textContent ?? "";
+  expect(said).not.toBe("No reports in this session yet. Use Refresh from host.");
+  // It must not deny the report the workspace may well be showing.
+  expect(said).toMatch(/workspace below may still be showing/i);
+});
+
+it("stops the workspace's own refresh when the turn is cancelled", async () => {
+  // Q26. The workspace's refresh held every import, chip and question behind
+  // it, and this button cancelled the agent turn and left that fetch running —
+  // so the page stayed locked behind a control that said it had stopped.
+  window.fetch = vi.fn(async (input: RequestInfo | URL) =>
+    String(input).includes("readiness")
+      ? Response.json({ turn_completed_here: false, verified: [], unverified: [] })
+      : Response.json({ ok: true }),
+  ) as never;
+  const cancelRefresh = vi.fn(() => true);
+  (window as unknown as { cancelRefresh: () => boolean }).cancelRefresh = cancelRefresh;
+  mountAdapter();
+
+  control("Cancel current turn")?.click();
+  await vi.waitFor(() => expect(cancelRefresh).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() =>
+    expect(document.querySelector(".host-bar")?.textContent).toContain(
+      "The workspace refresh was stopped",
+    ),
+  );
+  delete (window as unknown as { cancelRefresh?: () => boolean }).cancelRefresh;
+});
+
+it("cancels the turn even when the packaged workspace has no cancelRefresh", async () => {
+  // The adapter and the packaged workspace are pinned separately, so an older
+  // archive will not define it. That must not break cancelling the turn, and
+  // must not claim a refresh was stopped when none was.
+  window.fetch = vi.fn(async (input: RequestInfo | URL) =>
+    String(input).includes("readiness")
+      ? Response.json({ turn_completed_here: false, verified: [], unverified: [] })
+      : Response.json({ ok: true }),
+  ) as never;
+  delete (window as unknown as { cancelRefresh?: () => boolean }).cancelRefresh;
+  mountAdapter();
+
+  control("Cancel current turn")?.click();
+  await vi.waitFor(() =>
+    expect(document.querySelector(".host-bar")?.textContent).toContain("Cancellation requested"),
+  );
+  expect(document.querySelector(".host-bar")?.textContent).not.toContain(
+    "The workspace refresh was stopped",
+  );
+});
