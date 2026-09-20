@@ -1,0 +1,172 @@
+# Read the TOOL_CALL policy verdicts out of the box's journal.
+#
+# Exists to settle one question that has been open on the Iris board since
+# 15 Sep: when a hosted Iris turn calls a tool, does the executor gate see it?
+#
+# Why a workflow and not a shell command: the verdicts are `logger.info` lines
+# in `omnigent/inner/claude_sdk_executor.py`, so they land in the journal of
+# `omnigent-server.service` on i-02eb2f52439574844 and nowhere else. No HTTP
+# route exposes them — /v1/sessions/<id>/{events,logs,messages,tool-calls,trace}
+# all 404. Reaching them needs AWS credentials, and the only credentials that
+# can SendCommand to that box are the OIDC role below, which trusts this repo
+# on the omnigent-airbrx-server branch.
+#
+#   >>> DISPATCH IT ON `omnigent-airbrx-server`, NOT ON `main`. <<<
+#
+# The role's trust policy is branch-scoped; a dispatch from any other ref fails
+# at "Configure AWS credentials" with a role-assumption error, before it can
+# reach the box. The branch tracks main, so this file arrives there with the
+# next deploy push.
+#
+# Read-only by construction: the remote script runs `journalctl` and nothing
+# else. It does not restart, write, install, or change a single byte on the
+# box. There is deliberately no `push:` trigger — nothing here should ever run
+# unattended.
+name: Iris TOOL_CALL verdict log
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "How far back to read the journal, in hours."
+        required: false
+        default: "24"
+      tool:
+        description: "Tool name to isolate in the summary (substring match). ToolSearch is the one the board is about."
+        required: false
+        default: "ToolSearch"
+      max_lines:
+        description: "Cap on verdict lines printed."
+        required: false
+        default: "200"
+
+# One reader at a time; queue rather than cancel so a dispatch is never lost.
+concurrency:
+  group: iris-verdict-log
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # mint the OIDC token for the AWS role
+
+env:
+  AWS_REGION: us-east-1
+  INSTANCE_ID: i-02eb2f52439574844
+
+jobs:
+  read-verdicts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Refuse to run off the trusted branch
+        # Fail here with a sentence, rather than 40 lines later with an opaque
+        # STS error that reads like the role is broken.
+        if: github.ref != 'refs/heads/omnigent-airbrx-server'
+        run: |
+          echo "::error::Dispatch this on omnigent-airbrx-server. The deploy role's trust policy is scoped to that branch, so an OIDC token minted from ${{ github.ref }} cannot assume it."
+          exit 1
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::724412576111:role/omnigent-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Read verdicts over SSM
+        env:
+          HOURS: ${{ inputs.hours }}
+          TOOL: ${{ inputs.tool }}
+          MAX_LINES: ${{ inputs.max_lines }}
+        run: |
+          set -euo pipefail
+
+          # Reject anything that is not a plain number / identifier before it
+          # reaches a remote shell. These inputs are interpolated into a script
+          # that runs as root on the box.
+          case "${HOURS}" in ''|*[!0-9]*) echo "::error::hours must be digits"; exit 1 ;; esac
+          case "${MAX_LINES}" in ''|*[!0-9]*) echo "::error::max_lines must be digits"; exit 1 ;; esac
+          case "${TOOL}" in *[!A-Za-z0-9_.-]*) echo "::error::tool must be [A-Za-z0-9_.-]"; exit 1 ;; esac
+
+          cat > /tmp/remote.sh <<EOS
+          set -uo pipefail
+          echo "BOX_TIME=\$(date -u +%FT%TZ)"
+          echo "UNIT_STATE=\$(systemctl is-active omnigent-server 2>/dev/null || echo unknown)"
+          echo "---BEGIN-VERDICTS---"
+          # Every branch of the gate logs one of these four; #30 added the first.
+          journalctl -u omnigent-server --since "${HOURS} hours ago" --no-pager -o cat \
+            | grep -aE 'TOOL_CALL policy (allowed|denied|requested approval|failed closed)' \
+            | tail -n ${MAX_LINES} || true
+          echo "---END-VERDICTS---"
+          echo "---BEGIN-COUNTS---"
+          for kind in allowed denied 'requested approval' 'failed closed'; do
+            n=\$(journalctl -u omnigent-server --since "${HOURS} hours ago" --no-pager -o cat \
+                 | grep -acE "TOOL_CALL policy \${kind} " || true)
+            echo "total_\${kind// /_}=\${n:-0}"
+          done
+          for kind in allowed denied 'requested approval' 'failed closed'; do
+            n=\$(journalctl -u omnigent-server --since "${HOURS} hours ago" --no-pager -o cat \
+                 | grep -aE "TOOL_CALL policy \${kind} " | grep -ac "tool=[^ ]*${TOOL}" || true)
+            echo "${TOOL}_\${kind// /_}=\${n:-0}"
+          done
+          echo "---END-COUNTS---"
+          EOS
+
+          CID=$(aws ssm send-command \
+            --instance-ids "${INSTANCE_ID}" \
+            --document-name AWS-RunShellScript \
+            --comment "read iris TOOL_CALL verdicts (GitHub Actions run ${GITHUB_RUN_ID})" \
+            --parameters "$(jq -n --rawfile s /tmp/remote.sh '{commands: ($s | split("\n"))}')" \
+            --query Command.CommandId --output text)
+          echo "SSM command: ${CID}"
+
+          STATUS=Pending
+          for _ in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation --command-id "${CID}" \
+              --instance-id "${INSTANCE_ID}" --query Status --output text 2>/dev/null || echo Pending)
+            case "${STATUS}" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 5
+          done
+          echo "=== status: ${STATUS} ==="
+
+          aws ssm get-command-invocation --command-id "${CID}" --instance-id "${INSTANCE_ID}" \
+            --query StandardOutputContent --output text | tee /tmp/verdicts.out
+          aws ssm get-command-invocation --command-id "${CID}" --instance-id "${INSTANCE_ID}" \
+            --query StandardErrorContent --output text >&2
+
+          [ "${STATUS}" = "Success" ]
+
+      - name: Say what it means
+        if: always()
+        env:
+          TOOL: ${{ inputs.tool }}
+          HOURS: ${{ inputs.hours }}
+        run: |
+          set -uo pipefail
+          [ -f /tmp/verdicts.out ] || { echo "No output captured." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+
+          allowed=$(grep -oE "^${TOOL}_allowed=[0-9]+" /tmp/verdicts.out | cut -d= -f2 | tail -1)
+          denied=$(grep -oE "^${TOOL}_denied=[0-9]+" /tmp/verdicts.out | cut -d= -f2 | tail -1)
+          total=$(grep -oE "^total_allowed=[0-9]+" /tmp/verdicts.out | cut -d= -f2 | tail -1)
+          allowed=${allowed:-0}; denied=${denied:-0}; total=${total:-0}
+
+          {
+            echo "## TOOL_CALL verdicts — last ${HOURS}h"
+            echo
+            echo "| | count |"
+            echo "|---|---|"
+            echo "| \`${TOOL}\` allowed | ${allowed} |"
+            echo "| \`${TOOL}\` denied | ${denied} |"
+            echo "| all tools allowed | ${total} |"
+            echo
+            if [ "${allowed}" -gt 0 ] || [ "${denied}" -gt 0 ]; then
+              echo "**The gate saw \`${TOOL}\`.** It is being consulted, and the verdict above is what it answered."
+              echo "This is the reading the Iris board has been unable to make since 15 Sep."
+            elif [ "${total}" -gt 0 ]; then
+              echo "**The gate is running — it logged ${total} allow(s) for other tools — but never saw \`${TOOL}\`.**"
+              echo "If a turn in this window did call \`${TOOL}\`, that is the enforcement gap: the call bypassed the gate."
+              echo "Check that a turn actually ran in this window before concluding anything."
+            else
+              echo "**No verdicts at all in this window.** That is not an answer — it is an empty sample."
+              echo "Either no turn ran, or the journal has rotated past it. Run a turn, then dispatch this again."
+              echo "An absence here supports no conclusion; that mistake already cost this build two lanes."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
