@@ -71,12 +71,17 @@ checkout, unpinned actions), and known code-execution / obfuscation patterns
 and the scanner itself always runs from `main`, so a PR cannot weaken its own
 scan.
 
-This is **not** a merge-required check, and it no longer blocks merges
-transitively either: the pytest and e2e checks that used to carry the block are
-gone. `Maintainer Approval` reports a check on every PR, but it only *enforces*
-where it can be satisfied — on this repository that means listing approvers in
-[`.github/MAINTAINER`](.github/MAINTAINER) and setting the
-`ENFORCE_MAINTAINER_APPROVAL` repository variable.
+The `Security Scan` check itself is **not** merge-required, and it no longer
+blocks merges transitively either: the pytest and e2e checks that used to carry
+that block are gone.
+
+`Maintainer Approval` is the check that does block. It is a **required status
+check on `main`**, so a PR cannot merge until it passes, and it is enforced
+here: approvers are listed in [`.github/MAINTAINER`](.github/MAINTAINER) and the
+`ENFORCE_MAINTAINER_APPROVAL` repository variable is set. A PR opened by a
+maintainer satisfies it on its own; any other PR needs an approving review from
+a maintainer on the **current head SHA**, so a later push invalidates an earlier
+approval.
 
 A finding fails the `Security Scan` check and nothing else. Detectors run
 fail-fast, so a clean PR must pass every one, but treat the result as a signal
