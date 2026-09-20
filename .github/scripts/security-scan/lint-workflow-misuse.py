@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lint changed GitHub Actions workflows for the two highest-signal CI attacks.
 
-Called by .github/workflows/security-gate.yml. Dependency-free (stdlib +
+Called by .github/workflows/security-scan.yml. Dependency-free (stdlib +
 regex line scanning, no PyYAML) so it never needs a network install to run --
 a security check should not depend on fetching anything.
 

@@ -1,19 +1,16 @@
 name: Security Scan
 
-# The single deterministic security scan for a PR. Runs ONCE per PR and produces
-# the `Security Scan` check; the per-workflow gate jobs (security-gate.yml) don't
-# re-scan, they poll THIS check and mirror its result, so the work happens once
-# while still gating every CI workflow.
+# The single deterministic security scan for a PR. Runs ONCE per PR and reports
+# the `Security Scan` check. Nothing polls or mirrors that check, so a finding
+# fails this job alone and blocks no other workflow.
 #
 # It only STATICALLY analyses the diff/head (semgrep, grep, diff-read) with NO
 # secrets on fork PRs, so it never executes untrusted code. The scanner is always
 # checked out from `main` and the scanned code sits in a separate `pr/` dir, so a
 # PR can't edit its own scan.
 #
-# Blocking: any detector that finds something fails this check; the per-workflow
-# pollers mirror the failure and skip the dependent CI jobs (no PR-code checkout
-# / uv sync / test). Detectors run fail-fast -- the first finding fails the job,
-# so a clean PR must pass every one.
+# Blocking: any detector that finds something fails this check. Detectors run
+# fail-fast -- the first finding fails the job, so a clean PR must pass every one.
 #
 # Trust tiers (should-scan.sh): trusted (OWNER/MEMBER/COLLABORATOR, or an author
 # in the MAINTAINERS list -- covers maintainers with private org membership) and

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Scan a PR's *added* lines for committed secrets.
 
-Called by .github/workflows/security-gate.yml. Dependency-free (stdlib only)
+Called by .github/workflows/security-scan.yml. Dependency-free (stdlib only)
 so it runs without a network install. Operates on a unified diff and inspects
 only added (`+`) lines, so it flags secrets the PR introduces, not pre-existing
 ones -- and reports them at the right file/line for inline annotations.
