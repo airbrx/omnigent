@@ -1,94 +1,64 @@
 # Security Policy
 
 To report a security vulnerability, use
-[GitHub private security advisories](https://github.com/omnigent-ai/omnigent/security/advisories/new).
+[GitHub private security advisories](https://github.com/airbrx/omnigent/security/advisories/new).
 
 Please do not open a public issue for security problems, and do not include live
 credentials, tokens, or customer data in any report.
 
-## Automated dependency CVE scanning
+## Dependency CVE scanning
 
-[Trivy CVE Scan](.github/workflows/trivy.yml) scans the repository on every pull
-request, push to `main`, daily at 06:23 UTC, and manual workflow dispatch. The
-scheduled scan catches newly published advisories even when dependencies have
-not changed. It runs for trusted contributors too, after the existing PR
-security gate permits CI to proceed.
+There is no repository-wide CVE scanner in CI. The Trivy workflow that once
+scanned the lockfiles on every PR, on pushes to `main`, and on a daily
+schedule was part of the inherited upstream CI and has been removed, so **a
+green PR says nothing about dependency CVEs**.
 
-Trivy statically scans supported dependency manifests and lockfiles, including
-`uv.lock`, `pnpm-lock.yaml`, `Cargo.lock`, and `Gemfile.lock`, without installing
-or executing project dependencies. Development dependencies, all severities,
-and vulnerabilities without fixes are included. This is a dependency scan, not
-a scan of built container images or a replacement for the contributor security
-scan below. A separate `dev-tools` scan covers `dev/omnidev/Cargo.lock`, because
-Trivy excludes root-level `dev/` directories from its filesystem traversal.
+What remains is Dependabot, configured in
+[`dependabot.yml`](.github/dependabot.yml) for the `pip`, `npm` (`/web`,
+`/web/electron`), `cargo`, `bundler`, and `github-actions` ecosystems. Every
+ecosystem sets `open-pull-requests-limit: 0` and a `security-updates` group, so
+Dependabot opens no routine version-bump PRs and raises only grouped security
+updates. That depends on Dependabot alerts and security updates being enabled
+in repository settings; the configuration file alone does not turn them on.
 
-The initial rollout is **report-only**: vulnerabilities do not fail the Trivy
-jobs, but scanner, report-generation, or upload errors do. A green check does
-not mean there are no CVEs. SARIF results are published to
-[Security > Code scanning](https://github.com/omnigent-ai/omnigent/security/code-scanning)
-with stable categories `trivy-repository` and `trivy-dev-tools`. Source paths
-resolve against the scanned directory so development-tool alerts link to files
-under `dev/`. Uploading alerts does not itself configure a merge-blocking rule;
-any existing repository code-scanning rules still apply.
-
-Only the scan jobs request `security-events: write`; the contributor security
-gate remains read-only. Uploads use the built-in GitHub token, including the
-supported `pull_request` upload path for read-only fork tokens, never
-`pull_request_target` or a personal access token. Maintainers must allow code
-scanning in repository settings. Public repositories do not need a paid Code
-Security license; private forks require the applicable feature access.
-
-Open the workflow's **Trivy CVE Scan** jobs to read the tables, or download the
-**trivy-cve-report-repository** and **trivy-cve-report-dev-tools** artifacts
-(retained for 30 days) for text, JSON, and SARIF reports. Artifacts are uploaded
-before code-scanning submission, so reports remain available if GitHub rejects
-SARIF or code scanning is unavailable. An upload failure stays visible as a
-failed check rather than silently hiding missing Security-tab results.
-
-To reproduce locally with Trivy **v0.74.0**, from the repository root:
+To check the lockfiles by hand, from the repository root:
 
 ```bash
-(
-  set -e
-  for target in . dev; do
-    trivy fs --scanners vuln --include-dev-deps \
-      --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --ignore-unfixed=false \
-      --skip-dirs '.git,**/.venv,**/node_modules' --timeout 10m --exit-code 0 "$target"
-  done
-)
+trivy fs --scanners vuln --include-dev-deps \
+  --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --ignore-unfixed=false \
+  --skip-dirs '.git,**/.venv,**/node_modules' --timeout 10m .
 ```
 
 Review findings by affected lockfile, installed version, and available fix;
-prioritize reachable high/critical vulnerabilities. Any future blocking
-threshold or vulnerability exception should be an explicit, reviewed policy
-change rather than silently hiding the baseline.
+prioritize reachable high/critical vulnerabilities.
 
-## Contributor PR security gate
+## Contributor PR security scan
 
-CI for untrusted PRs is held behind a deterministic security scan so that
-untrusted code is not checked out, built, or run on our runners — and the
-Actions cache is not touched — until the diff has been vetted. It is split into
-two pieces so the scan work happens only **once per PR**:
+Untrusted PRs are put through a deterministic scan of the diff, which runs once
+per PR in
+[**`.github/workflows/security-scan.yml`**](.github/workflows/security-scan.yml)
+and reports the `Security Scan` check.
 
-- **`.github/workflows/security-scan.yml`** — runs the deterministic scan once
-  on `pull_request` and produces the `Security Scan` check.
-- **`.github/workflows/security-gate.yml`** — a reusable poller run as the first
-  job (`gate`) of every CI workflow (`ci`, `lint`, `e2e`, `e2e-ui`, web
-  tests); the real jobs declare `needs: gate`. It does not re-scan — for an
-  untrusted PR it waits for the `Security Scan` check and mirrors its result
-  (failure → the dependent CI jobs are skipped); trusted authors and non-PR
-  events proceed immediately.
+This used to be a true gate: a companion poller ran as the first job of every CI
+workflow, and those workflows declared `needs: gate`, so a finding stopped
+untrusted code from being checked out, built, or run on our runners. The poller
+and the CI workflows it fronted were part of the inherited upstream CI and have
+been removed. **The scan now reports; it gates nothing.** Nothing reads the
+`Security Scan` check, and no other job waits on it.
 
 By trust tier (GitHub `author_association`):
 
-- **Trusted** (`OWNER` / `MEMBER` / `COLLABORATOR`) and all non-PR events
-  (push, schedule, dispatch): the gate passes through instantly, no scan.
-- **Returning contributor** (`CONTRIBUTOR`): the gate runs the scan; a clean
-  result lets CI proceed automatically, a finding blocks all CI.
+- **Trusted** (`OWNER` / `MEMBER` / `COLLABORATOR`, or an author listed in
+  [`.github/MAINTAINER`](.github/MAINTAINER), which covers maintainers whose org
+  membership is private) and all non-PR events (push, schedule, dispatch): not
+  scanned.
+- **Returning contributor** (`CONTRIBUTOR`): scanned; a finding fails the
+  `Security Scan` check.
 - **First-time contributor**: GitHub's native *“require approval to run fork
   pull request workflows”* repo setting already holds every workflow until a
-  maintainer clicks **Approve and run**; after approval the gate's scan still
-  applies.
+  maintainer clicks **Approve and run**; after approval the scan still applies.
+  With the CI lanes gone, this setting — not the scan — is what actually keeps
+  a first-time contributor's code off our runners.
 
 The scan inspects the PR diff for committed secrets, secret-exfiltration shapes
 (a secret-named credential source plus a network sink in one file, an
@@ -101,28 +71,33 @@ checkout, unpinned actions), and known code-execution / obfuscation patterns
 and the scanner itself always runs from `main`, so a PR cannot weaken its own
 scan.
 
-This is **not** a merge-required check: it gates CI, not the merge button
-directly. When enforcing, merge stays blocked transitively (the skipped
-pytest/e2e checks are required) and `Maintainer Approval` remains the ultimate
-gate.
+This is **not** a merge-required check, and it no longer blocks merges
+transitively either: the pytest and e2e checks that used to carry the block are
+gone. `Maintainer Approval` reports a check on every PR, but it only *enforces*
+where it can be satisfied — on this repository that means listing approvers in
+[`.github/MAINTAINER`](.github/MAINTAINER) and setting the
+`ENFORCE_MAINTAINER_APPROVAL` repository variable.
 
-It is **blocking**: a finding fails the `Security Scan` check, the pollers mirror
-that failure, and the dependent CI jobs are skipped. Detectors run fail-fast, so
-a clean PR must pass every one.
+A finding fails the `Security Scan` check and nothing else. Detectors run
+fail-fast, so a clean PR must pass every one, but treat the result as a signal
+for a human reviewer rather than a barrier — reviewing an untrusted diff before
+merging is the real control.
 
 ### Maintainer override
 
 A maintainer can waive the scan on a specific PR with the **`skip-security-scan`**
-label (same convention as `skip-e2e-ui-test`). The waiver is only honored when it
-is *maintainer-effective*: the label is present **and** the PR author is a
-maintainer, or a maintainer's latest decisive review is `APPROVED`. The label
-alone does nothing — applying labels needs triage access, and the extra
-maintainer check is defence in depth — so a fork contributor cannot self-waive.
-The label and review state are read from the API, and the decision runs from
-`should-scan.sh` on `main`, so a PR cannot edit the waiver logic.
+label. The waiver is **label-only**: applying a label requires GitHub Triage
+permission or higher, which a fork author never has, so the label's presence is
+itself the maintainer gate and no separate approval is required. The label is
+read from the API, and the decision runs from `should-scan.sh` on `main`, so a
+PR cannot edit the waiver logic.
 
-To use it: a maintainer reviews/approves the PR and applies `skip-security-scan`;
-the `Security Scan` check re-runs and passes, then the blocked CI workflows are
-re-run (or the contributor pushes) so their gate jobs see the now-green scan.
-The waiver stays effective across pushes while the maintainer approval stands —
-remove the label (or dismiss the approval) to re-enable scanning.
+Accepted risk, as repo policy rather than something GitHub enforces: Triage can
+be granted independently of Write, so a triage-only collaborator could in
+principle self-waive. We accept it because Triage here is granted only to
+write/admin collaborators, who can already push code — the waiver hands them no
+privilege they lack.
+
+To use it: apply `skip-security-scan`; the label event re-runs the scan and the
+`Security Scan` check flips to passing. The waiver stays effective across pushes
+while the label is present — remove it to re-enable scanning.
