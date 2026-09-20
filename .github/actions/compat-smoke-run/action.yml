@@ -68,6 +68,13 @@ runs:
       working-directory: .github/ci-deps
       shell: bash
       run: |
+        # Refresh the index first. The runner image ships a package list that
+        # goes stale as Ubuntu supersedes builds, and apt then resolves a
+        # version the mirror has already dropped: on 2026-09-20 every e2e
+        # shard failed on a 404 for bubblewrap_0.9.0-1ubuntu0.1_amd64.deb.
+        # The workflows that call these actions already do this; the
+        # composite actions were the three places that did not.
+        sudo apt-get update
         sudo apt-get install -y tmux bubblewrap
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
         npm install --ignore-scripts
