@@ -53,18 +53,6 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
-  # ── CI helper deps (.github/ci-deps) ─────────────────────────────────────
-  - package-ecosystem: npm
-    directory: "/.github/ci-deps"
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 0
-    groups:
-      ci-deps-security:
-        applies-to: security-updates
-        patterns: ["*"]
-
   # ── Rust sidecar used by the codex-parity test fixture ───────────────────
   - package-ecosystem: cargo
     directory: "/tests/codex_parity/sidecar"
