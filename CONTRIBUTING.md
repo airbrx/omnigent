@@ -57,10 +57,6 @@ investigate. For feature requests, describe the user problem and expected
 reach. Use a `+1` reaction when an existing issue matters to you; ordinary
 comments are not counted as votes.
 
-The scoring configuration and component map are public in
-[`default_scoring.json`](.github/triage_v2/src/issue_prioritization/default_scoring.json)
-and [`areas.json`](.github/areas.json).
-
 ## Response times and inactive issues
 
 Priority determines the order in which maintainers consider work; it does not

@@ -37,12 +37,6 @@ mlflow = "2026-09-05T00:00:00Z"
 nimble-python = "2026-07-29T00:00:00Z"
 mlflow-tracing = "2026-09-05T00:00:00Z"
 
-[manifest]
-members = [
-    "omnigent",
-    "omnigent-issue-prioritization",
-]
-
 [[package]]
 name = "absl-py"
 version = "2.4.0"
@@ -3530,34 +3524,6 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "omnigent", editable = "." },
     { name = "pydantic", specifier = ">=2.0,<3" },
-]
-
-[[package]]
-name = "omnigent-issue-prioritization"
-version = "0.2.1"
-source = { editable = ".github/triage_v2" }
-dependencies = [
-    { name = "databricks-sdk", version = "0.67.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-omnigent-antigravity'" },
-    { name = "databricks-sdk", version = "0.115.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-omnigent-cwsandbox' or extra == 'extra-8-omnigent-databricks' or extra == 'extra-8-omnigent-modal' or extra == 'group-8-omnigent-dev' or extra == 'group-8-omnigent-lint' or extra != 'extra-8-omnigent-antigravity'" },
-    { name = "pyjwt", extra = ["crypto"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "databricks-sdk", specifier = ">=0.56.0,<1" },
-    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8,<3" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8" },
-    { name = "ruff", specifier = ">=0.12" },
 ]
 
 [[package]]
