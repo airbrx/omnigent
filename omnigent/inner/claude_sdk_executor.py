@@ -1620,9 +1620,10 @@ class ClaudeSDKExecutor(Executor):
             disallowed_tools: Tool names the CLI must not expose at all,
                 e.g. ``["Skill"]``. Removing a tool from the surface is
                 not the same as denying it at call time: a TOOL_CALL
-                policy can only refuse what it is asked about, and the
-                CLI does not consult ``can_use_tool`` for harness
-                built-ins. ``None`` leaves the surface untouched.
+                policy can only refuse what it is asked about, and a
+                measured production turn shows the CLI not asking about
+                the harness built-in ``ToolSearch``. ``None`` leaves the
+                surface untouched.
             strict_mcp_config: When ``True``, the CLI uses ONLY the MCP
                 servers this executor passes and ignores every other MCP
                 configuration it would otherwise load — project

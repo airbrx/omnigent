@@ -519,11 +519,22 @@ def test_iris_gets_a_strict_mcp_config_and_other_agents_do_not(monkeypatch):
 def test_iris_does_not_get_the_skill_tool_and_keeps_tool_search():
     """A policy can only refuse what it is asked about.
 
-    Measured on production session 35340ac1: the CLI does not consult
-    ``can_use_tool`` for harness built-ins — ``ToolSearch`` ran with no
-    policy evaluation before it — so Iris's own ``load_skill`` refusal,
-    asserted in ``tests/test_host.py`` since the policy shipped, can never
-    fire. Taking the tool off the surface does not depend on being asked.
+    Measured on production session 35340ac1, on a host carrying #30's ALLOW
+    logging: ``ToolSearch`` ran and the turn made no ``/policies/evaluate``
+    call for it. Invocation would have forced one — ``_can_use_tool_gate``
+    reaches the evaluator for any non-``mcp__omnigent__`` tool — and an
+    evaluator was wired, since the turn's other two evaluate calls happened.
+    So the callback was not invoked for it, and a ``load_skill`` refusal
+    carried there could not fire.
+
+    ``CanUseToolShadowedWarning`` does not say otherwise: it is computed only
+    from ``allowed_tools`` whole-tool entries, so it lists what IS shadowed
+    and implies nothing about tools absent from it.
+
+    Removing ``Skill`` is defence in depth regardless — it holds whether or
+    not the gate is consulted. Safe for her specifically: she declares
+    ``skills: none``, and ``bundle_root()`` folds every SKILL.md body into
+    AGENTS.md, so her bundled skills reach her as instructions.
 
     Safe for her specifically: she declares ``skills: none``, and her three
     bundled skills reach her as instructions rather than as something to
