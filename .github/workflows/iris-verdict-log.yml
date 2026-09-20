@@ -86,28 +86,38 @@ jobs:
           case "${MAX_LINES}" in ''|*[!0-9]*) echo "::error::max_lines must be digits"; exit 1 ;; esac
           case "${TOOL}" in *[!A-Za-z0-9_.-]*) echo "::error::tool must be [A-Za-z0-9_.-]"; exit 1 ;; esac
 
+          # AWS-RunShellScript executes this with /bin/sh — dash on this box.
+          # No `pipefail`, no `${var// /_}`: both are bashisms and the first
+          # attempt died on "set: Illegal option -o pipefail". The deploy
+          # workflow documents the same constraint a few lines above.
+          # No `set -e` either: a grep with no matches exits 1, which is a
+          # normal outcome here, not a failure.
           cat > /tmp/remote.sh <<EOS
-          set -uo pipefail
+          set -u
           echo "BOX_TIME=\$(date -u +%FT%TZ)"
           echo "UNIT_STATE=\$(systemctl is-active omnigent-server 2>/dev/null || echo unknown)"
+
+          # Read the journal once; nine greps over one file beats nine journalctl runs.
+          journalctl -u omnigent-server --since "${HOURS} hours ago" --no-pager -o cat > /tmp/j.txt 2>/dev/null || true
+          echo "JOURNAL_LINES=\$(wc -l < /tmp/j.txt 2>/dev/null || echo 0)"
+
           echo "---BEGIN-VERDICTS---"
-          # Every branch of the gate logs one of these four; #30 added the first.
-          journalctl -u omnigent-server --since "${HOURS} hours ago" --no-pager -o cat \
-            | grep -aE 'TOOL_CALL policy (allowed|denied|requested approval|failed closed)' \
-            | tail -n ${MAX_LINES} || true
+          grep -aE 'TOOL_CALL policy (allowed|denied|requested approval|failed closed)' /tmp/j.txt 2>/dev/null | tail -n ${MAX_LINES} || true
           echo "---END-VERDICTS---"
+
           echo "---BEGIN-COUNTS---"
-          for kind in allowed denied 'requested approval' 'failed closed'; do
-            n=\$(journalctl -u omnigent-server --since "${HOURS} hours ago" --no-pager -o cat \
-                 | grep -acE "TOOL_CALL policy \${kind} " || true)
-            echo "total_\${kind// /_}=\${n:-0}"
-          done
-          for kind in allowed denied 'requested approval' 'failed closed'; do
-            n=\$(journalctl -u omnigent-server --since "${HOURS} hours ago" --no-pager -o cat \
-                 | grep -aE "TOOL_CALL policy \${kind} " | grep -ac "tool=[^ ]*${TOOL}" || true)
-            echo "${TOOL}_\${kind// /_}=\${n:-0}"
-          done
+          emit() {
+            n=\$(grep -acE "TOOL_CALL policy \$1 " /tmp/j.txt 2>/dev/null || true)
+            echo "total_\$2=\${n:-0}"
+            m=\$(grep -aE "TOOL_CALL policy \$1 " /tmp/j.txt 2>/dev/null | grep -ac "tool=[^ ]*${TOOL}" || true)
+            echo "${TOOL}_\$2=\${m:-0}"
+          }
+          emit "allowed" "allowed"
+          emit "denied" "denied"
+          emit "requested approval" "requested_approval"
+          emit "failed closed" "failed_closed"
           echo "---END-COUNTS---"
+          rm -f /tmp/j.txt
           EOS
 
           CID=$(aws ssm send-command \
@@ -140,12 +150,17 @@ jobs:
           TOOL: ${{ inputs.tool }}
           HOURS: ${{ inputs.hours }}
         run: |
-          set -uo pipefail
+          # GitHub runs this step as `bash -e`, and a grep that matches
+          # nothing exits 1 — which is the normal case when the window is
+          # empty. Guard every extraction rather than letting the step die
+          # with no summary at all.
+          set +e
           [ -f /tmp/verdicts.out ] || { echo "No output captured." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
 
-          allowed=$(grep -oE "^${TOOL}_allowed=[0-9]+" /tmp/verdicts.out | cut -d= -f2 | tail -1)
-          denied=$(grep -oE "^${TOOL}_denied=[0-9]+" /tmp/verdicts.out | cut -d= -f2 | tail -1)
-          total=$(grep -oE "^total_allowed=[0-9]+" /tmp/verdicts.out | cut -d= -f2 | tail -1)
+          pick() { grep -oE "^$1=[0-9]+" /tmp/verdicts.out 2>/dev/null | cut -d= -f2 | tail -1; }
+          allowed=$(pick "${TOOL}_allowed")
+          denied=$(pick "${TOOL}_denied")
+          total=$(pick "total_allowed")
           allowed=${allowed:-0}; denied=${denied:-0}; total=${total:-0}
 
           {
