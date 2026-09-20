@@ -317,6 +317,24 @@
     files.className = "host-files";
 
     const cancel = control("Cancel current turn", async () => {
+      // The workspace runs its own snapshot fetch, and holds every import,
+      // chip and question behind it while it is in flight. Cancelling only
+      // the agent turn left that fetch running, so the page stayed locked
+      // behind a button that said it had stopped. Ask the workspace first:
+      // this script is injected into that same document, so its top-level
+      // cancelRefresh() is a property of this window by the time anyone
+      // can click. Guarded anyway — the packaged workspace is pinned
+      // separately from this adapter and an older archive will not have it.
+      let stoppedRefresh = false;
+      try {
+        if (typeof window.cancelRefresh === "function")
+          stoppedRefresh = window.cancelRefresh() === true;
+      } catch {
+        stoppedRefresh = false;
+      }
+      const alsoStopped = stoppedRefresh
+        ? " The workspace refresh was stopped."
+        : "";
       try {
         const res = await nativeFetch("api/cancel", {
           method: "POST",
@@ -324,10 +342,10 @@
           body: "{}",
         });
         outcome.textContent = res.ok
-          ? "Cancellation requested. Open native chat to resume."
-          : `Cancellation refused: ${await refusalOf(res)}`;
+          ? `Cancellation requested. Open native chat to resume.${alsoStopped}`
+          : `Cancellation refused: ${await refusalOf(res)}${alsoStopped}`;
       } catch (error) {
-        outcome.textContent = `Cancellation could not be sent: ${whyFailed(error)}. Open native chat to check the turn.`;
+        outcome.textContent = `Cancellation could not be sent: ${whyFailed(error)}. Open native chat to check the turn.${alsoStopped}`;
       }
       loadReadiness();
     });
@@ -352,7 +370,12 @@
           files.append(link);
         }
         if (!files.childNodes.length) {
-          files.textContent = "No reports in this session yet. Use Refresh from host.";
+          // This lists files the native session has written, not what the
+          // workspace is showing. The old wording — "No reports in this
+          // session yet" — rendered directly above a full report, and told a
+          // reader their report did not exist.
+          files.textContent =
+            "No downloadable report files in this session yet. The workspace below may still be showing a captured report; this lists files the native session has written.";
         }
       } catch (error) {
         files.textContent = `Downloads unavailable: ${whyFailed(error)}. Check the native session.`;
