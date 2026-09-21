@@ -1,7 +1,7 @@
 {
   "repository": "airbrx/iris",
-  "revision": "a7ef282bd1c0e4f67df00a4bd568c58f86226d4b",
-  "sha256": "622840ab51c1b077c325acede76b5710d0c8ea4330b0d7f66bc21460d2e2e82f",
+  "revision": "eec5da4a8c18af3a8b34aafda79486217b437fcb",
+  "sha256": "c61bb63315ee40d65c1339c36d27851f2f6dc65cf741d540811d155df44d9acc",
   "files": [
     "iris/__init__.py",
     "iris/artifacts.py",
