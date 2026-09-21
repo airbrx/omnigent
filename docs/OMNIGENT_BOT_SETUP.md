@@ -127,8 +127,8 @@ This requirement lives in the worker IMPLEMENT instructions:
 
 ### CI commits/PRs as `omnigent-ci[bot]`
 
-The lockfile-regen workflows (`.github/workflows/oss-regenerate-and-smoke.yml`
-and `oss-regen-on-comment.yml`) mint the App token and set the git identity so
+The upstream lockfile-regen workflows (`oss-regenerate-and-smoke.yml` and
+`oss-regen-on-comment.yml`, both removed from this fork) minted the App token and set the git identity so
 regen commits/PRs are authored by the bot:
 
 ```yaml
@@ -151,7 +151,7 @@ missing App config falls back to `github-actions[bot]` rather than failing.
 
 ### Automated PR review posted as `omnigent-ci[bot]`
 
-`.github/workflows/polly-review.yml` runs a full cross-vendor Polly review of a
+The upstream `polly-review.yml` workflow (removed from this fork) ran a full cross-vendor Polly review of a
 PR diff (on PR open/reopen/ready, a `/review` comment from a write-access user,
 or `workflow_dispatch`) and posts the findings as a PR comment. It mints the App
 token and posts the review **as `omnigent-ci[bot]`**:

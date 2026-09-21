@@ -31,7 +31,7 @@ Pages covered:
 
 Baselines are committed under `snapshots/<test_module>/<test_name>/<name>[chromium][linux].png`.
 
-- Gate workflow: [`.github/workflows/ui-snapshot.yml`](../../../.github/workflows/ui-snapshot.yml)
+- Gate workflow: the upstream `ui-snapshot.yml` workflow (removed)
 - Local regen (Docker): [`regen_baseline_docker.sh`](regen_baseline_docker.sh)
 - Plugin: [`pytest-playwright-visual-snapshot`](https://github.com/iloveitaly/pytest-playwright-visual-snapshot)
 
@@ -90,7 +90,7 @@ byte-for-byte untouched. Review each changed image before committing.
 
 1. Push your branch and open the PR.
 2. Add the **`update-ui-snapshot`** label.
-   [`ui-snapshot-update.yml`](../../../.github/workflows/ui-snapshot-update.yml)
+   the upstream `ui-snapshot-update.yml` workflow (removed)
    re-renders in the same pinned image, regenerates only the baselines that drift
    (or are missing) — passing ones are left untouched — and commits the changed
    PNGs back to your branch, then removes the label and comments the result.
@@ -143,7 +143,7 @@ before it lands, an unreviewed ref can't change the baseline on its own.
 ### Failure comments
 
 Whenever the check fails (same-repo or fork),
-[`ui-snapshot-fail-comment.yml`](../../../.github/workflows/ui-snapshot-fail-comment.yml)
+the upstream `ui-snapshot-fail-comment.yml` workflow (removed)
 upserts a PR comment pointing back to these paths. It runs as `workflow_run` so
 it can comment without ever executing PR/fork code, which means it only activates
 once merged to `main` (it does not fire on its own PR).

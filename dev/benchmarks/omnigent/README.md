@@ -360,7 +360,7 @@ creds).
 
 ## CI
 
-`.github/workflows/benchmark.yml` runs nightly (and on dispatch) as a backend
+The upstream benchmark workflow ran nightly (and on dispatch) as a backend
 matrix — `sqlite`, `postgres` (a `postgres:16` service container), and `mysql`
 (a `mysql:8.0` service container; the `mysqlclient` driver is installed on that
 leg only). Each leg seeds a corpus (SQLite reuses a cache keyed on the schema

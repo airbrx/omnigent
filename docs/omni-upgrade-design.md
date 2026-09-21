@@ -15,7 +15,7 @@ across PyPI releases. Three pieces ship together:
 - The CLI ships as `omnigent` / `omni` → `omnigent.cli:main()`; the installed
   version comes from `importlib.metadata.version("omnigent")`.
 - Releases publish three lockstep packages (`omnigent`, `omnigent-client`,
-  `omnigent-ui-sdk`) to PyPI via `.github/workflows/release-omnigent.yml`.
+  `omnigent-ui-sdk`) to PyPI via the upstream release-omnigent workflow.
   **No GitHub Releases are cut**, so the source of truth for "latest version"
   is the PyPI JSON API: `https://pypi.org/pypi/omnigent/json` → `info.version`.
 - The local server is a detached process on `:6767`, tracked by
