@@ -302,8 +302,7 @@ Two cross-cutting suites sit on top of these:
   runtime, sub-agent dispatch, client-tool tunneling, transports, native
   harness bridges, steering/cancellation). These are slow and gateway-bound, so
   reserve them for genuine end-to-end behaviour — but a PR that adds new
-  user-facing functionality **must** include at least one e2e happy-path test
-  (see `.github/copilot-instructions.md`).
+  user-facing functionality **must** include at least one e2e happy-path test.
 
 ### Frontend (`web/`)
 
