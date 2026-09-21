@@ -75,13 +75,18 @@ The `Security Scan` check itself is **not** merge-required, and it no longer
 blocks merges transitively either: the pytest and e2e checks that used to carry
 that block are gone.
 
-`Maintainer Approval` is the check that does block. It is a **required status
-check on `main`**, so a PR cannot merge until it passes, and it is enforced
-here: approvers are listed in [`.github/MAINTAINER`](.github/MAINTAINER) and the
-`ENFORCE_MAINTAINER_APPROVAL` repository variable is set. A PR opened by a
-maintainer satisfies it on its own; any other PR needs an approving review from
-a maintainer on the **current head SHA**, so a later push invalidates an earlier
+`Maintainer Approval` is enforced: approvers are listed in
+[`.github/MAINTAINER`](.github/MAINTAINER) and the
+`ENFORCE_MAINTAINER_APPROVAL` repository variable is set, so the gate really
+evaluates rather than passing everything through. A PR opened by a maintainer
+satisfies it on its own; any other PR needs an approving review from a
+maintainer on the **current head SHA**, so a later push invalidates an earlier
 approval.
+
+It is **not** a required status check, though, and `main` carries no branch
+protection — so a red `Maintainer Approval` reports the problem without
+preventing the merge. Until it is made a required check on `main`, treat it as
+a signal to reviewers, not a barrier.
 
 A finding fails the `Security Scan` check and nothing else. Detectors run
 fail-fast, so a clean PR must pass every one, but treat the result as a signal
