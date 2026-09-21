@@ -281,6 +281,7 @@ def create_iris_router(*, auth_provider, agent_store):
         async with session_client(request) as client:
             _, binding = await authorize(request, session_id, client)
             params = {"limit": 1000, "order": "desc"}
+            cursor = None
             if fresh:
                 fresh_turn = await turn(
                     request,
@@ -291,15 +292,55 @@ def create_iris_router(*, auth_provider, agent_store):
                         "Summarize the measured denominator and coverage. Do not propose changes."
                     ),
                 )
-                params["after"] = fresh_turn["item_id"]
+                # Deliberately NOT `params["after"] = fresh_turn["item_id"]`.
+                #
+                # `after` combined with `order=desc` returns an empty page —
+                # descending, "after" the turn's own user message means items
+                # OLDER than it, and the reports we just collected are newer.
+                # Measured against a live session:
+                #
+                #   after only                items=14, report found
+                #   order=desc only           items=15, report found
+                #   order=desc + after        items= 0, report NOT found
+                #
+                # So this endpoint ran a real turn — a minute of warehouse
+                # work — then filtered its own results out and answered
+                # "No session overview yet; use Refresh from host", telling
+                # the operator to press the button that had just worked.
+                #
+                # The ordering cannot simply be dropped: the double reversal
+                # below is what makes the NEWEST report per tool win, and
+                # removing `order=desc` silently inverts it to the oldest.
+                # Bound by the turn's own message instead, on the same clock
+                # as the reports.
+                cursor = fresh_turn["item_id"]
             page = await checked(
                 await client.get(f"/v1/sessions/{session_id}/items", params=params)
             )
-            refs = report_references(list(reversed(page["data"])))
+            ordered = list(reversed(page["data"]))
+            collected_after = 0.0
+            if cursor is not None:
+                marker = next((i for i in ordered if i.get("id") == cursor), None)
+                if marker is None:
+                    # Without the marker there is no way to tell this turn's
+                    # reports from a previous turn's. Say so rather than
+                    # presenting a stale capture as a fresh collection.
+                    raise HTTPException(
+                        409,
+                        "The collection completed but its position in this session could not be "
+                        "established; open native chat to review the turn.",
+                    )
+                collected_after = marker.get("created_at", 0)
+            refs = report_references(ordered)
             reports = {}
             cache_age = 0
             for tool, file_id, created_at in reversed(refs):
                 if tool in reports:
+                    continue
+                # On a fresh collection, only this turn's reports count. A
+                # refresh that returns the previous capture is worse than one
+                # that admits it collected nothing.
+                if created_at < collected_after:
                     continue
                 report = await checked(
                     await client.get(
@@ -312,7 +353,15 @@ def create_iris_router(*, auth_provider, agent_store):
                 if tool == "iris_overview":
                     cache_age = max(0, time.time() - created_at)
             if "iris_overview" not in reports:
-                raise HTTPException(409, "No session overview yet; use Refresh from host")
+                # Two different situations; the wording used to send both to
+                # "use Refresh from host", which on the fresh path pointed at
+                # the button that had just run.
+                raise HTTPException(
+                    409,
+                    "The collection produced no overview; open native chat to see what Iris did."
+                    if fresh
+                    else "No session overview yet; use Refresh from host",
+                )
             rules, meta = [], {}
             for evidence in reports["iris_overview"].get("evidence", []):
                 if evidence.get("source_tool") == "get_rule_effectiveness":
