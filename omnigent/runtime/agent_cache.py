@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import tempfile
@@ -232,15 +233,19 @@ class AgentCache:
         tmp_path = Path(tmp_name)
         staging_dir = self._cache_path(agent_id, suffix=f"_staging_{uuid.uuid4().hex}")
         try:
-            tmp_path.write_bytes(bundle_bytes)
-            spec = load_spec(
-                tmp_path,
-                dest=staging_dir,
-                expand_env=expand_env,
-                prune_invalid_sub_agents=True,
-            )
-        finally:
-            tmp_path.unlink()
+            try:
+                tmp_path.write_bytes(bundle_bytes)
+                spec = load_spec(
+                    tmp_path,
+                    dest=staging_dir,
+                    expand_env=expand_env,
+                    prune_invalid_sub_agents=True,
+                )
+            finally:
+                tmp_path.unlink()
+        except BaseException:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
 
         # Publish atomically. If a racing first-time load of this same
         # agent_id already published `workdir` (identical bundle bytes —
@@ -248,10 +253,12 @@ class AgentCache:
         # discard ours rather than raising on the rename.
         try:
             staging_dir.rename(workdir)
-        except OSError:
+        except (FileExistsError, NotADirectoryError):
             shutil.rmtree(staging_dir, ignore_errors=True)
-            if not workdir.is_dir():
+        except OSError as exc:
+            if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY):
                 raise
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
         self._specs[agent_id] = spec
         return LoadedAgent(spec=spec, workdir=workdir)
