@@ -1,14 +1,24 @@
 """Non-secret, operator-owned bindings for Eva.
 
-Deliberately narrower than ``airbrx/iris/config.py``. Iris binds a tenant to an
-execution *host*, because her tools are local Python that must run somewhere
-specific with a PAT in that machine's keychain. Every one of Eva's tools is a
-remote MCP call to the airbrx-outreach app, so there is nothing to place on a
-host and no ``host_id`` here. If a ``host_id`` ever appears in this file, a local
-tool has been added and Iris's whole host apparatus comes back with it.
+Mirrors ``airbrx/iris/config.py``, including ``host_id``, and the reason that
+field is here is worth stating because an earlier version of this file left it
+out on purpose and was wrong.
 
-What a binding carries: who may open Eva, where the outreach app is, and a
-*reference* to the MCP bearer token. Never the token itself.
+Eva's tools are remote MCP calls to the airbrx-outreach app, so it looked like
+she needed no execution host: the coordinator could call the app directly. That
+is true only if the app is reachable from the coordinator, which means a public
+hostname, a certificate and a container on the EC2 box. None of that exists, and
+Iris does not need any of it.
+
+**Iris has no public hostname.** Her tools run on an execution host that dials
+out to the coordinator, so it can reach whatever that machine can reach.
+``omnigent/runner/mcp_manager.py`` connects MCP servers on the **runner**, which
+for a host-bound session is that same machine. So a host-bound Eva reaches
+``http://127.0.0.1:8000/mcp`` on the operator's own Mac, and needs no DNS, no
+certificate and no container anywhere.
+
+Removing ``host_id`` removed exactly the mechanism that makes Iris work without
+public infrastructure. It is back.
 """
 
 from __future__ import annotations
@@ -18,28 +28,43 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-_ALLOWED = {"users", "base_url", "token_ref", "label", "fixture"}
+_ALLOWED = {"users", "host_id", "base_url", "token_ref", "label", "fixture"}
 
 
 @dataclass(frozen=True)
 class Binding:
     #: Omnigent user ids allowed to open this Eva. The authorization decision.
     users: tuple[str, ...]
-    #: Base URL of the airbrx-outreach app, e.g. https://eva.airbrx.ai.
-    #: ``/mcp`` is appended by :func:`mcp_url`; a binding naming the endpoint
-    #: directly would make the two ways of writing it disagree eventually.
+    #: The execution host that runs Eva's turns, from ``/v1/hosts``. Her MCP
+    #: client runs here, so ``base_url`` is resolved from THIS machine and not
+    #: from the coordinator. Bind one host per label: the selection must be
+    #: unambiguous, not redundant.
+    host_id: str
+    #: The outreach app as the EXECUTION HOST sees it. Normally
+    #: ``http://127.0.0.1:8000`` because the app runs on that same Mac. A public
+    #: URL is allowed and is not required.
     base_url: str
     #: How to resolve the outreach MCP bearer token, e.g.
-    #: ``keychain:eva-outreach-token`` or ``env:OUTREACH_MCP_TOKEN``. Resolved
-    #: per invocation on the process that makes the call. Empty for a fixture.
+    #: ``keychain:eva-outreach-token``. Resolved per invocation on the host that
+    #: makes the call. Empty for a fixture binding.
     token_ref: str
     #: What the workspace calls this binding when more than one exists.
     label: str = "live"
-    #: A visibly synthetic binding for acceptance runs. Never points at real data.
+    #: A visibly synthetic binding for acceptance runs. Never real data.
     fixture: bool = False
 
     def mcp_url(self) -> str:
         return self.base_url.rstrip("/") + "/mcp"
+
+    def is_host_local(self) -> bool:
+        """Is ``base_url`` only meaningful on the execution host?
+
+        Used by the readiness route, which runs on the coordinator and therefore
+        cannot probe a loopback address belonging to another machine. It reports
+        that honestly rather than reporting a connection failure as if the app
+        were down.
+        """
+        return any(h in self.base_url for h in ("127.0.0.1", "localhost", "::1"))
 
 
 def bindings() -> tuple[Binding, ...]:
@@ -63,6 +88,12 @@ def bindings() -> tuple[Binding, ...]:
         users = tuple(row["users"])
         if not users:
             raise ValueError("An Eva binding with no users can be opened by nobody")
+        host_id = str(row.get("host_id", "")).strip()
+        if not host_id:
+            raise ValueError(
+                "An Eva binding needs a host_id: her MCP client runs on the execution "
+                "host, which is what lets her reach a local outreach app without DNS"
+            )
         base_url = str(row["base_url"]).strip()
         if not base_url.startswith(("http://", "https://")):
             raise ValueError("Eva binding base_url must be an absolute http(s) URL")
@@ -73,6 +104,7 @@ def bindings() -> tuple[Binding, ...]:
         result.append(
             Binding(
                 users=users,
+                host_id=host_id,
                 base_url=base_url,
                 token_ref=token_ref,
                 label=str(row.get("label", "live")),

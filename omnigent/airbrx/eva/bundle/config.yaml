@@ -15,11 +15,15 @@ name: eva
 # If Eva ever grows a local tool, that decision brings back the whole of Iris's
 # host apparatus with it. Say so out loud before taking it.
 
+# Brand voice, per the airbrx-branding skill: direct, technical, anti-hype, and
+# specific rather than vague. No buzzwords, no "robust" or "seamless", numbers
+# where numbers exist. This is the line a person reads next to her name in the
+# drawer, beside Iris, so it is the first impression the brand makes here.
 description: >-
-  The Airbrx outreach agent. Pulls and qualifies leads, drafts the message a rep
-  will send under their own name, checks it against the deterministic guardrail
-  layer, and records what went out. She never sends anything and she never
-  approves her own draft.
+  Works the airbrx lead list with you. Pulls and qualifies leads, drafts the
+  message you will send under your own name, and checks every draft against the
+  12 deterministic guardrails before you see it. She does not send, and she does
+  not approve her own drafts.
 
 # The omni meta harness: the brain is Omnigent's own executor rather than a
 # harness pinned to one vendor, so Eva runs on whatever model provider the
@@ -57,9 +61,13 @@ tools:
   # airbrx/airbrx-outreach fixes these 17 tools, their schemas and their
   # permission rules.
   #
-  # The URL and the bearer token are expanded from the runner's environment at
-  # parse time and are supplied per invocation from the Eva binding, so no
-  # credential appears in this file or in the registered bundle.
+  # The URL and the bearer token are expanded from the RUNNER's environment,
+  # and for a host-bound session the runner is the execution host. That is the
+  # whole reason Eva needs no public hostname: `${OUTREACH_MCP_URL}` is normally
+  # http://127.0.0.1:8000/mcp and resolves on the operator's own Mac, exactly as
+  # Iris's tools resolve there. No DNS, no certificate, no container on EC2.
+  #
+  # No credential appears in this file or in the registered bundle.
   #
   # This is an ALLOW LIST rather than a passthrough. Everything absent is
   # unavailable to Eva even if the server advertises it, which is how the

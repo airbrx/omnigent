@@ -41,8 +41,9 @@ read -r -d '' BINDINGS <<'JSON' || true
   {
     "label": "live",
     "users": ["aerickson@airbrx.com"],
-    "base_url": "https://eva.airbrx.ai",
-    "token_ref": "env:OUTREACH_MCP_TOKEN",
+    "base_url": "http://127.0.0.1:8000",
+    "host_id": "882128953d2a4e178ddbd48d70b298a1",
+    "token_ref": "keychain:eva-outreach-token",
     "fixture": false
   }
 ]

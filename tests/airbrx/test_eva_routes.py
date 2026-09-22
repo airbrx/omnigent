@@ -54,6 +54,7 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 LIVE = {
     "users": [USER],
+    "host_id": "882128953d2a4e178ddbd48d70b298a1",
     "base_url": "https://eva.airbrx.test",
     "token_ref": "keychain:eva-outreach-token",
 }
