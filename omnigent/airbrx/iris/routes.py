@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from omnigent.airbrx.iris.account import collect_captures
 from omnigent.airbrx.iris.config import bindings, session_binding
 from omnigent.airbrx.iris.package import HERE, source_root
 from omnigent.airbrx.iris.records import (
@@ -186,6 +187,43 @@ def create_iris_router(*, auth_provider, agent_store):
                 if user in b.users
             ],
         }
+
+    @router.get("/iris/account")
+    async def account(request: Request):
+        """The caller's bound tenants, ranked by the value at stake, or quarantined with a reason.
+
+        Deterministic: no model runs here. The tenant set is the caller's
+        bindings — the coordinator holds no PAT, so it cannot ask the
+        Airbrx manifest, and a tenant with no binding could not be drilled
+        into anyway. Captures come from the caller's own Iris sessions
+        (`collect_captures`), and only `tenant_id` and `metrics` are read out
+        of a report. Ranking is `iris.account.rank`, pinned in the archive,
+        so what a figure *means* is versioned and hash-verified with the rest
+        of Iris.
+        """
+        user = require_user(request, auth_provider)
+        if user is None:
+            raise HTTPException(401, "Iris requires host authentication")
+        agent = agent_store.get_by_name("iris")
+        if agent is None:
+            raise HTTPException(404, "Iris is not registered on this host")
+        try:
+            mine = [b for b in bindings() if user in b.users]
+        except ValueError as exc:
+            # Operator configuration, not user input; the whole list fails
+            # rather than rendering a partial account as complete.
+            raise HTTPException(500, str(exc)) from None
+        source_root()
+        from iris.account import rank
+
+        async with session_client(request) as client:
+            captures = await collect_captures(client.get, agent_id=agent.id, bindings=mine)
+        tenants = [
+            {"tenant_id": b.tenant_id, "name": getattr(b, "name", "") or None, "note": None}
+            for b in mine
+        ]
+        now = time.time()
+        return {"generated_at": now, "tenants": len(tenants), **rank(tenants, captures, now=now)}
 
     @router.get("/iris/portrait", include_in_schema=False)
     async def portrait(request: Request):
