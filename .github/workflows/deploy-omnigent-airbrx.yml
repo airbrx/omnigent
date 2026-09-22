@@ -79,7 +79,20 @@ jobs:
         # reads exactly like a product regression and is not one. That cost an
         # hour of misdiagnosis on 2026-09-21; the comment is cheaper than
         # repeating it.
-        run: uv sync --frozen --extra iris --extra databricks --group dev
+        # `--extra tracing` is here for `asgiref`, which is not named in
+        # pyproject.toml at all: it arrives transitively through
+        # opentelemetry-instrumentation-fastapi. Without it, collection fails
+        # with `ModuleNotFoundError: No module named 'asgiref'` in
+        # tests/server/integration and tests/server/test_performance_metrics.py,
+        # which is what broke this gate's own first run.
+        #
+        # All three extras are here because the TESTS need them, not the box.
+        # Verified in a clean venv rather than inferred: these exact flags, then
+        # `import asgiref, databricks`, then a collect-only of both shards,
+        # 1459 and 2029 tests. The first version of this gate was written from a
+        # venv I had hand-patched with `uv pip install asgiref`, so it passed
+        # locally and could not pass anywhere else.
+        run: uv sync --frozen --extra iris --extra databricks --extra tracing --group dev
 
       - name: ${{ matrix.shard.name }}
         run: uv run pytest ${{ matrix.shard.paths }} -q -p no:randomly --timeout=300
