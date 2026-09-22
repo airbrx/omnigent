@@ -1,0 +1,43 @@
+CORRECTION, added 2026-09-21: this commit's message describes only part of what
+it contains.
+
+The message describes the Iris tenant-label fix, which is real and is here:
+web/src/shell/IrisWorkspace.tsx and its test, 33 lines across the two.
+
+The other 1,433 lines are the Eva agent integration, which was authored
+separately and was sitting uncommitted in the shared working tree at
+~/projects/airbrx/omnigent when this commit was made. It was swept in
+unintentionally. Nothing was wrong with the Eva code and nothing was wrong with
+the Iris fix; they simply are not the same change and this message names only
+one of them.
+
+What arrived here without being named:
+
+  omnigent/airbrx/eva/            the agent module: bundle, config, package,
+                                  policy, routes
+  omnigent/cli.py                 Eva's startup registration block
+  omnigent/server/app.py          Eva's router mount
+  scripts/eva/                    the coordinator binding script
+  docs/eva/RUNBOOK.md             the rollout runbook
+  tests/airbrx/test_eva_*.py      80 tests
+
+Because pushes to omnigent-airbrx-server deploy production, this commit put Eva
+on omnigent.airbrx.ai. That deploy succeeded (CD run 35679756840) and the site
+stayed healthy. It was harmless because Eva registers only when a coordinator
+has OMNIGENT_EVA_CONFIG set, and none does, so she is present but inert: not
+registered, not in the agent drawer, catalog empty.
+
+Two things a later reader should not conclude from this commit:
+
+1. That Eva was reviewed before deployment. She was not. The full server suite
+   had not completed against this tree when it shipped.
+2. That the Iris change and the Eva change were tested together. They were not.
+
+This note is an annotation. The commit is published, deployed and built on, so
+it is not being rewritten.
+
+The underlying cause is worth more than the correction: several Claude sessions
+were working in ONE checkout at ~/projects/airbrx/omnigent rather than in
+per-session git worktrees. A second session reported the same accident earlier
+the same day, sweeping two files it did not own into a commit on another branch.
+Separate worktrees make it structurally impossible.
