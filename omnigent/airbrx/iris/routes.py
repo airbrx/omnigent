@@ -91,7 +91,7 @@ def completed_answer(items: list[dict]) -> dict | None:
     return {"text": text, "tools": tools, "failed": None} if text.strip() else None
 
 
-def create_iris_router(*, auth_provider, agent_store):
+def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
     router = APIRouter()
     locks: dict[str, asyncio.Lock] = {}
 
@@ -172,6 +172,18 @@ def create_iris_router(*, auth_provider, agent_store):
         if user is None:
             raise HTTPException(401)
         agent = agent_store.get_by_name("iris")
+        mine = [b for b in bindings() if user in b.users]
+        # A binding whose execution host is asleep is not a tenant anyone can
+        # open: session creation refuses it with a 400 before the workspace
+        # loads. Listing it as freely selectable makes the drawer look healthy
+        # and moves the failure to the first click. Say so here instead.
+        #
+        # None, not False, when the server cannot tell: unknown is not offline,
+        # and a caller that cannot distinguish them would grey out every tenant
+        # the moment this lookup went missing.
+        online = None
+        if hosts_online is not None:
+            online = hosts_online(sorted({b.host_id for b in mine}))
         return {
             "agent_id": agent.id if agent else None,
             "revision": json.loads((HERE / "source.json").read_text())["revision"],
@@ -182,9 +194,9 @@ def create_iris_router(*, auth_provider, agent_store):
                     "host_id": b.host_id,
                     "workspace": b.workspace,
                     "fixture": b.fixture,
+                    "host_online": None if online is None else b.host_id in online,
                 }
-                for b in bindings()
-                if user in b.users
+                for b in mine
             ],
         }
 
@@ -423,11 +435,24 @@ def create_iris_router(*, auth_provider, agent_store):
                     []
                     if completed
                     else [
-                        "no MODEL turn has completed in this session, so whether the "
-                        "execution host can reach the model is unknown. A collected report "
-                        "does not settle it: Refresh runs Iris's four tools without "
-                        "invoking the model, so a populated workspace can sit beside an "
-                        "unproven model path. Only asking her something answers this."
+                        # This said "Refresh runs Iris's four tools without invoking
+                        # the model". That is false, and it was measured false on
+                        # 2026-09-22: a hosted session where nothing but Refresh from
+                        # host was pressed holds two COMPLETED assistant messages, and
+                        # this very endpoint flipped to "a model turn has completed"
+                        # straight afterwards. Refresh goes through `turn`, which asks
+                        # the model to call the tools.
+                        #
+                        # The warning is still worth making — a populated workspace
+                        # really can sit beside an unproven model path — but the way
+                        # that happens is an IMPORTED report, which fills this view
+                        # with the host running nothing at all.
+                        "no model turn has completed in this session, so whether the "
+                        "execution host can reach the model is unknown. A populated "
+                        "workspace does not settle it on its own: an imported report "
+                        "fills this view without the host running anything. Refreshing "
+                        "from the host and asking her a question both run a model turn, "
+                        "and this line will say so once one has."
                     ]
                 ),
             }
