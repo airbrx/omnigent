@@ -340,6 +340,10 @@ lint = [
 ]
 test = [
     "pytest>=7.0",
+    # tests/server (and tests/server/integration) import asgiref.testing directly;
+    # without this line it only arrives transitively through the OpenTelemetry
+    # FastAPI extra, which the deploy gate's `uv sync` does not install.
+    "asgiref>=3.8",
     # PEP 517 frontend used by the standalone-package artifact checks.
     "build>=1.2",
     # These clients are optional product capabilities, but their tests import
