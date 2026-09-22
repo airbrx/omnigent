@@ -364,3 +364,105 @@ async def test_a_capture_that_names_another_tenant_is_passed_through_for_rank_to
     )
     result = await collect_captures(api.get, agent_id="ag_iris", bindings=[COLD])
     assert result["t-cold"]["tenant_id"] == "t-hot"
+
+
+# --------------------------------------------------- the borrowed call_id --
+# The hosted item log writes each Iris result twice and gives the duplicate an
+# ADJACENT call_id, so one call_id can carry two different tools with a
+# different output each. Building {call_id: name} and letting the last writer
+# win misattributes the FIRST tool's output to the second, and that tool's
+# report is then never found. See omnigent.airbrx.iris.records.paired.
+
+
+def borrowed(call_id, first, second, first_file, second_file, at):
+    """Two tools sharing one call_id, each with its own output.
+
+    The shape measured on 2026-09-22 in session df952db8…, where iris_audit
+    and iris_propose shared toolu_01FzPy with no ToolSearch involved.
+    """
+    return [
+        {"type": "function_call", "call_id": call_id, "name": f"mcp__omnigent__{first}"},
+        {"type": "function_call", "call_id": call_id, "name": f"mcp__omnigent__{second}"},
+        {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "created_at": at,
+            "output": json.dumps(
+                {"downloads": [{"filename": "report.json", "file_id": first_file}]}
+            ),
+        },
+        {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "created_at": at + 1,
+            "output": json.dumps(
+                {"downloads": [{"filename": "report.json", "file_id": second_file}]}
+            ),
+        },
+    ]
+
+
+def test_two_tools_sharing_one_call_id_keep_their_own_outputs():
+    from omnigent.airbrx.iris.records import report_references
+
+    items = borrowed("shared", "iris_audit", "iris_overview", "f_audit", "f_overview", 100)
+    assert report_references(items) == [
+        ("iris_audit", "f_audit", 100),
+        ("iris_overview", "f_overview", 101),
+    ]
+
+
+def test_a_borrowed_id_does_not_lose_the_overview_behind_toolsearch():
+    # ToolSearch claiming the id first is the other observed shape. The Iris
+    # result under that id is real and must still be found.
+    from omnigent.airbrx.iris.records import report_references
+
+    items = [
+        {"type": "function_call", "call_id": "c1", "name": "ToolSearch"},
+        {"type": "function_call", "call_id": "c1", "name": "mcp__omnigent__iris_overview"},
+        {"type": "function_call_output", "call_id": "c1", "created_at": 10, "output": "[]"},
+        {
+            "type": "function_call_output",
+            "call_id": "c1",
+            "created_at": 11,
+            "output": json.dumps({"downloads": [{"filename": "report.json", "file_id": "f1"}]}),
+        },
+    ]
+    assert report_references(items) == [("iris_overview", "f1", 11)]
+
+
+def test_a_call_with_no_output_yet_is_not_a_pairing_error():
+    # A cancelled or still-running turn leaves a call unanswered.
+    from omnigent.airbrx.iris.records import paired
+
+    items = [
+        {"type": "function_call", "call_id": "c1", "name": "mcp__omnigent__iris_overview"},
+        {"type": "function_call", "call_id": "c1", "name": "mcp__omnigent__iris_audit"},
+        {"type": "function_call_output", "call_id": "c1", "created_at": 5, "output": "{}"},
+    ]
+    assert [name for _, name in paired(items)] == ["iris_overview"]
+
+
+def test_pairs_come_back_in_time_order_across_call_ids():
+    # Callers take the newest reference per tool, so order is load-bearing.
+    from omnigent.airbrx.iris.records import paired
+
+    items = [
+        *turn("late", "iris_overview", "f_late", 900),
+        *turn("early", "iris_overview", "f_early", 100),
+    ]
+    assert [item["created_at"] for item, _ in paired(items)] == [100, 900]
+
+
+def test_the_newest_capture_survives_a_borrowed_call_id():
+    # The end-to-end shape: a session whose overview shares its call_id with a
+    # preceding audit still reports that tenant, rather than reading as a
+    # tenant that has never collected.
+    from omnigent.airbrx.iris.records import report_references
+
+    items = borrowed("shared", "iris_audit", "iris_overview", "f_audit", "f_overview", 500)
+    newest = {}
+    for tool, file_id, at in report_references(items):
+        if tool == "iris_overview" and at >= newest.get("at", 0):
+            newest = {"file_id": file_id, "at": at}
+    assert newest == {"file_id": "f_overview", "at": 501}
