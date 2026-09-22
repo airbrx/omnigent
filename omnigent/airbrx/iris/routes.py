@@ -14,6 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from omnigent.airbrx.iris.config import bindings, session_binding
 from omnigent.airbrx.iris.package import HERE, source_root
+from omnigent.airbrx.iris.records import (
+    bare_tool_name,
+    report_references,
+)
 from omnigent.airbrx.iris.runtime import TOOLS
 from omnigent.server.routes._auth_helpers import require_user
 from omnigent.server.routes._content_type import require_json_content_type
@@ -53,25 +57,6 @@ async def checked(response):
     return response.json()
 
 
-#: Iris tools are registered bare (see :data:`omnigent.airbrx.iris.runtime.TOOLS`)
-#: and dispatched bare, but the model reaches them through the SDK's MCP
-#: namespace, so a recorded session item spells the call
-#: ``mcp__omnigent__iris_overview``. Comparing the recorded spelling against the
-#: registration spelling rejected every correct turn with a 409.
-#:
-#: Only this server's own prefix is removed. A tool served by any other MCP
-#: server -- ``mcp__airbrx__*``, ``mcp__claude_ai_Slack__*`` -- is outside the
-#: Iris boundary and must still be refused, so the guard keeps its meaning.
-_OMNIGENT_TOOL_PREFIX = "mcp__omnigent__"
-
-
-def bare_tool_name(name):
-    """Return the registration name for a recorded tool call."""
-    if not isinstance(name, str):
-        return name
-    return name.removeprefix(_OMNIGENT_TOOL_PREFIX)
-
-
 #: Harness tools a recorded Iris turn may contain without breaching the
 #: boundary. ``ToolSearch`` only loads tool *schemas*; it executes nothing
 #: against a tenant, and any tool it surfaces still has to be called as its own
@@ -103,32 +88,6 @@ def completed_answer(items: list[dict]) -> dict | None:
         c.get("text", "") for c in answers[-1].get("content", []) if c.get("type") == "output_text"
     )
     return {"text": text, "tools": tools, "failed": None} if text.strip() else None
-
-
-def report_references(items):
-    calls = {
-        i.get("call_id"): bare_tool_name(i.get("name"))
-        for i in items
-        if i.get("type") == "function_call"
-    }
-    references = []
-    for item in items:
-        if (
-            item.get("type") != "function_call_output"
-            or calls.get(item.get("call_id")) not in TOOLS
-        ):
-            continue
-        try:
-            result = json.loads(item.get("output", ""))
-        except (ValueError, TypeError):
-            continue
-        if isinstance(result, dict) and not result.get("error") and not result.get("error_code"):
-            for download in result.get("downloads", []):
-                if download.get("filename") == "report.json":
-                    references.append(
-                        (calls[item["call_id"]], download["file_id"], item.get("created_at", 0))
-                    )
-    return references
 
 
 def create_iris_router(*, auth_provider, agent_store):
