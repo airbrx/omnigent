@@ -180,7 +180,7 @@
       // failure still falls through untouched; and only once per load, so a
       // session that genuinely cannot collect stops once instead of looping.
       autoCollected = true;
-      collecting = true;
+      collecting = response.status === 409 ? "first" : "stale";
       renderState();
       let collected = null;
       try {
@@ -192,7 +192,7 @@
       } catch {
         collected = null;
       }
-      collecting = false;
+      collecting = "";
       if (collected && collected.ok) {
         // Whatever the page could not show, it can show now, so a refusal
         // armed on the way in is no longer standing. Leaving it would print
@@ -252,8 +252,12 @@
   let readinessError = null;
   let statusLine = null;
   let detailList = null;
-  //: True while the first-open collection is in flight, so the bar can say so.
-  let collecting = false;
+  //: While a collection is in flight: "" when idle, else "first" (nothing has
+  //: ever been collected here) or "stale" (a capture exists but the page will
+  //: not show it). The two are different sentences -- saying "first overview"
+  //: over a session that already has one is a small lie, and this file is not
+  //: allowed small lies.
+  let collecting = "";
   //: Re-check host is the way back to the full detail once it has been folded
   //: away. It latches: someone who asked to see it keeps seeing it.
   let showDetails = false;
@@ -263,11 +267,14 @@
     const lines = [];
     let headline;
     if (collecting) {
-      // The first open collects before it paints. Say what is happening, with
-      // how long it takes, because a minute of nothing reads as broken.
+      // Collect before painting, and say what is happening with how long it
+      // takes, because a minute of nothing reads as broken.
       headline =
-        "Collecting this tenant's first overview from the host. This runs Iris's" +
-        " tools against the warehouse and usually takes a minute.";
+        (collecting === "stale"
+          ? "This tenant's last capture is too old to show, so Iris is collecting a"
+            + " fresh one from the host."
+          : "Collecting this tenant's first overview from the host.") +
+        " This runs Iris's tools against the warehouse and usually takes a minute.";
     } else if (readinessError) {
       headline = `This host will not run turns in this session: ${readinessError}`;
     } else if (!readiness) {
