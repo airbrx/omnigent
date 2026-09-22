@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 from omnigent.entities import LoadedAgent
@@ -202,6 +203,21 @@ class AgentCache:
         """
         Extract bundle bytes to disk and populate both cache tiers.
 
+        Extracts to a private staging directory and publishes it into
+        *workdir* with an atomic rename, the same pattern :meth:`replace`
+        uses for warm-swaps. ``load()`` takes no per-``agent_id`` lock, so
+        two threads racing a first-time cache miss for the same agent both
+        land here concurrently; extracting straight into the shared
+        *workdir* let one racer's tarfile member write (``open(path,
+        "wb")``, which truncates before writing the new content) land in
+        the gap between another racer's ``open()`` and ``read()`` of the
+        same file — observed as ``config.yaml`` parsing as empty
+        (``yaml.load`` returning ``None``) under concurrent load. Staging
+        first means each racer only ever reads back its own
+        fully-extracted copy; the rename is what may race, and losing that
+        race is harmless since both copies were extracted from the same
+        ``bundle_bytes``.
+
         :param agent_id: Unique agent identifier.
         :param bundle_bytes: Raw bytes of the ``.tar.gz`` bundle.
         :param workdir: Target directory for extraction.
@@ -214,16 +230,28 @@ class AgentCache:
         tmp_fd, tmp_name = tempfile.mkstemp(suffix=".tar.gz")
         os.close(tmp_fd)
         tmp_path = Path(tmp_name)
+        staging_dir = self._cache_path(agent_id, suffix=f"_staging_{uuid.uuid4().hex}")
         try:
             tmp_path.write_bytes(bundle_bytes)
             spec = load_spec(
                 tmp_path,
-                dest=workdir,
+                dest=staging_dir,
                 expand_env=expand_env,
                 prune_invalid_sub_agents=True,
             )
         finally:
             tmp_path.unlink()
+
+        # Publish atomically. If a racing first-time load of this same
+        # agent_id already published `workdir` (identical bundle bytes —
+        # `bundle_location` is keyed by agent_id), keep its directory and
+        # discard ours rather than raising on the rename.
+        try:
+            staging_dir.rename(workdir)
+        except OSError:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            if not workdir.is_dir():
+                raise
 
         self._specs[agent_id] = spec
         return LoadedAgent(spec=spec, workdir=workdir)
