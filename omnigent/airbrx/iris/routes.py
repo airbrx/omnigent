@@ -218,6 +218,7 @@ def create_iris_router(*, auth_provider, agent_store):
             "bindings": [
                 {
                     "tenant_id": b.tenant_id,
+                    "name": b.name,
                     "host_id": b.host_id,
                     "workspace": b.workspace,
                     "fixture": b.fixture,
@@ -411,6 +412,7 @@ def create_iris_router(*, auth_provider, agent_store):
             scope = " (synthetic fixture)" if binding.fixture else " (read-only)"
             return {
                 "tenant_id": binding.tenant_id,
+                "name": binding.name,
                 "fixture": binding.fixture,
                 "session_status": session.get("status"),
                 "turn_completed_here": completed,

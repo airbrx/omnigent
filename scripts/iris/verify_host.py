@@ -119,6 +119,7 @@ async def main():
         second = await create()
         downloads = []
         files = (await get(f"/v1/sessions/{session}/resources/files"))["data"]
+
         # The resource carries its name at `name`, with `metadata.filename`
         # alongside it — not at a top-level `filename`, which is what this
         # script originally read and which raised KeyError on the first hosted
@@ -136,7 +137,8 @@ async def main():
             denied = await client.get(path.replace(session, second))
             if denied.status_code != 404:
                 raise SystemExit("Cross-session file ownership check failed")
-            if filename_of(file) == "report.json" and downloaded.json()["tenant_id"] != args.tenant:
+            is_report_json = filename_of(file) == "report.json"
+            if is_report_json and downloaded.json()["tenant_id"] != args.tenant:
                 raise SystemExit("Downloaded report tenant mismatch")
             downloads.append(
                 {
