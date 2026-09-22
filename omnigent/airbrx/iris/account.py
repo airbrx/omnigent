@@ -37,6 +37,9 @@ async def collect_captures(get, *, agent_id: str, bindings) -> dict[str, dict | 
     Raises HTTPException(502) if the session list itself cannot be read: a
     partial account rendered as complete would misreport the account.
     """
+    if not bindings:
+        return {}
+
     by_workspace = {(b.host_id, b.workspace): b.tenant_id for b in bindings}
     newest: dict[str, tuple[float, str, str]] = {}  # tenant -> (created_at, session_id, file_id)
     failed: dict[str, str] = {}
@@ -55,17 +58,11 @@ async def collect_captures(get, *, agent_id: str, bindings) -> dict[str, dict | 
             tenant_id = by_workspace.get((session.get("host_id"), session.get("workspace")))
             if tenant_id is None or tenant_id in failed:
                 continue
-            items = await get(
-                f"/v1/sessions/{session['id']}/items", params={"limit": _PAGE, "order": "desc"}
-            )
-            if items.status_code >= 400:
-                failed[tenant_id] = (
-                    f"a session's record could not be read (HTTP {items.status_code})"
-                )
+            references, error = await _session_report_references(get, session["id"])
+            if error is not None:
+                failed[tenant_id] = error
                 continue
-            # report_references wants chronological order; the page is newest-first.
-            chronological = list(reversed(items.json().get("data", [])))
-            for tool, file_id, created_at in report_references(chronological):
+            for tool, file_id, created_at in references:
                 if tool != "iris_overview":
                     continue
                 if tenant_id not in newest or created_at > newest[tenant_id][0]:
@@ -102,3 +99,40 @@ async def collect_captures(get, *, agent_id: str, bindings) -> dict[str, dict | 
             "captured_at": created_at,
         }
     return result
+
+
+async def _session_report_references(get, session_id):
+    """Page through one session's items and return its report references.
+
+    The native API answers newest-first, so a run of pages is fetched with
+    `after=last_id` until either a page's accumulation yields an
+    `iris_overview` reference (that is, by construction, the newest one in
+    this session — no need to read further back) or the pages run out.
+    `report_references` is called on the whole reversed (chronological)
+    accumulation each time, never on a single page alone, so a
+    `function_call`/`function_call_output` pair split across a page boundary
+    is still paired correctly.
+
+    Returns `(references, None)` on success or `([], error)` if any page
+    fails to load — fails closed, exactly like a first-page failure.
+    """
+    accumulated: list = []
+    after = None
+    while True:
+        params = {"limit": _PAGE, "order": "desc"}
+        if after:
+            params["after"] = after
+        items = await get(f"/v1/sessions/{session_id}/items", params=params)
+        if items.status_code >= 400:
+            return [], f"a session's record could not be read (HTTP {items.status_code})"
+        item_page = items.json()
+        accumulated.extend(item_page.get("data", []))
+        chronological = list(reversed(accumulated))
+        references = report_references(chronological)
+        if any(tool == "iris_overview" for tool, _, _ in references):
+            return references, None
+        if not item_page.get("has_more"):
+            return references, None
+        after = item_page.get("last_id")
+        if not after:
+            return references, None

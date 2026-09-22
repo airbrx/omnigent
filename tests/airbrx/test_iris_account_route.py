@@ -207,6 +207,23 @@ def test_an_unregistered_iris_is_404(tmp_path, monkeypatch):
     assert response.status_code == 404
 
 
+def test_invalid_binding_config_is_a_500_with_no_json_parser_text(tmp_path, monkeypatch):
+    config = tmp_path / "iris-bindings.json"
+    config.write_text("{not json")
+    monkeypatch.setenv("OMNIGENT_IRIS_CONFIG", str(config))
+
+    application = FastAPI()
+    application.include_router(
+        create_iris_router(auth_provider=Auth(), agent_store=Agents()), prefix="/v1"
+    )
+    response = TestClient(application).get("/v1/iris/account", headers={"X-Forwarded-Email": USER})
+    assert response.status_code == 500
+    assert response.json() == {
+        "detail": "The Iris binding configuration on this host is invalid or unreadable"
+    }
+    assert "Expecting" not in response.text
+
+
 def test_a_caller_with_no_bindings_gets_an_empty_account_not_an_error(app):
     response = TestClient(app).get(
         "/v1/iris/account", headers={"X-Forwarded-Email": "nobody@example.com"}

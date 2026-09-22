@@ -84,7 +84,13 @@ class FakeApi:
     async def get(self, path, params=None):
         self.calls.append((path, dict(params or {})))
         if path in self.statuses:
-            return httpx.Response(self.statuses[path], json={"detail": "nope"})
+            status = self.statuses[path]
+            # A dict lets a test fail only one page of a paginated path, keyed
+            # by the `after` param that request used (None for the first page).
+            if isinstance(status, dict):
+                status = status.get((params or {}).get("after"))
+            if status is not None:
+                return httpx.Response(status, json={"detail": "nope"})
         if path == "/v1/sessions":
             after = (params or {}).get("after")
             pages = (
@@ -103,9 +109,25 @@ class FakeApi:
             return httpx.Response(200, json=pages[index])
         if path.startswith("/v1/sessions/") and path.endswith("/items"):
             sid = path.split("/")[3]
-            # The native API answers order=desc newest-first; mirror that.
-            data = list(reversed(self.items.get(sid, [])))
-            return httpx.Response(200, json=page(data))
+            entry = self.items.get(sid, [])
+            # A flat list is chronological and served as one desc page (mirrors
+            # the native API's order=desc). A list of already-built `page(...)`
+            # dicts lets a test serve several item pages keyed by `after`.
+            pages = (
+                entry
+                if isinstance(entry, list)
+                and entry
+                and isinstance(entry[0], dict)
+                and "data" in entry[0]
+                else [page(list(reversed(entry)))]
+            )
+            after = (params or {}).get("after")
+            index = (
+                0
+                if after is None
+                else next(i for i, p in enumerate(pages) if p["last_id"] == after) + 1
+            )
+            return httpx.Response(200, json=pages[index])
         if "/resources/files/" in path:
             file_id = path.split("/")[-2]
             return httpx.Response(200, json=self.reports[file_id])
@@ -228,6 +250,109 @@ async def test_a_failed_session_list_fails_the_whole_account():
     with pytest.raises(HTTPException) as caught:
         await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
     assert caught.value.status_code == 502
+
+
+async def test_no_bindings_means_no_call_at_all():
+    api = FakeApi(sessions=[], items={}, reports={})
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[])
+    assert result == {}
+    assert api.calls == []
+
+
+async def test_an_overview_on_a_later_items_page_is_still_found():
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={
+            "s1": [
+                page(
+                    list(reversed(turn("c-audit", "iris_audit", "f-audit", 300.0))),
+                    has_more=True,
+                    last_id="page-1",
+                ),
+                page(list(reversed(turn("c-ov", "iris_overview", "f1", 50.0)))),
+            ]
+        },
+        reports={"f1": REPORT, "f-audit": {"tenant_id": "t-hot"}},
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"]["captured_at"] == 50.0
+    item_calls = [p for p, _ in api.calls if p.endswith("/items")]
+    assert item_calls == ["/v1/sessions/s1/items", "/v1/sessions/s1/items"]
+
+
+async def test_a_call_and_its_output_split_across_a_page_boundary_are_still_paired():
+    call_item = {"type": "function_call", "call_id": "c1", "name": "mcp__omnigent__iris_overview"}
+    output_item = {
+        "type": "function_call_output",
+        "call_id": "c1",
+        "created_at": 75.0,
+        "output": json.dumps({"downloads": [{"filename": "report.json", "file_id": "f1"}]}),
+    }
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        # Newest first: the output (created later) is on page 1, its call is
+        # on page 2 — a real pairing has to span the page boundary.
+        items={
+            "s1": [
+                page([output_item], has_more=True, last_id="page-1"),
+                page([call_item]),
+            ]
+        },
+        reports={"f1": REPORT},
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"]["captured_at"] == 75.0
+    item_calls = [p for p, _ in api.calls if p.endswith("/items")]
+    assert item_calls == ["/v1/sessions/s1/items", "/v1/sessions/s1/items"]
+
+
+async def test_paging_stops_as_soon_as_an_overview_is_found():
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={
+            "s1": [
+                page(
+                    list(reversed(turn("c-audit", "iris_audit", "f-audit", 300.0))),
+                    has_more=True,
+                    last_id="page-1",
+                ),
+                page(
+                    list(reversed(turn("c-ov", "iris_overview", "f1", 50.0))),
+                    has_more=True,
+                    last_id="page-2",
+                ),
+                page(list(reversed(turn("c-old", "iris_audit", "f-old", 10.0)))),
+            ]
+        },
+        reports={"f1": REPORT, "f-audit": {"tenant_id": "t-hot"}, "f-old": {"tenant_id": "t-hot"}},
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"]["captured_at"] == 50.0
+    item_calls = [p for p, _ in api.calls if p.endswith("/items")]
+    # The overview was found on page 2; page 3 must never be requested.
+    assert item_calls == ["/v1/sessions/s1/items", "/v1/sessions/s1/items"]
+
+
+async def test_a_failed_later_items_page_fails_that_tenant_closed():
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={
+            "s1": [
+                page(
+                    list(reversed(turn("c-audit", "iris_audit", "f-audit", 300.0))),
+                    has_more=True,
+                    last_id="page-1",
+                ),
+                page(list(reversed(turn("c-ov", "iris_overview", "f1", 50.0)))),
+            ]
+        },
+        reports={"f1": REPORT, "f-audit": {"tenant_id": "t-hot"}},
+        # The first page (after=None) succeeds; the second page (after="page-1"),
+        # which is where the overview lives, fails.
+        statuses={"/v1/sessions/s1/items": {"page-1": 500}},
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"] == {"error": "a session's record could not be read (HTTP 500)"}
 
 
 async def test_a_capture_that_names_another_tenant_is_passed_through_for_rank_to_refuse():

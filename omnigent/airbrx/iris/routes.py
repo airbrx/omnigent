@@ -209,19 +209,18 @@ def create_iris_router(*, auth_provider, agent_store):
             raise HTTPException(404, "Iris is not registered on this host")
         try:
             mine = [b for b in bindings() if user in b.users]
-        except ValueError as exc:
+        except (ValueError, OSError):
             # Operator configuration, not user input; the whole list fails
             # rather than rendering a partial account as complete.
-            raise HTTPException(500, str(exc)) from None
+            raise HTTPException(
+                500, "The Iris binding configuration on this host is invalid or unreadable"
+            ) from None
         source_root()
         from iris.account import rank
 
         async with session_client(request) as client:
             captures = await collect_captures(client.get, agent_id=agent.id, bindings=mine)
-        tenants = [
-            {"tenant_id": b.tenant_id, "name": getattr(b, "name", "") or None, "note": None}
-            for b in mine
-        ]
+        tenants = [{"tenant_id": b.tenant_id, "name": b.name or None, "note": None} for b in mine]
         now = time.time()
         return {"generated_at": now, "tenants": len(tenants), **rank(tenants, captures, now=now)}
 
