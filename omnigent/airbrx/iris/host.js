@@ -202,10 +202,15 @@
       // workspace and an unproven model path are not a contradiction — they are
       // two different facts, and conflating them made this banner read as
       // broken next to a screen full of findings.
+      // NOT "Refresh runs Iris's tools, not the model" -- Refresh does run a
+      // model turn, measured on 2026-09-22. What fills this view without the
+      // host running anything is an imported report.
       headline =
         "No model turn has completed in this session, so whether this host can" +
-        " reach the model is still unproven. Collecting a report does not answer" +
-        " it: Refresh runs Iris\u2019s tools, not the model. Ask her something to find out.";
+        " reach the model is still unproven. A populated workspace is not the" +
+        " answer on its own \u2014 an imported report fills it without the host" +
+        " running anything. Refresh from the host, or ask her something: either" +
+        " one runs a model turn.";
     }
     statusLine.textContent = headline;
     statusLine.dataset.state = readinessError

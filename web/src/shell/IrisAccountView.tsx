@@ -44,6 +44,13 @@ export interface IrisAccountTenant {
   tenant_id: string;
   name?: string;
   fixture: boolean;
+  /** Whether this tenant's execution host is connected right now.
+   *
+   * `null` — and `undefined`, from a server that predates the field — mean the
+   * server could not tell, which is NOT the same as offline. Only `false`
+   * disables the row. Rendering unknown as offline would let a missing lookup
+   * grey out every tenant and manufacture an outage. */
+  host_online?: boolean | null;
 }
 
 const REASON_LABEL: Record<IrisQuarantineReason, string> = {
@@ -214,6 +221,7 @@ export function IrisAccountView({ tenants, account, accountError, busy, loading 
                 <div className="text-muted-foreground text-xs">
                   {entry.name ? `${shortId(entry.tenant_id)} · ` : ""}
                   {entry.fixture ? "synthetic fixture" : "read-only"}
+                  {entry.host_online === false ? " · host offline" : ""}
                 </div>
               </td>
               <Standing
@@ -225,7 +233,7 @@ export function IrisAccountView({ tenants, account, accountError, busy, loading 
               <td className="text-right">
                 <Button
                   size="sm"
-                  disabled={busy}
+                  disabled={busy || entry.host_online === false}
                   aria-label={`${openLabel}: ${entry.name || entry.tenant_id}`}
                   onClick={() => onOpen(entry.tenant_id)}
                 >
