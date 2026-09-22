@@ -2818,7 +2818,11 @@ def create_app(
     from omnigent.airbrx.iris.routes import create_iris_router
 
     app.include_router(
-        create_iris_router(auth_provider=auth_provider, agent_store=agent_store),
+        create_iris_router(
+            auth_provider=auth_provider,
+            agent_store=agent_store,
+            hosts_online=_bulk_hosts_online,
+        ),
         prefix="/v1",
         tags=["iris"],
     )
