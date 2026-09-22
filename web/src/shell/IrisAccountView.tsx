@@ -118,7 +118,15 @@ function coverage(covered: number | null | undefined, requested: number | null |
   return covered == null || requested == null ? "" : `${covered} / ${requested} days`;
 }
 
-function Standing({ entry, accountError }: { entry: OrderedRow; accountError: string }) {
+function Standing({
+  entry,
+  accountError,
+  generatedAt,
+}: {
+  entry: OrderedRow;
+  accountError: string;
+  generatedAt: number | null;
+}) {
   if (entry.status === "ranked") {
     const r = entry.row;
     return (
@@ -138,7 +146,11 @@ function Standing({ entry, accountError }: { entry: OrderedRow; accountError: st
       <>
         <td colSpan={3}>{r.detail ? `${label}: ${r.detail}` : label}</td>
         <td>{coverage(r.covered_days, r.requested_days)}</td>
-        <td>{r.captured_at != null ? formatAge(Math.max(0, Date.now() / 1000 - r.captured_at)) : ""}</td>
+        <td>
+          {typeof generatedAt === "number" && typeof r.captured_at === "number"
+            ? formatAge(Math.max(0, generatedAt - r.captured_at))
+            : ""}
+        </td>
       </>
     );
   }
@@ -149,6 +161,7 @@ function Standing({ entry, accountError }: { entry: OrderedRow; accountError: st
 
 export function IrisAccountView({ tenants, account, accountError, busy, openLabel, onOpen }: IrisAccountViewProps) {
   const rows = orderedRows(tenants, account);
+  const generatedAt = account?.generated_at ?? null;
   return (
     <div className="flex flex-col gap-3">
       {accountError && <p role="alert">{accountError}</p>}
@@ -174,7 +187,7 @@ export function IrisAccountView({ tenants, account, accountError, busy, openLabe
                   {entry.fixture ? "synthetic fixture" : "read-only"}
                 </div>
               </td>
-              <Standing entry={entry} accountError={accountError} />
+              <Standing entry={entry} accountError={accountError} generatedAt={generatedAt} />
               <td className="text-right">
                 <Button size="sm" disabled={busy} onClick={() => onOpen(entry.tenant_id)}>
                   {openLabel}

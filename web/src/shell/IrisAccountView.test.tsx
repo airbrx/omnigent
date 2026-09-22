@@ -59,34 +59,29 @@ function rowFor(text: string) {
 }
 
 it("ranks first, in the server's order, then quarantines with a reason — never a blank or a zero", () => {
-  vi.useFakeTimers({ now: 1_800_000_000 * 1000 });
-  try {
-    render(
-      <IrisAccountView tenants={TENANTS} account={ACCOUNT} accountError="" busy={false} openLabel="Open workspace" onOpen={vi.fn()} />,
-    );
-    const rows = screen.getAllByRole("row").slice(1); // drop the header
-    expect(rows.map((r) => r.getAttribute("data-tenant"))).toEqual(TENANTS.map((t) => t.tenant_id));
+  render(
+    <IrisAccountView tenants={TENANTS} account={ACCOUNT} accountError="" busy={false} openLabel="Open workspace" onOpen={vi.fn()} />,
+  );
+  const rows = screen.getAllByRole("row").slice(1); // drop the header
+  expect(rows.map((r) => r.getAttribute("data-tenant"))).toEqual(TENANTS.map((t) => t.tenant_id));
 
-    const hot = rowFor("Hot");
-    expect(hot).toHaveTextContent("60.0%");
-    expect(hot).toHaveTextContent("400");
-    expect(hot).toHaveTextContent("1,000");
-    expect(hot).toHaveTextContent("4 d ago");
-    expect(hot).toHaveTextContent("7 / 7 days");
+  const hot = rowFor("Hot");
+  expect(hot).toHaveTextContent("60.0%");
+  expect(hot).toHaveTextContent("400");
+  expect(hot).toHaveTextContent("1,000");
+  expect(hot).toHaveTextContent("4 d ago");
+  expect(hot).toHaveTextContent("7 / 7 days");
 
-    const cold = rowFor("Cold");
-    expect(cold).toHaveTextContent("Never collected");
-    expect(cold).not.toHaveTextContent("0%");
-    expect(cold).not.toHaveTextContent("—");
-    expect(cold).toHaveTextContent("synthetic fixture");
+  const cold = rowFor("Cold");
+  expect(cold).toHaveTextContent("Never collected");
+  expect(cold).not.toHaveTextContent("0%");
+  expect(cold).not.toHaveTextContent("—");
+  expect(cold).toHaveTextContent("synthetic fixture");
 
-    const partial = rowFor("cccccccc");
-    expect(partial).toHaveTextContent("Incomplete period");
-    expect(partial).toHaveTextContent("3 / 7 days");
-    expect(partial).toHaveTextContent("1 min ago");
-  } finally {
-    vi.useRealTimers();
-  }
+  const partial = rowFor("cccccccc");
+  expect(partial).toHaveTextContent("Incomplete period");
+  expect(partial).toHaveTextContent("3 / 7 days");
+  expect(partial).toHaveTextContent("1 min ago");
 });
 
 it("drills in per row through the callback, with the row's own tenant id", () => {
@@ -149,6 +144,7 @@ it("shows a quarantined row's detail when there is one", () => {
     <IrisAccountView tenants={TENANTS} account={account} accountError="" busy={false} openLabel="Start chat" onOpen={vi.fn()} />,
   );
   expect(rowFor("Hot")).toHaveTextContent("Metrics disagree: more hits than requests");
+  expect(rowFor("Hot")).toHaveTextContent(/\d{4,} d ago/);
   expect(rowFor("Cold")).toHaveTextContent("Capture names another tenant");
   expect(rowFor("cccccccc")).toHaveTextContent("Could not be read: the newest report could not be read (HTTP 502)");
   expect(screen.getAllByRole("button", { name: "Start chat" })).toHaveLength(3);
