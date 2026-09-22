@@ -9271,6 +9271,81 @@
         "summary": "Branding Logo"
       }
     },
+    "/v1/eva": {
+      "get": {
+        "operationId": "catalog_v1_eva_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Catalog V1 Eva Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Catalog",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
+    "/v1/eva/readiness": {
+      "get": {
+        "description": "Is the outreach app behind this binding actually usable?\n\nThree answers, and the third is the one that matters:\n\n`reachable`   the app responded at all.\n`healthy`     its own `/readyz` says ok, with a repository bound.\n`carries_crm_data`  a sync has actually run. **An app can be reachable\n                and healthy and still be showing invented rows.** That is\n                not hypothetical; it is what shipped.\n\nAnything this cannot establish is reported as `null` and never as\n`true`. A readiness check that guesses optimistically is worse than\nnone, because it is believed.",
+        "operationId": "readiness_v1_eva_readiness_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Label"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Readiness V1 Eva Readiness Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
     "/v1/extensions": {
       "get": {
         "description": "List extensions installed and enabled when the server started.\n\nV1 treats operator installation as enablement. Installing, removing, or\nupgrading a package requires a server restart to refresh this snapshot.",
@@ -10392,6 +10467,26 @@
           }
         },
         "summary": "Catalog",
+        "tags": [
+          "iris"
+        ]
+      }
+    },
+    "/v1/iris/account": {
+      "get": {
+        "description": "The caller's bound tenants, ranked by the value at stake, or quarantined with a reason.\n\nDeterministic: no model runs here. The tenant set is the caller's\nbindings \u2014 the coordinator holds no PAT, so it cannot ask the\nAirbrx manifest, and a tenant with no binding could not be drilled\ninto anyway. Captures come from the caller's own Iris sessions\n(`collect_captures`), and only `tenant_id` and `metrics` are read out\nof a report. Ranking is `iris.account.rank`, pinned in the archive,\nso what a figure *means* is versioned and hash-verified with the rest\nof Iris.",
+        "operationId": "account_v1_iris_account_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Account",
         "tags": [
           "iris"
         ]
