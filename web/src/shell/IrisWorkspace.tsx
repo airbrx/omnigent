@@ -18,6 +18,19 @@ interface IrisCatalog {
   bindings: IrisBinding[];
 }
 
+/**
+ * The id shown beside a tenant's name, so two similarly-named tenants stay
+ * distinguishable.
+ *
+ * Truncating is only worth it for an id nobody reads anyway: a UUID costs 36
+ * characters to say nothing. A short id is already legible, and cutting it
+ * produces a fragment that is worse than useless — `fixture-iris` became
+ * `fixture-`, which identifies nothing and looks like a rendering bug.
+ */
+export function shortId(tenantId: string): string {
+  return tenantId.length > 20 ? tenantId.slice(0, 8) : tenantId;
+}
+
 export function IrisWorkspace() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
@@ -133,7 +146,7 @@ export function IrisWorkspace() {
             <option value="">Select a tenant</option>
             {data.bindings.map((b) => (
               <option key={b.tenant_id} value={b.tenant_id}>
-                {b.name ? `${b.name} · ${b.tenant_id.slice(0, 8)}` : b.tenant_id}
+                {b.name ? `${b.name} · ${shortId(b.tenant_id)}` : b.tenant_id}
                 {b.fixture ? " — synthetic fixture" : " — read-only"}
               </option>
             ))}
