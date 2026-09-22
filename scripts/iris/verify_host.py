@@ -11,9 +11,8 @@ from pathlib import Path
 
 import httpx
 
-from omnigent.airbrx.iris.records import paired, report_references
+from omnigent.airbrx.iris.records import executions, report_references
 from omnigent.airbrx.iris.routes import completed_answer
-from omnigent.airbrx.iris.runtime import TOOLS
 from omnigent.cli_auth import load_token
 
 
@@ -101,13 +100,7 @@ async def main():
         # advances the tool budget, and in the measured turn the duplicated
         # pairs held budgets unchanged at {calls: 10}, {calls: 30} and
         # {calls: 35} while the four real runs stepped 10 -> 28 -> 30 -> 35.
-        runs = {}
-        for output, name in paired(items):
-            if name in TOOLS:
-                runs.setdefault(
-                    hashlib.sha256((output.get("output") or "").encode()).hexdigest(), name
-                )
-        iris_tools = sorted(runs.values())
+        iris_tools = executions(items)
         if not answer or iris_tools != ["iris_overview"]:
             raise SystemExit("Native overview dispatch was not observed exactly once")
         refs = report_references(items)

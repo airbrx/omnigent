@@ -466,3 +466,105 @@ def test_the_newest_capture_survives_a_borrowed_call_id():
         if tool == "iris_overview" and at >= newest.get("at", 0):
             newest = {"file_id": file_id, "at": at}
     assert newest == {"file_id": "f_overview", "at": 501}
+
+
+# ------------------------------------------------- counting EXECUTIONS ------
+# `paired` says which tool a recorded result belongs to. `executions` says how
+# many times a tool RAN, which is the question an acceptance gate asks. The
+# rule — two byte-identical payloads are one run — had no test anywhere,
+# because it lived inline in scripts/iris/verify_host.py, which has no test
+# file. It was the one rule with nothing checking it, on a gate whose whole job
+# is to notice a second dispatch.
+
+
+def output(call_id, payload, at=0):
+    return {
+        "type": "function_call_output",
+        "call_id": call_id,
+        "created_at": at,
+        "output": json.dumps(payload),
+    }
+
+
+def call(call_id, tool):
+    return {"type": "function_call", "call_id": call_id, "name": f"mcp__omnigent__{tool}"}
+
+
+OVERVIEW = {"message": "Tenant overview", "evidence": [{"id": "e1"}], "budget": {"calls": 10}}
+
+
+def test_the_same_payload_recorded_twice_is_one_execution():
+    from omnigent.airbrx.iris.records import executions
+
+    items = [
+        call("a", "iris_overview"),
+        output("a", OVERVIEW, 1),
+        call("b", "iris_overview"),
+        output("b", OVERVIEW, 2),  # the log's copy
+    ]
+    assert executions(items) == ["iris_overview"]
+
+
+def test_a_genuine_second_run_is_two_executions():
+    # A real second run mints a fresh evidence id and advances the budget, so
+    # it cannot be byte-equal to the first. This is the case the rule must NOT
+    # collapse, or a double dispatch goes unnoticed.
+    from omnigent.airbrx.iris.records import executions
+
+    second = {"message": "Tenant overview", "evidence": [{"id": "e2"}], "budget": {"calls": 28}}
+    items = [
+        call("a", "iris_overview"),
+        output("a", OVERVIEW, 1),
+        call("b", "iris_overview"),
+        output("b", second, 2),
+    ]
+    assert executions(items) == ["iris_overview", "iris_overview"]
+
+
+def test_a_duplicate_under_a_borrowed_call_id_is_still_one_execution():
+    # The shape actually observed: the copy borrows the PRECEDING tool's id.
+    from omnigent.airbrx.iris.records import executions
+
+    items = [
+        call("x", "ToolSearch"),
+        output("x", [{"type": "tool_reference"}], 1),
+        call("x", "iris_overview"),
+        output("x", OVERVIEW, 2),
+        call("y", "iris_overview"),
+        output("y", OVERVIEW, 3),
+    ]
+    assert executions(items) == ["iris_overview"]
+
+
+def test_harness_tools_are_not_counted_as_iris_runs():
+    from omnigent.airbrx.iris.records import executions
+
+    items = [call("x", "ToolSearch"), output("x", [{"type": "tool_reference"}], 1)]
+    assert executions(items) == []
+
+
+async def test_a_borrowed_call_id_still_yields_the_newest_capture_end_to_end():
+    # Chief's case (d), through collect_captures rather than report_references:
+    # an iris_overview whose call shares an id with a neighbouring tool is
+    # still found, and still the newest. Before the pairing fix the account
+    # route would have reported this tenant as never_collected.
+    older = turn("solo", "iris_overview", "f_old", 100)
+    shared = borrowed("dup", "iris_audit", "iris_overview", "f_audit", "f_new", 500)
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={"s1": older + shared},
+        reports={
+            "f_new": REPORT,
+            "f_old": {**REPORT, "metrics": {**REPORT["metrics"], "requests": 1}},
+            "f_audit": {"tenant_id": "t-hot"},
+        },
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    # The newest overview is the one recorded under the BORROWED id, at 501.
+    # Before the pairing fix that record was attributed to iris_audit and never
+    # found, so this tenant read as its older capture — or as never collected.
+    assert result["t-hot"] == {
+        "tenant_id": "t-hot",
+        "metrics": REPORT["metrics"],
+        "captured_at": 501,
+    }
