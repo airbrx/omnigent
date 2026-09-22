@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { getOmnigentHostConfig } from "@/lib/host";
 import { authenticatedFetch } from "@/lib/identity";
@@ -39,62 +39,85 @@ function show() {
   );
 }
 
-it("requires explicit tenant selection and uses native session creation", async () => {
-  vi.mocked(authenticatedFetch)
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          agent_id: "registered-iris",
-          bindings: [
-            {
-              tenant_id: "fixture",
-              host_id: "approved-host",
-              workspace: "/approved",
-              fixture: true,
-            },
-          ],
-        }),
-      ),
-    )
-    .mockResolvedValueOnce(new Response(JSON.stringify({ id: "native-session" }), { status: 201 }));
+const CATALOG = {
+  agent_id: "registered-iris",
+  bindings: [
+    { tenant_id: "fixture", host_id: "approved-host", workspace: "/approved", fixture: true },
+    { tenant_id: "live-tenant", host_id: "approved-host", workspace: "/live", fixture: false },
+  ],
+};
+const ACCOUNT = {
+  generated_at: 1,
+  tenants: 2,
+  ranked: [
+    {
+      tenant_id: "live-tenant", name: null, hit_rate: 0.5, hit_rate_denominator: 10, requests: 10,
+      cache_misses: 5, covered_days: 7, requested_days: 7, captured_at: 0, age_seconds: 120,
+    },
+  ],
+  quarantined: [{ tenant_id: "fixture", name: null, reason: "never_collected", detail: null }],
+};
+
+/** Dispatch the fetch mock by URL so the order of queries does not matter. */
+function serve(overrides: Record<string, () => Response> = {}) {
+  vi.mocked(authenticatedFetch).mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url in overrides) return overrides[url]();
+    if (url === "/v1/iris") return new Response(JSON.stringify(CATALOG));
+    if (url === "/v1/iris/account") return new Response(JSON.stringify(ACCOUNT));
+    if (url === "/v1/sessions" && init?.method === "POST")
+      return new Response(JSON.stringify({ id: "native-session" }), { status: 201 });
+    throw new Error(`unexpected fetch ${url}`);
+  });
+}
+
+function rowFor(text: string) {
+  const row = screen.getAllByRole("row").find((r) => r.textContent?.includes(text));
+  if (!row) throw new Error(`no row containing ${text}`);
+  return row;
+}
+
+it("drills into a tenant through native session creation with that tenant's binding", async () => {
+  serve();
   show();
-  expect(await screen.findByRole("button", { name: "Open workspace" })).toBeDisabled();
-  fireEvent.change(screen.getByLabelText("Tenant"), { target: { value: "fixture" } });
-  fireEvent.click(screen.getByRole("button", { name: "Open workspace" }));
+  await screen.findByText("Never collected");
+  // Ranked before quarantined, as the server ordered them.
+  expect(screen.getAllByRole("row").slice(1).map((r) => r.getAttribute("data-tenant"))).toEqual([
+    "live-tenant",
+    "fixture",
+  ]);
+  fireEvent.click(within(rowFor("fixture")).getByRole("button", { name: "Open workspace" }));
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
-  const [path, options] = vi.mocked(authenticatedFetch).mock.calls[1];
-  expect(path).toBe("/v1/sessions");
-  expect(JSON.parse(options?.body as string)).toEqual({
+  const create = vi.mocked(authenticatedFetch).mock.calls.find(([, init]) => init?.method === "POST");
+  expect(create?.[0]).toBe("/v1/sessions");
+  expect(JSON.parse(create?.[1]?.body as string)).toEqual({
     agent_id: "registered-iris",
     host_id: "approved-host",
     workspace: "/approved",
   });
+  // No model ran to build the list: the only POST is the drill-in.
+  expect(vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
 });
 
 it("opens native chat through the same tenant-bound create", async () => {
   routing.search = new URLSearchParams("mode=chat");
-  vi.mocked(authenticatedFetch)
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          agent_id: "registered-iris",
-          bindings: [
-            {
-              tenant_id: "fixture",
-              host_id: "approved-host",
-              workspace: "/approved",
-              fixture: true,
-            },
-          ],
-        }),
-      ),
-    )
-    .mockResolvedValueOnce(new Response(JSON.stringify({ id: "native-session" }), { status: 201 }));
+  serve();
   show();
-  await screen.findByRole("button", { name: "Start chat" });
-  fireEvent.change(screen.getByLabelText("Tenant"), { target: { value: "fixture" } });
-  fireEvent.click(screen.getByRole("button", { name: "Start chat" }));
+  await screen.findByText("Never collected");
+  fireEvent.click(within(rowFor("live-tenant")).getByRole("button", { name: "Start chat" }));
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/c/native-session"));
+});
+
+it("keeps drill-in available when the account request fails, and says why", async () => {
+  serve({
+    "/v1/iris/account": () =>
+      new Response(JSON.stringify({ detail: "The session list could not be read, so the account cannot be shown" }), {
+        status: 502,
+      }),
+  });
+  show();
+  expect(await screen.findByRole("alert")).toHaveTextContent("session list could not be read");
+  expect(screen.getAllByRole("button", { name: "Open workspace" })).toHaveLength(2);
 });
 
 it("mounts the accepted UI at the authenticated session route, in the shell's appearance", () => {

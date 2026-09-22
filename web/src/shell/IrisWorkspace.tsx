@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { getOmnigentHostConfig } from "@/lib/host";
 import { authenticatedFetch } from "@/lib/identity";
 import { useNavigate, useParams, useSearchParams } from "@/lib/routing";
+import { IrisAccountView, type IrisAccount } from "./IrisAccountView";
 
 interface IrisBinding {
   tenant_id: string;
@@ -23,7 +24,6 @@ export function IrisWorkspace() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const chatMode = searchParams.get("mode") === "chat";
-  const [selected, setSelected] = useState("");
   const mode = useResolvedThemeMode();
   const frame = useRef<HTMLIFrameElement>(null);
   // The workspace mounts with the shell's appearance in its URL and is told
@@ -47,8 +47,26 @@ export function IrisWorkspace() {
       return response.json();
     },
   });
-  async function create() {
-    const binding = data?.bindings.find((b) => b.tenant_id === selected);
+  // Deterministic on the server: no model runs to build this list. It is a
+  // separate query so a triage outage never hides the picker — the view
+  // still lists every binding for drill-in and shows the error beside it.
+  const account = useQuery({
+    queryKey: ["iris-account"],
+    enabled: Boolean(data?.agent_id && data.bindings.length),
+    queryFn: async (): Promise<IrisAccount> => {
+      const response = await authenticatedFetch("/v1/iris/account");
+      if (!response.ok) {
+        const detail = await response
+          .json()
+          .then((body: { detail?: unknown }) => (typeof body.detail === "string" ? body.detail : ""))
+          .catch(() => "");
+        throw Error(detail || `The account could not be read (HTTP ${response.status})`);
+      }
+      return response.json();
+    },
+  });
+  async function create(tenantId: string) {
+    const binding = data?.bindings.find((b) => b.tenant_id === tenantId);
     if (!data?.agent_id || !binding) return;
     setBusy(true);
     setError("");
@@ -112,8 +130,8 @@ export function IrisWorkspace() {
     <main className="mx-auto flex w-full max-w-xl flex-col gap-4 p-6">
       <h1 className="font-semibold text-xl">Iris workspace</h1>
       <p>
-        Choose the authorized tenant for this session. Iris analyzes evidence and prepares proposals
-        for review. Monitoring is unavailable.
+        Your bound tenants, ranked by cache misses in each one's newest complete capture. Iris
+        runs only after you open one. Monitoring is unavailable.
       </p>
       {isLoading ? (
         <p role="status">Loading Iris…</p>
@@ -123,24 +141,14 @@ export function IrisWorkspace() {
         </p>
       ) : (
         <>
-          <label htmlFor="iris-tenant">Tenant</label>
-          <select
-            id="iris-tenant"
-            className="rounded border bg-background p-2"
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-          >
-            <option value="">Select a tenant</option>
-            {data.bindings.map((b) => (
-              <option key={b.tenant_id} value={b.tenant_id}>
-                {b.name ? `${b.name} · ${b.tenant_id.slice(0, 8)}` : b.tenant_id}
-                {b.fixture ? " — synthetic fixture" : " — read-only"}
-              </option>
-            ))}
-          </select>
-          <Button disabled={!selected || busy} onClick={create}>
-            {busy ? "Starting Iris…" : chatMode ? "Start chat" : "Open workspace"}
-          </Button>
+          <IrisAccountView
+            tenants={data.bindings}
+            account={account.data ?? null}
+            accountError={account.error instanceof Error ? account.error.message : ""}
+            busy={busy}
+            openLabel={chatMode ? "Start chat" : "Open workspace"}
+            onOpen={(tenantId) => void create(tenantId)}
+          />
           <p>
             Use “Refresh from host” inside the workspace to collect the first overview. “Open native
             chat” continues the same conversation.
