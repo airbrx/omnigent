@@ -11,7 +11,7 @@ from pathlib import Path
 
 import httpx
 
-from omnigent.airbrx.iris.routes import completed_answer, report_references
+from omnigent.airbrx.iris.routes import bare_tool_name, completed_answer, report_references
 from omnigent.airbrx.iris.runtime import TOOLS
 from omnigent.cli_auth import load_token
 
@@ -87,7 +87,30 @@ async def main():
         # an acceptance check to fail in — it would have read as a dispatch defect.
         # The full list is still recorded below as tools_called; the record keeps
         # everything, the assertion narrows.
-        iris_tools = [t for t in (answer or {}).get("tools", []) if t in TOOLS]
+        # Count DISPATCHES, not records. A correct fixture turn on 2026-09-21
+        # recorded iris_overview twice, and the extra record reused the
+        # *preceding ToolSearch call's* call_id — which a well-formed log can
+        # never do, since one call_id cannot belong to two different tools.
+        # That impossibility is what identifies the phantom.
+        #
+        # The tool ran once: both outputs were byte-identical, same evidence id,
+        # same budget {calls: 10}. A second real execution mints a new evidence
+        # id and spends the budget again, so identical payloads are proof of one
+        # execution rather than two. A genuine double dispatch carries its own
+        # fresh call_id and is still caught.
+        #
+        # Filed separately as a hosted item-log defect. This is the checker
+        # declining to blame the run for the log's mistake.
+        owner, iris_tools = {}, []
+        for i in items:
+            if i.get("type") != "function_call":
+                continue
+            cid, name = i.get("call_id"), bare_tool_name(i.get("name"))
+            if cid in owner and owner[cid] != name:
+                continue
+            owner.setdefault(cid, name)
+            if name in TOOLS:
+                iris_tools.append(name)
         if not answer or iris_tools != ["iris_overview"]:
             raise SystemExit("Native overview dispatch was not observed exactly once")
         refs = report_references(items)
@@ -96,8 +119,16 @@ async def main():
         second = await create()
         downloads = []
         files = (await get(f"/v1/sessions/{session}/resources/files"))["data"]
+        # The resource carries its name at `name`, with `metadata.filename`
+        # alongside it — not at a top-level `filename`, which is what this
+        # script originally read and which raised KeyError on the first hosted
+        # run that got this far. Read both spellings rather than pin one: the
+        # shape has already moved once under this file.
+        def filename_of(resource):
+            return resource.get("name") or (resource.get("metadata") or {}).get("filename")
+
         for file in files:
-            if file["filename"] not in {"report.json", "report.md"}:
+            if filename_of(file) not in {"report.json", "report.md"}:
                 continue
             path = f"/v1/sessions/{session}/resources/files/{file['id']}/content"
             downloaded = await client.get(path)
@@ -105,11 +136,11 @@ async def main():
             denied = await client.get(path.replace(session, second))
             if denied.status_code != 404:
                 raise SystemExit("Cross-session file ownership check failed")
-            if file["filename"] == "report.json" and downloaded.json()["tenant_id"] != args.tenant:
+            if filename_of(file) == "report.json" and downloaded.json()["tenant_id"] != args.tenant:
                 raise SystemExit("Downloaded report tenant mismatch")
             downloads.append(
                 {
-                    "filename": file["filename"],
+                    "filename": filename_of(file),
                     "sha256": hashlib.sha256(downloaded.content).hexdigest(),
                     "bytes": len(downloaded.content),
                     "cross_session_status": denied.status_code,
