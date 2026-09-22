@@ -1,4 +1,4 @@
-"""The pinned Iris archive carries `iris.account`, and the pin is a merge commit.
+"""The pinned Iris archive carries `iris.account`, and the pin is on iris main.
 
 The route in `routes.py` imports `iris.account` through `source_root()`, the
 same path the policy re-export uses. If the archive predates the module, the
@@ -30,18 +30,24 @@ def test_the_manifest_lists_the_module():
 
 def test_the_pin_is_a_commit_on_iris_main():
     # A branch head can be squashed out of existence after the archive is cut
-    # (that is how fb0c4daa happened). A merge commit on main cannot.
+    # (that is how fb0c4daa happened). A commit reachable from main cannot.
+    # "On main" is the invariant; "is main's head" was too strict — iris main
+    # legitimately moves between re-vendors.
     revision = json.loads((HERE / "source.json").read_text())["revision"]
     try:
-        remote = subprocess.run(
-            ["git", "ls-remote", "git@github.com:airbrx/iris.git", "refs/heads/main"],
+        compare = subprocess.run(
+            ["gh", "api", f"repos/airbrx/iris/compare/{revision}...main", "--jq", ".status"],
             capture_output=True,
             text=True,
             timeout=30,
         )
     except (subprocess.TimeoutExpired, OSError):
-        pytest.skip("iris remote unreachable from this environment")
-    if remote.returncode != 0:
-        pytest.skip("iris remote unreachable from this environment")
-    main_head = remote.stdout.split()[0]
-    assert revision == main_head, f"pinned {revision[:8]} but iris main is {main_head[:8]}"
+        pytest.skip("gh or the iris remote is unavailable from this environment")
+    if compare.returncode != 0:
+        pytest.skip("gh or the iris remote is unavailable from this environment")
+    status = compare.stdout.strip()
+    # identical: pin is main's head; ahead: main is ahead of the pin, i.e. the
+    # pin is an ancestor. behind/diverged: the pin is not on main.
+    assert status in {"identical", "ahead"}, (
+        f"pinned {revision[:8]} is not on iris main ({status})"
+    )
