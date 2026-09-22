@@ -33,6 +33,27 @@ Prepare a private JSON configuration file on **both** machines. It contains refe
 ]
 ```
 
+`scripts/iris/iris-bindings.example.json` is that file with only the fixture
+row filled in, which is the safe thing to start from: it needs no credential
+and names no live tenant.
+
+Two operational scripts live beside it, checked in rather than kept on one
+laptop, because a machine that is the only record of how production is
+configured is a machine that can take that knowledge with it:
+
+| | |
+|---|---|
+| `scripts/iris/configure_coordinator.sh` | Writes the coordinator's binding file and `OMNIGENT_IRIS_CONFIG` through SSM, then restarts it. Needs `aws sso login --profile airbrx-prod` first — it is the one part of the rollout an agent cannot do. Idempotent; re-running replaces the file and leaves one env line. `OMNIGENT_COORDINATOR_INSTANCE` and `AWS_REGION` override the defaults. |
+| `scripts/iris/local_stack.sh` | Runs the same two processes locally — a server and a host — from **this checkout**, so whatever branch is checked out is what it serves. That is how a fix gets exercised before it deploys. `IRIS_LOCAL_PORT` (6768), `IRIS_LOCAL_HOME` (`~/iris-local`) and `OMNIGENT_BIN` override the defaults. |
+
+The local stack defaults to port **6768**, not 6767. Two servers on one port is
+not a draw: on 2026-09-21 another agent session took 6767 and the survivor
+served an older vendored Iris with no registered agent and no bindings, so
+sessions created against it reported "Session not found" moments later — which
+reads like data loss rather than a port conflict. Before trusting a local
+stack, confirm `GET /v1/iris` returns a non-null `agent_id` and a non-empty
+`bindings`.
+
 Use a separate, visibly synthetic binding/workspace for fixture acceptance (`fixture: true`, `pat_ref: ""`). Do not change tenant or fixture mode underneath a session. Create the execution directory beforehand. It is an operator-owned directory, not a writable agent bundle. Do not share it with unrelated code execution sessions.
 
 On the execution host, store the existing authorized PAT with the supported Omnigent secret store. The prompt hides input; do not pass a PAT as a command argument:
