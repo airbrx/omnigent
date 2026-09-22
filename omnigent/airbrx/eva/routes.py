@@ -44,8 +44,10 @@ def _public(binding: Binding) -> dict[str, Any]:
     """
     return {
         "label": binding.label,
+        "host_id": binding.host_id,
         "base_url": binding.base_url,
         "mcp_url": binding.mcp_url(),
+        "host_local": binding.is_host_local(),
         "fixture": binding.fixture,
     }
 
@@ -95,18 +97,42 @@ def create_eva_router(*, auth_provider: Any, agent_store: Any) -> APIRouter:
 
         out: dict[str, Any] = {
             "label": binding.label,
+            "host_id": binding.host_id,
             "base_url": binding.base_url,
+            "host_local": binding.is_host_local(),
             "fixture": binding.fixture,
-            "reachable": False,
+            "reachable": None,
             "healthy": None,
             "carries_crm_data": None,
             "detail": "",
         }
 
+        if binding.is_host_local():
+            # This route runs on the coordinator. The binding names a loopback
+            # address on the EXECUTION HOST, which is a different machine, so
+            # probing it from here would dial the coordinator's own loopback and
+            # report "down" for an app that is running perfectly well.
+            #
+            # That failure would be worse than no answer, because it is a
+            # confident wrong one. Everything stays null and the detail says
+            # where the real check lives.
+            out["detail"] = (
+                "This binding points at the execution host's own loopback, which "
+                "is where Eva's MCP client runs and is not reachable from the "
+                "coordinator. Check readiness on that host: curl "
+                f"{binding.base_url.rstrip('/')}/readyz"
+            )
+            return out
+
         try:
             async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT) as client:
                 response = await client.get(binding.base_url.rstrip("/") + "/readyz")
         except (httpx.HTTPError, OSError) as exc:
+            # Only reached for a binding the coordinator genuinely should be able
+            # to dial. A host-local one returned above, so a refusal here is a
+            # real "not reachable" rather than an artifact of asking the wrong
+            # machine.
+            out["reachable"] = False
             out["detail"] = f"{type(exc).__name__}: the outreach app did not answer"
             return out
 
