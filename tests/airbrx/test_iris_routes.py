@@ -164,3 +164,58 @@ class ReportReferencesNamespacing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TenantDisplayNames(unittest.TestCase):
+    """A UUID is not a tenant name, and an operator should not have to read one."""
+
+    def binding(self, **kw):
+        row = {
+            "tenant_id": "f65d9135-0ba3-4c58-8768-c48a1334041d",
+            "host_id": "h1",
+            "workspace": "/w",
+            "users": ["a@b.com"],
+            "pat_ref": "keychain:x",
+        }
+        row.update(kw)
+        return row
+
+    def parse(self, rows):
+        import json
+        import os
+        import tempfile
+
+        from omnigent.airbrx.iris.config import bindings
+
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            json.dump(rows, f)
+        prev = os.environ.get("OMNIGENT_IRIS_CONFIG")
+        os.environ["OMNIGENT_IRIS_CONFIG"] = path
+        try:
+            return bindings()
+        finally:
+            if prev is None:
+                os.environ.pop("OMNIGENT_IRIS_CONFIG", None)
+            else:
+                os.environ["OMNIGENT_IRIS_CONFIG"] = prev
+            os.unlink(path)
+
+    def test_a_name_is_carried_through(self):
+        (b,) = self.parse([self.binding(name="Airbrx Databricks Production")])
+        self.assertEqual(b.name, "Airbrx Databricks Production")
+
+    def test_a_binding_without_a_name_still_parses(self):
+        # The field is optional on purpose: an operator who has not named a
+        # tenant gets the id, which is ugly and never wrong.
+        (b,) = self.parse([self.binding()])
+        self.assertEqual(b.name, "")
+
+    def test_whitespace_is_not_a_name(self):
+        (b,) = self.parse([self.binding(name="   ")])
+        self.assertEqual(b.name, "")
+
+    def test_an_unknown_setting_is_still_refused(self):
+        # Widening the allowed keys must not widen them to anything.
+        with self.assertRaises(ValueError):
+            self.parse([self.binding(nickname="db-prod")])

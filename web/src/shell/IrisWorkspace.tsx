@@ -8,6 +8,7 @@ import { useNavigate, useParams, useSearchParams } from "@/lib/routing";
 
 interface IrisBinding {
   tenant_id: string;
+  name?: string;
   host_id: string;
   workspace: string;
   fixture: boolean;
@@ -132,7 +133,7 @@ export function IrisWorkspace() {
             <option value="">Select a tenant</option>
             {data.bindings.map((b) => (
               <option key={b.tenant_id} value={b.tenant_id}>
-                {b.tenant_id}
+                {b.name ? `${b.name} · ${b.tenant_id.slice(0, 8)}` : b.tenant_id}
                 {b.fixture ? " — synthetic fixture" : " — read-only"}
               </option>
             ))}

@@ -16,6 +16,14 @@ class Binding:
     users: tuple[str, ...]
     pat_ref: str
     fixture: bool = False
+    #: What a person calls this tenant. Operator-supplied because it is the only
+    #: place the mapping is known without a credential: a tenant id is a UUID,
+    #: and resolving it to a name needs the Airbrx tenant manifest and therefore
+    #: a PAT — which the coordinator deliberately does not hold, only a
+    #: reference to one. One optional string in a file the operator already
+    #: writes beats an API call, a cache and a credential on the server.
+    #: Absent, callers fall back to the id, which is ugly but never wrong.
+    name: str = ""
 
 
 def bindings() -> tuple[Binding, ...]:
@@ -25,7 +33,7 @@ def bindings() -> tuple[Binding, ...]:
     rows = json.loads(Path(path).read_text())
     result = []
     for row in rows:
-        if set(row) - {"tenant_id", "host_id", "workspace", "users", "pat_ref", "fixture"}:
+        if set(row) - {"tenant_id", "host_id", "workspace", "users", "pat_ref", "fixture", "name"}:
             raise ValueError("Unknown Iris binding setting")
         binding = Binding(
             tenant_id=row["tenant_id"],
@@ -34,6 +42,7 @@ def bindings() -> tuple[Binding, ...]:
             users=tuple(row["users"]),
             pat_ref=row["pat_ref"],
             fixture=row.get("fixture", False),
+            name=str(row.get("name", "") or "").strip(),
         )
         if (
             not binding.tenant_id
