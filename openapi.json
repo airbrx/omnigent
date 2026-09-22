@@ -10472,6 +10472,26 @@
         ]
       }
     },
+    "/v1/iris/account": {
+      "get": {
+        "description": "The caller's bound tenants, ranked by the value at stake, or quarantined with a reason.\n\nDeterministic: no model runs here. The tenant set is the caller's\nbindings \u2014 the coordinator holds no PAT, so it cannot ask the\nAirbrx manifest, and a tenant with no binding could not be drilled\ninto anyway. Captures come from the caller's own Iris sessions\n(`collect_captures`), and only `tenant_id` and `metrics` are read out\nof a report. Ranking is `iris.account.rank`, pinned in the archive,\nso what a figure *means* is versioned and hash-verified with the rest\nof Iris.",
+        "operationId": "account_v1_iris_account_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Account",
+        "tags": [
+          "iris"
+        ]
+      }
+    },
     "/v1/iris/sessions/{session_id}/ui/api/cancel": {
       "post": {
         "operationId": "cancel_v1_iris_sessions__session_id__ui_api_cancel_post",
