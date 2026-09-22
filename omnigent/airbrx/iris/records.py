@@ -6,6 +6,7 @@ without importing the router (which imports the collector).
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from omnigent.airbrx.iris.runtime import TOOLS
@@ -80,6 +81,37 @@ def paired(items):
     # Chronological, because callers pick the newest reference per tool.
     pairs.sort(key=lambda pair: pair[0].get("created_at", 0))
     return pairs
+
+
+def executions(items):
+    """Names of the Iris tools that actually RAN, one entry per run.
+
+    `paired` says which tool each recorded result belongs to; this says how
+    many times a tool ran, which is a different question and the one an
+    acceptance check asks. The two are separate because the hosted item log
+    writes each result twice, so counting records overcounts every run.
+
+    Two byte-identical payloads are one execution. A genuine second run mints a
+    fresh evidence id and advances the tool budget, so it cannot be byte-equal
+    to the first; a duplicated record is a copy and always is. Measured on the
+    four-tool turn behind :func:`paired`, the duplicated pairs held their
+    budgets unchanged at {calls: 10}, {calls: 30} and {calls: 35} while the
+    four real runs stepped 10 -> 28 -> 30 -> 35.
+
+    This lived inline in scripts/iris/verify_host.py, which has no test file,
+    so the rule deciding whether a duplicate was a second dispatch was the one
+    rule with nothing checking it — on a gate whose whole job is to notice a
+    second dispatch.
+
+    :param items: Session items in chronological order.
+    :returns: Sorted tool names, one per distinct execution.
+    """
+    runs = {}
+    for item, name in paired(items):
+        if name in TOOLS:
+            digest = hashlib.sha256((item.get("output") or "").encode()).hexdigest()
+            runs.setdefault(digest, name)
+    return sorted(runs.values())
 
 
 def report_references(items):
