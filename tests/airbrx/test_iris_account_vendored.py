@@ -9,6 +9,8 @@ checked here, in the process that ships it.
 import json
 import subprocess
 
+import pytest
+
 from omnigent.airbrx.iris.package import HERE, source_root
 
 
@@ -30,15 +32,16 @@ def test_the_pin_is_a_commit_on_iris_main():
     # A branch head can be squashed out of existence after the archive is cut
     # (that is how fb0c4daa happened). A merge commit on main cannot.
     revision = json.loads((HERE / "source.json").read_text())["revision"]
-    remote = subprocess.run(
-        ["git", "ls-remote", "git@github.com:airbrx/iris.git", "refs/heads/main"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    try:
+        remote = subprocess.run(
+            ["git", "ls-remote", "git@github.com:airbrx/iris.git", "refs/heads/main"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pytest.skip("iris remote unreachable from this environment")
     if remote.returncode != 0:
-        import pytest
-
         pytest.skip("iris remote unreachable from this environment")
     main_head = remote.stdout.split()[0]
     assert revision == main_head, f"pinned {revision[:8]} but iris main is {main_head[:8]}"
