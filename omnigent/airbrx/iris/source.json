@@ -1,9 +1,10 @@
 {
   "repository": "airbrx/iris",
-  "revision": "eec5da4a8c18af3a8b34aafda79486217b437fcb",
-  "sha256": "c61bb63315ee40d65c1339c36d27851f2f6dc65cf741d540811d155df44d9acc",
+  "revision": "4e3935682bd22cc2b187553206e3b0c5bc1a3301",
+  "sha256": "e86bba4fc2f7b42ed5ff318fa25e6c41d9fc1d57905ebf11550991ddecaf492c",
   "files": [
     "iris/__init__.py",
+    "iris/account.py",
     "iris/artifacts.py",
     "iris/auth.py",
     "iris/cli.py",
