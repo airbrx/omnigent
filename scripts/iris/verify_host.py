@@ -11,7 +11,8 @@ from pathlib import Path
 
 import httpx
 
-from omnigent.airbrx.iris.routes import bare_tool_name, completed_answer, report_references
+from omnigent.airbrx.iris.records import paired, report_references
+from omnigent.airbrx.iris.routes import completed_answer
 from omnigent.airbrx.iris.runtime import TOOLS
 from omnigent.cli_auth import load_token
 
@@ -87,54 +88,25 @@ async def main():
         # an acceptance check to fail in — it would have read as a dispatch defect.
         # The full list is still recorded below as tools_called; the record keeps
         # everything, the assertion narrows.
-        # Count EXECUTIONS, not records, and do not trust call_id to identify
-        # either a tool or a run.
+        # Count EXECUTIONS, not records.
         #
-        # The hosted item log writes each Iris result twice and gives the
-        # duplicate an ADJACENT call_id. Observed on 2026-09-22 in one turn:
+        # `paired` is the shared rule: a call_id names neither a tool nor a run,
+        # but within one call_id the k-th call still lines up with the k-th
+        # output. See omnigent.airbrx.iris.records.paired for the measured
+        # shape and airbrx/iris#27 for the log defect behind it.
         #
-        #   ToolSearch    toolu_01WNsg...   -> tool_reference
-        #   iris_overview toolu_01WNsg...   -> overview payload   (borrowed)
-        #   iris_overview toolu_01D8bJ...   -> same payload, byte for byte
-        #   ToolSearch    toolu_01Dcqi...   -> tool_reference
-        #   iris_investigate toolu_01Dcqi...-> investigate payload (borrowed)
-        #   iris_audit    toolu_01E6jo...   -> audit payload
-        #   iris_audit    toolu_01FzPy...   -> same payload, byte for byte
-        #   iris_propose  toolu_01FzPy...   -> propose payload     (borrowed)
-        #
-        # The borrowed id is sometimes the preceding ToolSearch's and sometimes
-        # the previous Iris tool's, and the duplicate is sometimes the first
-        # record of a pair and sometimes the second. An earlier version of this
-        # check resolved collisions by keeping whichever record came first,
-        # which silently DROPPED iris_investigate — a real dispatch, with its
-        # own unique output — because ToolSearch had claimed that call_id one
-        # line earlier. A checker that hides a real tool call is worse than the
-        # log defect it was working around.
-        #
-        # Two things survive the defect. Within one call_id the k-th call still
-        # lines up with the k-th output, which is enough to name every result.
-        # And a genuine second run mints a fresh evidence id and advances the
-        # tool budget, so two byte-identical payloads are one execution — here
-        # the duplicated pairs held budgets {calls: 10}, {calls: 30} and
-        # {calls: 35} unchanged across the pair, while the four real runs
-        # stepped 10 -> 28 -> 30 -> 35.
-        #
-        # Filed as a hosted item-log defect. This is the checker declining to
-        # blame the run for the log's mistake, without blinding itself.
-        calls, outs = {}, {}
-        for i in items:
-            if i.get("type") == "function_call":
-                calls.setdefault(i.get("call_id"), []).append(bare_tool_name(i.get("name")))
-            elif i.get("type") == "function_call_output":
-                outs.setdefault(i.get("call_id"), []).append(i.get("output") or "")
+        # Pairing names each result; this then counts distinct RUNS, which the
+        # hosted read path does not need to do. Two byte-identical payloads are
+        # one execution: a genuine second run mints a fresh evidence id and
+        # advances the tool budget, and in the measured turn the duplicated
+        # pairs held budgets unchanged at {calls: 10}, {calls: 30} and
+        # {calls: 35} while the four real runs stepped 10 -> 28 -> 30 -> 35.
         runs = {}
-        for call_id, names in calls.items():
-            # strict=False deliberately: a cancelled or still-running turn leaves a
-            # call with no output yet, and the pairing should stop at the shorter
-            # side rather than raise.
-            for name, output in zip(names, outs.get(call_id, []), strict=False):
-                if name in TOOLS:
-                    runs.setdefault(hashlib.sha256(output.encode()).hexdigest(), name)
+        for output, name in paired(items):
+            if name in TOOLS:
+                runs.setdefault(
+                    hashlib.sha256((output.get("output") or "").encode()).hexdigest(), name
+                )
         iris_tools = sorted(runs.values())
         if not answer or iris_tools != ["iris_overview"]:
             raise SystemExit("Native overview dispatch was not observed exactly once")

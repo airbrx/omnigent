@@ -149,19 +149,38 @@
       if (accountable) arm({ status: 0, reason: "the host could not be reached" });
       throw cause;
     }
-    if (accountable && response.status === 409 && FIRST_READ.test(target) && !autoCollected) {
-      // A workspace opened on a session that has never collected answered 409
-      // and drew an empty page with a button on it, and the button ran the
-      // collection the page had every reason to run itself. Nobody opens Iris
-      // to be asked whether they want the data.
+    let nothingToShow = response.status === 409;
+    if (accountable && response.ok && FIRST_READ.test(target) && !autoCollected) {
+      // A 200 is not the same as something to show. The page refuses a capture
+      // the host reports as stale -- `hostSnapshot` throws on raw.stale, and
+      // stale is simply older than five minutes -- so reopening a session the
+      // morning after its collection drew the same empty "Nothing collected
+      // yet" as a session that had never collected at all. Same dead end,
+      // different status code.
       //
-      // So chain it: the one refusal the page can resolve without a person, it
-      // resolves. Guarded three ways -- only on the plain read, never on the
-      // refresh itself; only on 409, which means "nothing collected here" and
-      // not "something went wrong"; and only once per load, so a session that
-      // genuinely cannot collect refuses once instead of looping.
+      // Read it without consuming the body the caller is about to read.
+      const peek = await response
+        .clone()
+        .json()
+        .catch(() => null);
+      nothingToShow = !!(peek && peek.stale);
+    }
+    if (accountable && nothingToShow && FIRST_READ.test(target) && !autoCollected) {
+      // A workspace with nothing it can show drew an empty page with a button
+      // on it, and the button ran the collection the page had every reason to
+      // run itself. Nobody opens Iris to be asked whether they want the data.
+      //
+      // Two ways to have nothing to show: never collected (409), or holding a
+      // capture the page refuses as stale (200 with stale: true). Both end in
+      // the same empty screen, so both collect.
+      //
+      // So chain it: the one dead end the page can resolve without a person,
+      // it resolves. Guarded three ways -- only on the plain read, never on
+      // the refresh itself; only when there is nothing showable, so a real
+      // failure still falls through untouched; and only once per load, so a
+      // session that genuinely cannot collect stops once instead of looping.
       autoCollected = true;
-      collecting = true;
+      collecting = response.status === 409 ? "first" : "stale";
       renderState();
       let collected = null;
       try {
@@ -173,17 +192,18 @@
       } catch {
         collected = null;
       }
-      collecting = false;
+      collecting = "";
       if (collected && collected.ok) {
-        // The 409 was answered, so it is not a standing refusal any more.
-        // Leaving it armed would print "Last refusal from this host: No session
-        // overview yet" over a workspace full of findings.
+        // Whatever the page could not show, it can show now, so a refusal
+        // armed on the way in is no longer standing. Leaving it would print
+        // "Last refusal from this host: No session overview yet" over a
+        // workspace full of findings.
         pendingRefusal = null;
         lastRefusal = null;
         loadReadiness();
         return collected;
       }
-      // Could not collect. Fall through to the original 409 so the page draws
+      // Could not collect. Fall through to the original response so the page draws
       // its own empty state and its button still works -- the reader is no
       // worse off than before, and now knows the host was asked.
       if (collected) arm({ status: collected.status, reason: await refusalOf(collected) });
@@ -232,8 +252,12 @@
   let readinessError = null;
   let statusLine = null;
   let detailList = null;
-  //: True while the first-open collection is in flight, so the bar can say so.
-  let collecting = false;
+  //: While a collection is in flight: "" when idle, else "first" (nothing has
+  //: ever been collected here) or "stale" (a capture exists but the page will
+  //: not show it). The two are different sentences -- saying "first overview"
+  //: over a session that already has one is a small lie, and this file is not
+  //: allowed small lies.
+  let collecting = "";
   //: Re-check host is the way back to the full detail once it has been folded
   //: away. It latches: someone who asked to see it keeps seeing it.
   let showDetails = false;
@@ -243,11 +267,14 @@
     const lines = [];
     let headline;
     if (collecting) {
-      // The first open collects before it paints. Say what is happening, with
-      // how long it takes, because a minute of nothing reads as broken.
+      // Collect before painting, and say what is happening with how long it
+      // takes, because a minute of nothing reads as broken.
       headline =
-        "Collecting this tenant's first overview from the host. This runs Iris's" +
-        " tools against the warehouse and usually takes a minute.";
+        (collecting === "stale"
+          ? "This tenant's last capture is too old to show, so Iris is collecting a"
+            + " fresh one from the host."
+          : "Collecting this tenant's first overview from the host.") +
+        " This runs Iris's tools against the warehouse and usually takes a minute.";
     } else if (readinessError) {
       headline = `This host will not run turns in this session: ${readinessError}`;
     } else if (!readiness) {

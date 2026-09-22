@@ -165,6 +165,31 @@ def test_load_invalid_spec_raises_omnigent_error(
         agent_cache.load("bad-agent", loc)
 
 
+def test_load_invalid_spec_cleans_up_staging_dir(
+    agent_cache: AgentCache,
+    artifact_store: LocalArtifactStore,
+    cache_dir: Path,
+) -> None:
+    """
+    ``load()`` removes the private staging directory it extracted into
+    when parsing/validating the bundle fails, instead of leaking it on
+    disk forever (each failed load uses a fresh uuid-suffixed staging
+    dir, so a persistently-bad bundle retried by a caller would
+    otherwise leak unbounded space).
+    """
+    # spec_version=99 is invalid (must be 1)
+    bad_config = yaml.dump({"spec_version": 99, "name": "bad"})
+    loc = "bad-agent/abc123"
+    _store_bundle(artifact_store, loc, {"config.yaml": bad_config})
+
+    with pytest.raises(OmnigentError):
+        agent_cache.load("bad-agent", loc)
+
+    assert not cache_dir.exists() or not any(
+        p.name.startswith("bad-agent_staging_") for p in cache_dir.iterdir()
+    )
+
+
 def test_evict_clears_both_tiers(
     agent_cache: AgentCache,
     artifact_store: LocalArtifactStore,
