@@ -33,7 +33,59 @@ env:
   HEALTH_URL: https://omnigent.airbrx.ai
 
 jobs:
+  # The gate. Nothing reaches the box until this is green.
+  #
+  # Added 2026-09-21 after four deploys in one evening went to production with
+  # the suite never having been run against them. One of them shipped a real
+  # regression: two routes were added and `openapi.json` was not regenerated, so
+  # `test_openapi_drift` was red on this branch and nobody knew, because nothing
+  # on the path to production ever ran it.
+  #
+  # It is a separate job rather than steps inside `deploy` so that a red suite
+  # cannot be skipped past by a rerun of a later step, and so the failure reads
+  # as "tests failed" rather than as a deploy that died halfway.
+  #
+  # Why the suite is split across three parallel shards: it is 4931 tests and a
+  # single process climbs past what a small runner will hold. Sharding is also
+  # what makes this affordable to gate on, since the slowest shard rather than
+  # the sum sets the wait. Measured locally: routes 6m, root files 5m,
+  # integration 22m.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: airbrx-and-routes
+            paths: tests/airbrx tests/server/routes tests/server/scheduled
+          - name: server-root
+            paths: tests/server/*.py
+          - name: integration
+            paths: tests/server/integration
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync the environment
+        # `--extra iris` mirrors what the box installs, so the gate exercises
+        # the same dependency set production runs on rather than a thinner one.
+        #
+        # `--extra databricks` is here because the tests need it, not the box.
+        # Without it, 8 cases in tests/server/test_smart_routing.py fail with
+        # `ModuleNotFoundError: No module named 'databricks'` at import, which
+        # reads exactly like a product regression and is not one. That cost an
+        # hour of misdiagnosis on 2026-09-21; the comment is cheaper than
+        # repeating it.
+        run: uv sync --frozen --extra iris --extra databricks --group dev
+
+      - name: ${{ matrix.shard.name }}
+        run: uv run pytest ${{ matrix.shard.paths }} -q -p no:randomly --timeout=300
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
