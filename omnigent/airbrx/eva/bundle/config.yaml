@@ -1,0 +1,111 @@
+spec_version: 1
+name: eva
+
+# Eva is the outreach agent for Airbrx: the second hosted agent on
+# omnigent.airbrx.ai, beside Iris.
+#
+# The shape differs from Iris on purpose, and the difference is a subtraction.
+# Iris vendors a Python package and runs four LOCAL tools on an execution host,
+# which is why she needs a host binding, a PAT in the macOS keychain, a pinned
+# source archive and a two-key launchd delta. Every one of Eva's tools is a
+# REMOTE MCP tool served by the airbrx-outreach app over HTTP, so none of that
+# machinery applies: no vendored archive, no host_id, no keychain, no launchd.
+# Eva's brain runs on the coordinator and reaches her tools over the network.
+#
+# If Eva ever grows a local tool, that decision brings back the whole of Iris's
+# host apparatus with it. Say so out loud before taking it.
+
+description: >-
+  The Airbrx outreach agent. Pulls and qualifies leads, drafts the message a rep
+  will send under their own name, checks it against the deterministic guardrail
+  layer, and records what went out. She never sends anything and she never
+  approves her own draft.
+
+# The omni meta harness: the brain is Omnigent's own executor rather than a
+# harness pinned to one vendor, so Eva runs on whatever model provider the
+# coordinator is configured with, and smart routing picks per turn. This is the
+# same shape polly uses. Iris pins claude_sdk directly; Eva does not, because
+# nothing in her tool surface depends on a particular vendor's tool protocol.
+executor:
+  type: omnigent
+  context_window: 200000
+  config:
+    harness: claude-sdk
+    smart_routing_harness: auto
+
+# No `llm:` block on purpose. That block requires an explicit `model`, and
+# naming one here would pin Eva to a single model for everybody, which is what
+# the omni meta harness above exists to avoid. With it absent, the harness
+# resolves whatever provider the coordinator is configured with. Iris pins
+# claude-sonnet-4-6; Eva deliberately does not.
+
+skills: none
+async: false
+
+# No spawning. Eva is one agent doing one job against a permissioned API, not an
+# orchestrator. Registering sys_session_create would give her a way to start
+# sessions that the outreach permission model knows nothing about.
+spawn: false
+
+tools:
+  builtins: []
+  timeout: 300
+  retry:
+    max_retries: 0
+
+  # The airbrx-outreach MCP surface. `contracts/mcp_tools.md` in
+  # airbrx/airbrx-outreach fixes these 17 tools, their schemas and their
+  # permission rules.
+  #
+  # The URL and the bearer token are expanded from the runner's environment at
+  # parse time and are supplied per invocation from the Eva binding, so no
+  # credential appears in this file or in the registered bundle.
+  #
+  # This is an ALLOW LIST rather than a passthrough. Everything absent is
+  # unavailable to Eva even if the server advertises it, which is how the
+  # boundary is expressed in the spec as well as in the tool layer. Two of the
+  # seventeen are deliberately withheld below.
+  outreach:
+    type: mcp
+    url: ${OUTREACH_MCP_URL}
+    headers:
+      Authorization: Bearer ${OUTREACH_MCP_TOKEN}
+      X-Outreach-Agent: eva
+    tools:
+      - list_pool
+      - list_my_leads
+      - get_lead
+      - claim_lead
+      - release_lead
+      - add_lead
+      - update_lead_fields
+      - save_qualification
+      - submit_draft
+      - add_comment
+      - request_approval
+      - log_touch
+      - list_guardrails
+      - query_analytics
+      - record_agent_run
+
+# Withheld from the list above, and the reason is the product's, not Omnigent's:
+#
+#   approve_draft  Approval is the lead owner's or an admin's and never the
+#                  author's. Eva writes drafts, so Eva approving one would
+#                  collapse the two roles the approval gate exists to separate.
+#
+#   mark_sent      Nothing in this system sends anything. A rep sends from their
+#                  own client and then records that they did. An agent marking a
+#                  draft sent would be recording an event it cannot observe.
+#
+# Both refusals are also enforced server-side in the outreach tool layer, so
+# this list is defence in depth rather than the only thing standing there.
+
+guardrails:
+  policies:
+    eva-tool-boundary:
+      type: function
+      on: [tool_call]
+      # Same routing reason as Iris's boundary: named through omnigent so it is
+      # importable on whichever process dispatches the tool call.
+      function: omnigent.airbrx.eva.policy.tool_boundary

@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { getOmnigentHostConfig } from "@/lib/host";
 import { authenticatedFetch } from "@/lib/identity";
-import { IrisWorkspace } from "./IrisWorkspace";
+import { IrisWorkspace, shortId } from "./IrisWorkspace";
 
 const routing = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -161,4 +161,20 @@ it("refuses to frame the workspace in an embedded host, and offers the same sess
   expect(screen.getByRole("alert")).toHaveTextContent("a framed page cannot use");
   fireEvent.click(screen.getByRole("button", { name: "Open native chat instead" }));
   expect(routing.navigate).toHaveBeenCalledWith("/c/owned-session");
+});
+
+// Regression: `fixture-iris` rendered as `fixture-`, a fragment that identifies
+// nothing and reads as a rendering bug.
+it("shows a short tenant id whole rather than cutting it to a fragment", () => {
+  expect(shortId("fixture-iris")).toBe("fixture-iris");
+});
+
+it("truncates a UUID, which costs 36 characters to say nothing", () => {
+  expect(shortId("f65d9135-0ba3-4c58-8768-c48a1334041d")).toBe("f65d9135");
+});
+
+it("keeps enough of a UUID to tell two tenants apart", () => {
+  expect(shortId("f65d9135-0ba3-4c58-8768-c48a1334041d")).not.toBe(
+    shortId("f65d9136-0ba3-4c58-8768-c48a1334041d"),
+  );
 });
