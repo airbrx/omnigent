@@ -405,10 +405,16 @@ def borrowed(call_id, first, second, first_file, second_file, at):
 def test_two_tools_sharing_one_call_id_keep_their_own_outputs():
     from omnigent.airbrx.iris.records import report_references
 
-    items = borrowed("shared", "iris_audit", "iris_overview", "f_audit", "f_overview", 100)
+    # ORDER MATTERS, and getting it backwards makes this test prove nothing.
+    # With the OVERVIEW's call first and a later tool borrowing its id,
+    # last-writer-wins names the id `iris_audit` and the overview's output is
+    # attributed to audit — so the overview is lost. Written the other way
+    # round (audit first) the old rule already picks `iris_overview` and the
+    # test passes with or without the fix.
+    items = borrowed("shared", "iris_overview", "iris_audit", "f_overview", "f_audit", 100)
     assert report_references(items) == [
-        ("iris_audit", "f_audit", 100),
-        ("iris_overview", "f_overview", 101),
+        ("iris_overview", "f_overview", 100),
+        ("iris_audit", "f_audit", 101),
     ]
 
 
@@ -455,17 +461,17 @@ def test_pairs_come_back_in_time_order_across_call_ids():
 
 
 def test_the_newest_capture_survives_a_borrowed_call_id():
-    # The end-to-end shape: a session whose overview shares its call_id with a
-    # preceding audit still reports that tenant, rather than reading as a
-    # tenant that has never collected.
+    # A session whose overview's call_id is borrowed by a LATER tool still
+    # reports that tenant, rather than reading as one that never collected.
+    # The overview goes first: that is the order the old rule loses.
     from omnigent.airbrx.iris.records import report_references
 
-    items = borrowed("shared", "iris_audit", "iris_overview", "f_audit", "f_overview", 500)
+    items = borrowed("shared", "iris_overview", "iris_audit", "f_overview", "f_audit", 500)
     newest = {}
     for tool, file_id, at in report_references(items):
         if tool == "iris_overview" and at >= newest.get("at", 0):
             newest = {"file_id": file_id, "at": at}
-    assert newest == {"file_id": "f_overview", "at": 501}
+    assert newest == {"file_id": "f_overview", "at": 500}
 
 
 # ------------------------------------------------- counting EXECUTIONS ------
@@ -549,7 +555,12 @@ async def test_a_borrowed_call_id_still_yields_the_newest_capture_end_to_end():
     # still found, and still the newest. Before the pairing fix the account
     # route would have reported this tenant as never_collected.
     older = turn("solo", "iris_overview", "f_old", 100)
-    shared = borrowed("dup", "iris_audit", "iris_overview", "f_audit", "f_new", 500)
+    # Overview's call FIRST, audit borrowing its id after. Under
+    # last-writer-wins the id resolves to `iris_audit`, the overview's output
+    # is attributed to audit, the newest capture is never found, and this
+    # tenant reads as holding its older capture. That is the shape that fails
+    # without paired(); the reverse order passes either way and proves nothing.
+    shared = borrowed("dup", "iris_overview", "iris_audit", "f_new", "f_audit", 500)
     api = FakeApi(
         sessions=[session("s1", "/w/hot")],
         items={"s1": older + shared},
@@ -560,11 +571,8 @@ async def test_a_borrowed_call_id_still_yields_the_newest_capture_end_to_end():
         },
     )
     result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
-    # The newest overview is the one recorded under the BORROWED id, at 501.
-    # Before the pairing fix that record was attributed to iris_audit and never
-    # found, so this tenant read as its older capture — or as never collected.
     assert result["t-hot"] == {
         "tenant_id": "t-hot",
         "metrics": REPORT["metrics"],
-        "captured_at": 501,
+        "captured_at": 500,
     }
