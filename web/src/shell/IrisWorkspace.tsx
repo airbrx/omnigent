@@ -146,6 +146,7 @@ export function IrisWorkspace() {
             account={account.data ?? null}
             accountError={account.error instanceof Error ? account.error.message : ""}
             busy={busy}
+            loading={account.isPending}
             openLabel={chatMode ? "Start chat" : "Open workspace"}
             onOpen={(tenantId) => void create(tenantId)}
           />

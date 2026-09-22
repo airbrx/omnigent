@@ -89,7 +89,7 @@ it("drills in per row through the callback, with the row's own tenant id", () =>
   render(
     <IrisAccountView tenants={TENANTS} account={ACCOUNT} accountError="" busy={false} openLabel="Open workspace" onOpen={onOpen} />,
   );
-  fireEvent.click(within(rowFor("Cold")).getByRole("button", { name: "Open workspace" }));
+  fireEvent.click(within(rowFor("Cold")).getByRole("button", { name: /^Open workspace/ }));
   expect(onOpen).toHaveBeenCalledWith(TENANTS[1].tenant_id);
   expect(onOpen).toHaveBeenCalledTimes(1);
 });
@@ -98,7 +98,7 @@ it("disables every drill-in while one is in flight", () => {
   render(
     <IrisAccountView tenants={TENANTS} account={ACCOUNT} accountError="" busy={true} openLabel="Open workspace" onOpen={vi.fn()} />,
   );
-  for (const button of screen.getAllByRole("button", { name: "Open workspace" })) expect(button).toBeDisabled();
+  for (const button of screen.getAllByRole("button", { name: /^Open workspace/ })) expect(button).toBeDisabled();
 });
 
 it("lets nothing from a report body reach the DOM, even if the server sent it", () => {
@@ -125,7 +125,7 @@ it("still offers every tenant for drill-in when the account request failed, and 
     />,
   );
   expect(screen.getByRole("alert")).toHaveTextContent("session list could not be read");
-  expect(screen.getAllByRole("button", { name: "Open workspace" })).toHaveLength(3);
+  expect(screen.getAllByRole("button", { name: /^Open workspace/ })).toHaveLength(3);
   expect(rowFor("Hot")).toHaveTextContent("Not ranked: account unavailable");
   expect(rowFor("Hot")).not.toHaveTextContent("%");
 });
@@ -147,7 +147,38 @@ it("shows a quarantined row's detail when there is one", () => {
   expect(rowFor("Hot")).toHaveTextContent(/\d{4,} d ago/);
   expect(rowFor("Cold")).toHaveTextContent("Capture names another tenant");
   expect(rowFor("cccccccc")).toHaveTextContent("Could not be read: the newest report could not be read (HTTP 502)");
-  expect(screen.getAllByRole("button", { name: "Start chat" })).toHaveLength(3);
+  expect(screen.getAllByRole("button", { name: /^Start chat/ })).toHaveLength(3);
+});
+
+it("says Ranking… while the account is still loading, and keeps drill-in enabled", () => {
+  render(
+    <IrisAccountView
+      tenants={TENANTS}
+      account={null}
+      accountError=""
+      busy={false}
+      loading={true}
+      openLabel="Open workspace"
+      onOpen={vi.fn()}
+    />,
+  );
+  const statuses = screen.getAllByRole("status");
+  expect(statuses).toHaveLength(TENANTS.length);
+  for (const status of statuses) expect(status).toHaveTextContent("Ranking…");
+  const buttons = screen.getAllByRole("button", { name: /^Open workspace/ });
+  expect(buttons).toHaveLength(TENANTS.length);
+  for (const button of buttons) expect(button).not.toBeDisabled();
+});
+
+it("gives each drill-in button and the table an accessible name naming the tenant", () => {
+  render(
+    <IrisAccountView tenants={TENANTS} account={ACCOUNT} accountError="" busy={false} openLabel="Open workspace" onOpen={vi.fn()} />,
+  );
+  expect(screen.getByRole("table", { name: "Tenants in this account" })).toBeInTheDocument();
+  expect(within(rowFor("Hot")).getByRole("button", { name: "Open workspace: Hot" })).toBeInTheDocument();
+  expect(
+    within(rowFor("cccccccc")).getByRole("button", { name: `Open workspace: ${TENANTS[2].tenant_id}` }),
+  ).toBeInTheDocument();
 });
 
 it("orders by the account, then appends any tenant the account did not mention", () => {

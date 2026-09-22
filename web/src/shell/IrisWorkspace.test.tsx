@@ -86,7 +86,7 @@ it("drills into a tenant through native session creation with that tenant's bind
     "live-tenant",
     "fixture",
   ]);
-  fireEvent.click(within(rowFor("fixture")).getByRole("button", { name: "Open workspace" }));
+  fireEvent.click(within(rowFor("fixture")).getByRole("button", { name: /^Open workspace/ }));
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
   const create = vi.mocked(authenticatedFetch).mock.calls.find(([, init]) => init?.method === "POST");
   expect(create?.[0]).toBe("/v1/sessions");
@@ -104,7 +104,7 @@ it("opens native chat through the same tenant-bound create", async () => {
   serve();
   show();
   await screen.findByText("Never collected");
-  fireEvent.click(within(rowFor("live-tenant")).getByRole("button", { name: "Start chat" }));
+  fireEvent.click(within(rowFor("live-tenant")).getByRole("button", { name: /^Start chat/ }));
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/c/native-session"));
 });
 
@@ -117,7 +117,23 @@ it("keeps drill-in available when the account request fails, and says why", asyn
   });
   show();
   expect(await screen.findByRole("alert")).toHaveTextContent("session list could not be read");
-  expect(screen.getAllByRole("button", { name: "Open workspace" })).toHaveLength(2);
+  expect(screen.getAllByRole("button", { name: /^Open workspace/ })).toHaveLength(2);
+});
+
+it("says Ranking… while the account query is pending, without disabling drill-in", async () => {
+  vi.mocked(authenticatedFetch).mockImplementation(async (input) => {
+    const url = String(input);
+    if (url === "/v1/iris") return new Response(JSON.stringify(CATALOG));
+    if (url === "/v1/iris/account") return new Promise<Response>(() => {});
+    throw new Error(`unexpected fetch ${url}`);
+  });
+  show();
+  const statuses = await screen.findAllByText("Ranking…");
+  expect(statuses).toHaveLength(2);
+  for (const status of statuses) expect(status).toHaveAttribute("role", "status");
+  const buttons = screen.getAllByRole("button", { name: /^Open workspace/ });
+  expect(buttons).toHaveLength(2);
+  for (const button of buttons) expect(button).not.toBeDisabled();
 });
 
 it("mounts the accepted UI at the authenticated session route, in the shell's appearance", () => {

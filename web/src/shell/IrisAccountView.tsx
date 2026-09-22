@@ -110,6 +110,12 @@ interface IrisAccountViewProps {
   account: IrisAccount | null;
   accountError: string;
   busy: boolean;
+  // The account query is a separate request from the catalog (see
+  // IrisWorkspace), so a tenant can be on screen well before its row is
+  // known to be ranked or quarantined. Distinguishing "still loading" from
+  // "the server didn't mention you" keeps a fast catalog response from
+  // reading as a triage verdict.
+  loading?: boolean;
   openLabel: string;
   onOpen: (tenantId: string) => void;
 }
@@ -122,10 +128,12 @@ function Standing({
   entry,
   accountError,
   generatedAt,
+  loading,
 }: {
   entry: OrderedRow;
   accountError: string;
   generatedAt: number | null;
+  loading: boolean;
 }) {
   if (entry.status === "ranked") {
     const r = entry.row;
@@ -154,18 +162,26 @@ function Standing({
       </>
     );
   }
+  if (loading) {
+    return (
+      <td colSpan={5}>
+        <span role="status">Ranking…</span>
+      </td>
+    );
+  }
   return (
     <td colSpan={5}>{accountError ? "Not ranked: account unavailable" : "Not ranked: not in the account response"}</td>
   );
 }
 
-export function IrisAccountView({ tenants, account, accountError, busy, openLabel, onOpen }: IrisAccountViewProps) {
+export function IrisAccountView({ tenants, account, accountError, busy, loading = false, openLabel, onOpen }: IrisAccountViewProps) {
   const rows = orderedRows(tenants, account);
   const generatedAt = account?.generated_at ?? null;
+  const stillRanking = loading && account === null;
   return (
     <div className="flex flex-col gap-3">
       {accountError && <p role="alert">{accountError}</p>}
-      <table className="w-full text-sm">
+      <table className="w-full text-sm" aria-label="Tenants in this account">
         <thead>
           <tr className="text-left text-muted-foreground">
             <th>Tenant</th>
@@ -187,9 +203,19 @@ export function IrisAccountView({ tenants, account, accountError, busy, openLabe
                   {entry.fixture ? "synthetic fixture" : "read-only"}
                 </div>
               </td>
-              <Standing entry={entry} accountError={accountError} generatedAt={generatedAt} />
+              <Standing
+                entry={entry}
+                accountError={accountError}
+                generatedAt={generatedAt}
+                loading={stillRanking}
+              />
               <td className="text-right">
-                <Button size="sm" disabled={busy} onClick={() => onOpen(entry.tenant_id)}>
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  aria-label={`${openLabel}: ${entry.name || entry.tenant_id}`}
+                  onClick={() => onOpen(entry.tenant_id)}
+                >
                   {openLabel}
                 </Button>
               </td>
