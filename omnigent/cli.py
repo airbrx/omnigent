@@ -4358,6 +4358,20 @@ def server(
                 "iris", (iris_source() / "ui/assets/iris-portrait.png").read_bytes(), "image/png"
             )
 
+    # Eva, the outreach agent. Same shape as the Iris block above and gated the
+    # same way: no bindings means no registration, so an operator who has not
+    # written OMNIGENT_EVA_CONFIG gets an inert feature rather than an agent
+    # nobody is authorized to open.
+    #
+    # There is no avatar line and no source_root(). Eva vendors no package: her
+    # bundle is two tracked files read where they lie, and her portrait, if she
+    # gets one, would be a tracked asset rather than a member of an archive.
+    from omnigent.airbrx.eva.config import bindings as eva_bindings
+    from omnigent.airbrx.eva.package import bundle_root as eva_bundle
+
+    if eva_bindings():
+        _preregister_agent(eva_bundle(), agent_store, artifact_store, agent_cache)
+
     # Managed sandbox hosts (host_type="managed" sessions): parse the
     # config's `sandbox:` section up front so an operator typo stops
     # startup instead of 502-ing the first managed session.

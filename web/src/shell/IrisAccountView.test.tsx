@@ -198,3 +198,18 @@ it("formats ages and rates the way the rows expect", () => {
   expect(formatRate(0.12345)).toBe("12.3%");
   expect(formatRate(null)).toBe("no traffic");
 });
+
+// Regression carried over from the tenant <select> (omni #47): a short tenant id
+// must render whole beside its name, not as an eight-character fragment.
+it("shows a short tenant id whole beside its name, and only truncates a UUID", () => {
+  const tenants = [
+    { tenant_id: "fixture-iris", name: "Fixture", fixture: true },
+    { tenant_id: "f65d9135-0ba3-4c58-8768-c48a1334041d", name: "Live", fixture: false },
+  ];
+  render(
+    <IrisAccountView tenants={tenants} account={null} accountError="" busy={false} openLabel="Open workspace" onOpen={() => {}} />,
+  );
+  expect(rowFor("Fixture")).toHaveTextContent("fixture-iris ·");
+  expect(rowFor("Fixture")).not.toHaveTextContent("fixture- ·");
+  expect(rowFor("Live")).toHaveTextContent("f65d9135 ·");
+});

@@ -423,9 +423,11 @@ def create_iris_router(*, auth_provider, agent_store):
                     []
                     if completed
                     else [
-                        "no turn has completed in this session, so whether the execution "
-                        "host can reach the model is unknown; it cannot be known from here "
-                        "until a turn actually runs"
+                        "no MODEL turn has completed in this session, so whether the "
+                        "execution host can reach the model is unknown. A collected report "
+                        "does not settle it: Refresh runs Iris's four tools without "
+                        "invoking the model, so a populated workspace can sit beside an "
+                        "unproven model path. Only asking her something answers this."
                     ]
                 ),
             }

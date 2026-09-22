@@ -195,14 +195,17 @@
     } else if (!readiness) {
       headline = "Checking what this host can verify about this session…";
     } else if (readiness.turn_completed_here) {
-      headline = "A turn has completed in this session, so hosted turns work here.";
+      headline = "A model turn has completed in this session, so hosted turns work here.";
     } else {
-      // The page will say "No report loaded", because the hosted mount serves
-      // the app and not captures. That is correct and it is not an error, so
-      // say what it means and what closes it.
+      // Say MODEL turn, not turn. A Refresh collection runs Iris's four tools
+      // and produces a report without ever invoking the model, so a populated
+      // workspace and an unproven model path are not a contradiction — they are
+      // two different facts, and conflating them made this banner read as
+      // broken next to a screen full of findings.
       headline =
-        "No turn has ever completed in this session, so there is nothing here" +
-        " yet. Use \u201cRefresh from host\u201d to collect this session\u2019s first overview.";
+        "No model turn has completed in this session, so whether this host can" +
+        " reach the model is still unproven. Collecting a report does not answer" +
+        " it: Refresh runs Iris\u2019s tools, not the model. Ask her something to find out.";
     }
     statusLine.textContent = headline;
     statusLine.dataset.state = readinessError

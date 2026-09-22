@@ -54,6 +54,19 @@ const REASON_LABEL: Record<IrisQuarantineReason, string> = {
   never_collected: "Never collected",
 };
 
+/**
+ * The id shown beside a tenant's name, so two similarly-named tenants stay
+ * distinguishable.
+ *
+ * Truncating is only worth it for an id nobody reads anyway: a UUID costs 36
+ * characters to say nothing. A short id is already legible, and cutting it
+ * produces a fragment that is worse than useless — `fixture-iris` became
+ * `fixture-`, which identifies nothing and looks like a rendering bug.
+ */
+export function shortId(tenantId: string): string {
+  return tenantId.length > 20 ? tenantId.slice(0, 8) : tenantId;
+}
+
 export function formatAge(seconds: number): string {
   if (seconds < 60) return "just now";
   if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
@@ -199,7 +212,7 @@ export function IrisAccountView({ tenants, account, accountError, busy, loading 
               <td>
                 <div>{entry.name || entry.tenant_id}</div>
                 <div className="text-muted-foreground text-xs">
-                  {entry.name ? `${entry.tenant_id.slice(0, 8)} · ` : ""}
+                  {entry.name ? `${shortId(entry.tenant_id)} · ` : ""}
                   {entry.fixture ? "synthetic fixture" : "read-only"}
                 </div>
               </td>

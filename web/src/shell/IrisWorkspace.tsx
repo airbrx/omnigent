@@ -19,6 +19,8 @@ interface IrisCatalog {
   bindings: IrisBinding[];
 }
 
+export { shortId } from "./IrisAccountView";
+
 export function IrisWorkspace() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
