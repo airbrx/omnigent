@@ -69,6 +69,13 @@
   // failure of the host to do the thing the page just asked for, and must be
   // reported as that rather than smoothed over.
   const HOSTED_API = /(?:^|\/)api\/(state|chat|refresh|cancel)(?:$|\?)/;
+  //: The plain read of the captured state -- NOT the `fresh=1` recollect,
+  //: which this file rewrites into a POST above. Only the plain read is
+  //: allowed to trigger the first-open collection.
+  const FIRST_READ = /(?:^|\/)api\/state(?:$|\?(?!.*fresh=1))/;
+  //: One automatic collection per page load, however many times the page
+  //: re-reads its state.
+  let autoCollected = false;
   // Armed the moment a hosted call refuses, disarmed one task later. The
   // page's catch block runs in the microtask that follows the rejected fetch,
   // so anything it writes into the transcript lands inside this window and
@@ -142,6 +149,46 @@
       if (accountable) arm({ status: 0, reason: "the host could not be reached" });
       throw cause;
     }
+    if (accountable && response.status === 409 && FIRST_READ.test(target) && !autoCollected) {
+      // A workspace opened on a session that has never collected answered 409
+      // and drew an empty page with a button on it, and the button ran the
+      // collection the page had every reason to run itself. Nobody opens Iris
+      // to be asked whether they want the data.
+      //
+      // So chain it: the one refusal the page can resolve without a person, it
+      // resolves. Guarded three ways -- only on the plain read, never on the
+      // refresh itself; only on 409, which means "nothing collected here" and
+      // not "something went wrong"; and only once per load, so a session that
+      // genuinely cannot collect refuses once instead of looping.
+      autoCollected = true;
+      collecting = true;
+      renderState();
+      let collected = null;
+      try {
+        collected = await nativeFetch("api/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+      } catch {
+        collected = null;
+      }
+      collecting = false;
+      if (collected && collected.ok) {
+        // The 409 was answered, so it is not a standing refusal any more.
+        // Leaving it armed would print "Last refusal from this host: No session
+        // overview yet" over a workspace full of findings.
+        pendingRefusal = null;
+        lastRefusal = null;
+        loadReadiness();
+        return collected;
+      }
+      // Could not collect. Fall through to the original 409 so the page draws
+      // its own empty state and its button still works -- the reader is no
+      // worse off than before, and now knows the host was asked.
+      if (collected) arm({ status: collected.status, reason: await refusalOf(collected) });
+      renderState();
+    }
     if (accountable && !response.ok) {
       arm({ status: response.status, reason: await refusalOf(response) });
     }
@@ -185,23 +232,29 @@
   let readinessError = null;
   let statusLine = null;
   let detailList = null;
+  //: True while the first-open collection is in flight, so the bar can say so.
+  let collecting = false;
+  //: Re-check host is the way back to the full detail once it has been folded
+  //: away. It latches: someone who asked to see it keeps seeing it.
+  let showDetails = false;
 
   function renderState() {
     if (!statusLine || !detailList) return;
     const lines = [];
     let headline;
-    if (readinessError) {
+    if (collecting) {
+      // The first open collects before it paints. Say what is happening, with
+      // how long it takes, because a minute of nothing reads as broken.
+      headline =
+        "Collecting this tenant's first overview from the host. This runs Iris's" +
+        " tools against the warehouse and usually takes a minute.";
+    } else if (readinessError) {
       headline = `This host will not run turns in this session: ${readinessError}`;
     } else if (!readiness) {
       headline = "Checking what this host can verify about this session…";
     } else if (readiness.turn_completed_here) {
       headline = "A model turn has completed in this session, so hosted turns work here.";
     } else {
-      // Say MODEL turn, not turn. A Refresh collection runs Iris's four tools
-      // and produces a report without ever invoking the model, so a populated
-      // workspace and an unproven model path are not a contradiction — they are
-      // two different facts, and conflating them made this banner read as
-      // broken next to a screen full of findings.
       // NOT "Refresh runs Iris's tools, not the model" -- Refresh does run a
       // model turn, measured on 2026-09-22. What fills this view without the
       // host running anything is an imported report.
@@ -215,9 +268,11 @@
     statusLine.textContent = headline;
     statusLine.dataset.state = readinessError
       ? "refused"
-      : readiness && readiness.turn_completed_here
-        ? "ok"
-        : "unverified";
+      : collecting
+        ? "working"
+        : readiness && readiness.turn_completed_here
+          ? "ok"
+          : "unverified";
     if (readiness) {
       for (const item of readiness.verified || []) lines.push(`Verified: ${item}`);
       for (const item of readiness.unverified || []) lines.push(`Not verified: ${item}`);
@@ -237,8 +292,26 @@
           (lastRefusal.status ? ` (HTTP ${lastRefusal.status})` : ""),
       );
     }
+    // A checklist of things that are FINE is not information, it is a wall in
+    // front of the thing the reader came for. Everything below is kept and one
+    // click away under Re-check host, but a session that is working says so in
+    // one line and gets out of the way.
+    //
+    // What brings it back is something being WRONG -- the host refused, the
+    // last task failed, or a refusal is still standing. Deliberately not "a
+    // model turn has not run yet": that is the ordinary state of a session one
+    // second old, it resolves itself as the first collection completes, and
+    // showing it was most of what made this page read as a warning screen.
+    // While the collection is in flight the headline already says so, and a
+    // list of things that are fine underneath it adds nothing.
+    const wrong =
+      !!readinessError ||
+      (!!readiness && !!readiness.last_task_failed) ||
+      (!!lastRefusal && !collecting);
+    const show = showDetails || wrong;
+    detailList.hidden = !show;
     detailList.replaceChildren(
-      ...lines.map((line) => {
+      ...(show ? lines : []).map((line) => {
         const item = document.createElement("li");
         item.textContent = line;
         return item;
@@ -390,7 +463,10 @@
       }
     });
 
-    const recheck = control("Re-check host", loadReadiness);
+    const recheck = control("Re-check host", () => {
+      showDetails = true;
+      return loadReadiness();
+    });
 
     actions.append(chat, cancel, downloads, recheck, outcome);
     bar.append(statusLine, detailList, actions, files);
