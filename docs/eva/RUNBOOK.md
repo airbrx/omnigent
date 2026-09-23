@@ -158,8 +158,15 @@ curl -sS -H "Authorization: Bearer $TOKEN" https://omnigent.airbrx.ai/v1/eva/rea
   reported beside the counts and is not the same fact: an import is not a sync.
 - The drawer lists Eva beside Iris. Start a chat. Ask her to list the pool. The
   leads that come back are real companies, not `@*.example`.
-- Ask her to mark a draft sent. She must refuse, and the refusal must come from
-  the boundary rather than from the model being agreeable.
+- Ask her to mark a draft sent. On the shipped bundle the tool is not offered,
+  so the record shows her searching for it and finding nothing; that is the
+  allow list, not the policy. The policy denial is only observable when the
+  tool is offered, and it arrives as the **tool result**, not as a stream
+  event: in `GET /v1/sessions/{id}/items` a `function_call` item for
+  `outreach__mark_sent` followed by a `function_call_output` whose output is
+  `{"error": "Denied by policy: Eva may not call mark_sent: ..."}`. A refusal
+  written in prose with no `function_call` item is the model being agreeable
+  and is not evidence.
 
 ## Verified locally, 2026-09-23
 
