@@ -213,3 +213,35 @@ it("shows a short tenant id whole beside its name, and only truncates a UUID", (
   expect(rowFor("Fixture")).not.toHaveTextContent("fixture- ·");
   expect(rowFor("Live")).toHaveTextContent("f65d9135 ·");
 });
+
+it("will not offer a tenant whose execution host is not connected", () => {
+  // Production Iris was bound only to a Mac mini that had gone to sleep. Every
+  // tenant looked openable and every session creation failed with a 400.
+  const offline = TENANTS.map((t, i) => (i === 0 ? { ...t, host_online: false } : { ...t, host_online: true }));
+  render(
+    <IrisAccountView tenants={offline} account={ACCOUNT} accountError="" busy={false} openLabel="Open workspace" onOpen={vi.fn()} />,
+  );
+  const down = rowFor("Hot");
+  expect(down).toHaveTextContent("host offline");
+  expect(within(down).getByRole("button", { name: /^Open workspace/ })).toBeDisabled();
+
+  const up = rowFor("Cold");
+  expect(up).not.toHaveTextContent("host offline");
+  expect(within(up).getByRole("button", { name: /^Open workspace/ })).not.toBeDisabled();
+});
+
+it("treats unknown host liveness as openable, not as an outage", () => {
+  // `null` from a server that could not tell, and `undefined` from one that
+  // predates the field. Neither is "offline", and rendering them as offline
+  // would grey out every tenant the moment the lookup went missing.
+  const unknown = [
+    { ...TENANTS[0], host_online: null },
+    { ...TENANTS[1] },
+    { ...TENANTS[2], host_online: undefined },
+  ];
+  render(
+    <IrisAccountView tenants={unknown} account={ACCOUNT} accountError="" busy={false} openLabel="Open workspace" onOpen={vi.fn()} />,
+  );
+  for (const button of screen.getAllByRole("button", { name: /^Open workspace/ })) expect(button).not.toBeDisabled();
+  expect(screen.queryByText(/host offline/)).toBeNull();
+});

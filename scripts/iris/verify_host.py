@@ -11,8 +11,8 @@ from pathlib import Path
 
 import httpx
 
-from omnigent.airbrx.iris.routes import bare_tool_name, completed_answer, report_references
-from omnigent.airbrx.iris.runtime import TOOLS
+from omnigent.airbrx.iris.records import executions, report_references
+from omnigent.airbrx.iris.routes import completed_answer
 from omnigent.cli_auth import load_token
 
 
@@ -87,30 +87,20 @@ async def main():
         # an acceptance check to fail in — it would have read as a dispatch defect.
         # The full list is still recorded below as tools_called; the record keeps
         # everything, the assertion narrows.
-        # Count DISPATCHES, not records. A correct fixture turn on 2026-09-21
-        # recorded iris_overview twice, and the extra record reused the
-        # *preceding ToolSearch call's* call_id — which a well-formed log can
-        # never do, since one call_id cannot belong to two different tools.
-        # That impossibility is what identifies the phantom.
+        # Count EXECUTIONS, not records.
         #
-        # The tool ran once: both outputs were byte-identical, same evidence id,
-        # same budget {calls: 10}. A second real execution mints a new evidence
-        # id and spends the budget again, so identical payloads are proof of one
-        # execution rather than two. A genuine double dispatch carries its own
-        # fresh call_id and is still caught.
+        # `paired` is the shared rule: a call_id names neither a tool nor a run,
+        # but within one call_id the k-th call still lines up with the k-th
+        # output. See omnigent.airbrx.iris.records.paired for the measured
+        # shape and airbrx/iris#27 for the log defect behind it.
         #
-        # Filed separately as a hosted item-log defect. This is the checker
-        # declining to blame the run for the log's mistake.
-        owner, iris_tools = {}, []
-        for i in items:
-            if i.get("type") != "function_call":
-                continue
-            cid, name = i.get("call_id"), bare_tool_name(i.get("name"))
-            if cid in owner and owner[cid] != name:
-                continue
-            owner.setdefault(cid, name)
-            if name in TOOLS:
-                iris_tools.append(name)
+        # Pairing names each result; this then counts distinct RUNS, which the
+        # hosted read path does not need to do. Two byte-identical payloads are
+        # one execution: a genuine second run mints a fresh evidence id and
+        # advances the tool budget, and in the measured turn the duplicated
+        # pairs held budgets unchanged at {calls: 10}, {calls: 30} and
+        # {calls: 35} while the four real runs stepped 10 -> 28 -> 30 -> 35.
+        iris_tools = executions(items)
         if not answer or iris_tools != ["iris_overview"]:
             raise SystemExit("Native overview dispatch was not observed exactly once")
         refs = report_references(items)

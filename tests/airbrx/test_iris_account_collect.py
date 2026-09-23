@@ -364,3 +364,215 @@ async def test_a_capture_that_names_another_tenant_is_passed_through_for_rank_to
     )
     result = await collect_captures(api.get, agent_id="ag_iris", bindings=[COLD])
     assert result["t-cold"]["tenant_id"] == "t-hot"
+
+
+# --------------------------------------------------- the borrowed call_id --
+# The hosted item log writes each Iris result twice and gives the duplicate an
+# ADJACENT call_id, so one call_id can carry two different tools with a
+# different output each. Building {call_id: name} and letting the last writer
+# win misattributes the FIRST tool's output to the second, and that tool's
+# report is then never found. See omnigent.airbrx.iris.records.paired.
+
+
+def borrowed(call_id, first, second, first_file, second_file, at):
+    """Two tools sharing one call_id, each with its own output.
+
+    The shape measured on 2026-09-22 in session df952db8…, where iris_audit
+    and iris_propose shared toolu_01FzPy with no ToolSearch involved.
+    """
+    return [
+        {"type": "function_call", "call_id": call_id, "name": f"mcp__omnigent__{first}"},
+        {"type": "function_call", "call_id": call_id, "name": f"mcp__omnigent__{second}"},
+        {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "created_at": at,
+            "output": json.dumps(
+                {"downloads": [{"filename": "report.json", "file_id": first_file}]}
+            ),
+        },
+        {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "created_at": at + 1,
+            "output": json.dumps(
+                {"downloads": [{"filename": "report.json", "file_id": second_file}]}
+            ),
+        },
+    ]
+
+
+def test_two_tools_sharing_one_call_id_keep_their_own_outputs():
+    from omnigent.airbrx.iris.records import report_references
+
+    # ORDER MATTERS, and getting it backwards makes this test prove nothing.
+    # With the OVERVIEW's call first and a later tool borrowing its id,
+    # last-writer-wins names the id `iris_audit` and the overview's output is
+    # attributed to audit — so the overview is lost. Written the other way
+    # round (audit first) the old rule already picks `iris_overview` and the
+    # test passes with or without the fix.
+    items = borrowed("shared", "iris_overview", "iris_audit", "f_overview", "f_audit", 100)
+    assert report_references(items) == [
+        ("iris_overview", "f_overview", 100),
+        ("iris_audit", "f_audit", 101),
+    ]
+
+
+def test_a_borrowed_id_does_not_lose_the_overview_behind_toolsearch():
+    # ToolSearch claiming the id first is the other observed shape. The Iris
+    # result under that id is real and must still be found.
+    from omnigent.airbrx.iris.records import report_references
+
+    items = [
+        {"type": "function_call", "call_id": "c1", "name": "ToolSearch"},
+        {"type": "function_call", "call_id": "c1", "name": "mcp__omnigent__iris_overview"},
+        {"type": "function_call_output", "call_id": "c1", "created_at": 10, "output": "[]"},
+        {
+            "type": "function_call_output",
+            "call_id": "c1",
+            "created_at": 11,
+            "output": json.dumps({"downloads": [{"filename": "report.json", "file_id": "f1"}]}),
+        },
+    ]
+    assert report_references(items) == [("iris_overview", "f1", 11)]
+
+
+def test_a_call_with_no_output_yet_is_not_a_pairing_error():
+    # A cancelled or still-running turn leaves a call unanswered.
+    from omnigent.airbrx.iris.records import paired
+
+    items = [
+        {"type": "function_call", "call_id": "c1", "name": "mcp__omnigent__iris_overview"},
+        {"type": "function_call", "call_id": "c1", "name": "mcp__omnigent__iris_audit"},
+        {"type": "function_call_output", "call_id": "c1", "created_at": 5, "output": "{}"},
+    ]
+    assert [name for _, name in paired(items)] == ["iris_overview"]
+
+
+def test_pairs_come_back_in_time_order_across_call_ids():
+    # Callers take the newest reference per tool, so order is load-bearing.
+    from omnigent.airbrx.iris.records import paired
+
+    items = [
+        *turn("late", "iris_overview", "f_late", 900),
+        *turn("early", "iris_overview", "f_early", 100),
+    ]
+    assert [item["created_at"] for item, _ in paired(items)] == [100, 900]
+
+
+def test_the_newest_capture_survives_a_borrowed_call_id():
+    # A session whose overview's call_id is borrowed by a LATER tool still
+    # reports that tenant, rather than reading as one that never collected.
+    # The overview goes first: that is the order the old rule loses.
+    from omnigent.airbrx.iris.records import report_references
+
+    items = borrowed("shared", "iris_overview", "iris_audit", "f_overview", "f_audit", 500)
+    newest = {}
+    for tool, file_id, at in report_references(items):
+        if tool == "iris_overview" and at >= newest.get("at", 0):
+            newest = {"file_id": file_id, "at": at}
+    assert newest == {"file_id": "f_overview", "at": 500}
+
+
+# ------------------------------------------------- counting EXECUTIONS ------
+# `paired` says which tool a recorded result belongs to. `executions` says how
+# many times a tool RAN, which is the question an acceptance gate asks. The
+# rule — two byte-identical payloads are one run — had no test anywhere,
+# because it lived inline in scripts/iris/verify_host.py, which has no test
+# file. It was the one rule with nothing checking it, on a gate whose whole job
+# is to notice a second dispatch.
+
+
+def output(call_id, payload, at=0):
+    return {
+        "type": "function_call_output",
+        "call_id": call_id,
+        "created_at": at,
+        "output": json.dumps(payload),
+    }
+
+
+def call(call_id, tool):
+    return {"type": "function_call", "call_id": call_id, "name": f"mcp__omnigent__{tool}"}
+
+
+OVERVIEW = {"message": "Tenant overview", "evidence": [{"id": "e1"}], "budget": {"calls": 10}}
+
+
+def test_the_same_payload_recorded_twice_is_one_execution():
+    from omnigent.airbrx.iris.records import executions
+
+    items = [
+        call("a", "iris_overview"),
+        output("a", OVERVIEW, 1),
+        call("b", "iris_overview"),
+        output("b", OVERVIEW, 2),  # the log's copy
+    ]
+    assert executions(items) == ["iris_overview"]
+
+
+def test_a_genuine_second_run_is_two_executions():
+    # A real second run mints a fresh evidence id and advances the budget, so
+    # it cannot be byte-equal to the first. This is the case the rule must NOT
+    # collapse, or a double dispatch goes unnoticed.
+    from omnigent.airbrx.iris.records import executions
+
+    second = {"message": "Tenant overview", "evidence": [{"id": "e2"}], "budget": {"calls": 28}}
+    items = [
+        call("a", "iris_overview"),
+        output("a", OVERVIEW, 1),
+        call("b", "iris_overview"),
+        output("b", second, 2),
+    ]
+    assert executions(items) == ["iris_overview", "iris_overview"]
+
+
+def test_a_duplicate_under_a_borrowed_call_id_is_still_one_execution():
+    # The shape actually observed: the copy borrows the PRECEDING tool's id.
+    from omnigent.airbrx.iris.records import executions
+
+    items = [
+        call("x", "ToolSearch"),
+        output("x", [{"type": "tool_reference"}], 1),
+        call("x", "iris_overview"),
+        output("x", OVERVIEW, 2),
+        call("y", "iris_overview"),
+        output("y", OVERVIEW, 3),
+    ]
+    assert executions(items) == ["iris_overview"]
+
+
+def test_harness_tools_are_not_counted_as_iris_runs():
+    from omnigent.airbrx.iris.records import executions
+
+    items = [call("x", "ToolSearch"), output("x", [{"type": "tool_reference"}], 1)]
+    assert executions(items) == []
+
+
+async def test_a_borrowed_call_id_still_yields_the_newest_capture_end_to_end():
+    # Chief's case (d), through collect_captures rather than report_references:
+    # an iris_overview whose call shares an id with a neighbouring tool is
+    # still found, and still the newest. Before the pairing fix the account
+    # route would have reported this tenant as never_collected.
+    older = turn("solo", "iris_overview", "f_old", 100)
+    # Overview's call FIRST, audit borrowing its id after. Under
+    # last-writer-wins the id resolves to `iris_audit`, the overview's output
+    # is attributed to audit, the newest capture is never found, and this
+    # tenant reads as holding its older capture. That is the shape that fails
+    # without paired(); the reverse order passes either way and proves nothing.
+    shared = borrowed("dup", "iris_overview", "iris_audit", "f_new", "f_audit", 500)
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={"s1": older + shared},
+        reports={
+            "f_new": REPORT,
+            "f_old": {**REPORT, "metrics": {**REPORT["metrics"], "requests": 1}},
+            "f_audit": {"tenant_id": "t-hot"},
+        },
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"] == {
+        "tenant_id": "t-hot",
+        "metrics": REPORT["metrics"],
+        "captured_at": 500,
+    }

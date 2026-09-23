@@ -589,3 +589,66 @@ async def test_portrait_comes_from_the_pinned_package_and_needs_authentication(
         "/v1/iris/portrait", headers={"X-Forwarded-Email": ""}
     )
     assert anonymous.status_code == 401
+
+
+async def _catalog(iris_session, hosts_online):
+    """Read `GET /v1/iris` with a given liveness lookup wired in."""
+    from types import SimpleNamespace
+
+    import httpx
+    from fastapi import FastAPI
+
+    from omnigent.airbrx.iris import routes
+    from omnigent.server.auth import UnifiedAuthProvider
+
+    _, session, _, _ = iris_session
+    app = FastAPI()
+    app.include_router(
+        routes.create_iris_router(
+            auth_provider=UnifiedAuthProvider(source="header", local_single_user=False),
+            agent_store=SimpleNamespace(
+                get_by_name=lambda name: SimpleNamespace(id=session.agent_id)
+            ),
+            hosts_online=hosts_online,
+        ),
+        prefix="/v1",
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-Forwarded-Email": "fixture-owner"},
+    ) as local:
+        response = await local.get("/v1/iris")
+        response.raise_for_status()
+        return response.json()["bindings"]
+
+
+@pytest.mark.asyncio
+async def test_catalog_reports_a_connected_execution_host(iris_session):
+    asked = []
+
+    def online(host_ids):
+        asked.append(host_ids)
+        return set(host_ids)
+
+    bindings = await _catalog(iris_session, online)
+    assert [b["host_online"] for b in bindings] == [True]
+    # One lookup for the whole page, not one per binding.
+    assert asked == [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]]
+
+
+@pytest.mark.asyncio
+async def test_catalog_reports_an_execution_host_that_is_not_connected(iris_session):
+    # The failure this exists to prevent: production Iris was bound only to a
+    # host that had gone to sleep, so every tenant in the drawer looked
+    # selectable and every session creation failed with a 400.
+    bindings = await _catalog(iris_session, lambda host_ids: set())
+    assert [b["host_online"] for b in bindings] == [False]
+
+
+@pytest.mark.asyncio
+async def test_catalog_says_unknown_rather_than_offline_without_a_lookup(iris_session):
+    # None, not False. A server that cannot answer must not have every tenant
+    # greyed out on its behalf.
+    bindings = await _catalog(iris_session, None)
+    assert [b["host_online"] for b in bindings] == [None]

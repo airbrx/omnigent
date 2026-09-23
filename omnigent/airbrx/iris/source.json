@@ -1,7 +1,7 @@
 {
   "repository": "airbrx/iris",
-  "revision": "6bf564aea4ef4811fbaadd2270259fa721734ace",
-  "sha256": "4a05307125b7fec43d4e94bb092aade428a58eff33ab7dd658128a960d262813",
+  "revision": "804672488dc5842775d4bc10b234c11d6ad7a5ba",
+  "sha256": "db8eb1d3218debc9a1a162f17661d599990fdf959502f6ecfe2aa61352601464",
   "files": [
     "iris/__init__.py",
     "iris/account.py",
