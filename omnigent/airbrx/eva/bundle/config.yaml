@@ -4,16 +4,21 @@ name: eva
 # Eva is the outreach agent for Airbrx: the second hosted agent on
 # omnigent.airbrx.ai, beside Iris.
 #
-# The shape differs from Iris on purpose, and the difference is a subtraction.
-# Iris vendors a Python package and runs four LOCAL tools on an execution host,
-# which is why she needs a host binding, a PAT in the macOS keychain, a pinned
-# source archive and a two-key launchd delta. Every one of Eva's tools is a
-# REMOTE MCP tool served by the airbrx-outreach app over HTTP, so none of that
-# machinery applies: no vendored archive, no host_id, no keychain, no launchd.
-# Eva's brain runs on the coordinator and reaches her tools over the network.
+# She is hosted the way Iris is hosted. A binding names an execution host
+# (host_id), Eva's turns run on that host, and her MCP client connects from
+# there. That is the mechanism, not an accident: the outreach app runs on the
+# operator's own Mac at http://127.0.0.1:8000, and a runner on that Mac reaches
+# it with no DNS, no certificate and no container anywhere. Iris works the same
+# way and has no public hostname either.
 #
-# If Eva ever grows a local tool, that decision brings back the whole of Iris's
-# host apparatus with it. Say so out loud before taking it.
+# What Eva does NOT have is Iris's local-tool apparatus. Every one of Eva's
+# tools is a REMOTE MCP tool served by the airbrx-outreach app, so there is no
+# vendored Python archive, no sha256 digest, no sys.path extraction and no
+# launchd delta. The binding's token_ref names the outreach bearer token the
+# host resolves at the point of use; nothing in this file is a credential.
+#
+# If Eva ever grows a local tool, the vendoring and verification half of Iris's
+# apparatus comes back with it. Say so out loud before taking it.
 
 # Brand voice, per the airbrx-branding skill: direct, technical, anti-hype, and
 # specific rather than vague. No buzzwords, no "robust" or "seamless", numbers

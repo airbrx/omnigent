@@ -34,8 +34,10 @@ REGION=us-east-1
 # `users` is the authorization decision in this file. These accounts, and no
 # others, may open Eva. Change it deliberately.
 #
-# `base_url` must be the outreach app as the COORDINATOR can reach it. A
-# localhost URL here binds Eva to a machine that is not the one serving her.
+# `base_url` is the outreach app as the EXECUTION HOST named by `host_id` sees
+# it. Eva's turns run on that host and her MCP client connects from there, so
+# 127.0.0.1:8000 means the app on that Mac, which is the whole point: no DNS,
+# no certificate, no container. The coordinator never dials this URL.
 read -r -d '' BINDINGS <<'JSON' || true
 [
   {
@@ -91,5 +93,8 @@ echo '  TOKEN=$(python -c "from omnigent.cli_auth import load_token; print(load_
 echo '  curl -sS -H "Authorization: Bearer $TOKEN" https://omnigent.airbrx.ai/v1/eva'
 echo '  curl -sS -H "Authorization: Bearer $TOKEN" https://omnigent.airbrx.ai/v1/eva/readiness'
 echo
-echo "carries_crm_data must be true. If it is null or false, Eva is live in front"
-echo "of seed data and should be unbound again until the sync works."
+echo "For this loopback binding /v1/eva/readiness answers null, because the"
+echo "coordinator cannot dial the execution host's 127.0.0.1. Check on the host:"
+echo '  curl -sS http://127.0.0.1:8000/readyz | python3 -m json.tool'
+echo "leads.total must be > 0 and leads.fixture must be 0. Otherwise Eva is live"
+echo "in front of no data or invented data, and should be unbound again."
