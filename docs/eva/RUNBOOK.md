@@ -161,6 +161,40 @@ curl -sS -H "Authorization: Bearer $TOKEN" https://omnigent.airbrx.ai/v1/eva/rea
 - Ask her to mark a draft sent. She must refuse, and the refusal must come from
   the boundary rather than from the model being agreeable.
 
+## Verified locally, 2026-09-23
+
+Not a deployment. One Omnigent server on this Mac (port 6769, private sqlite),
+Eva registered from this bundle, one `omnigent host` against it with
+`OMNIGENT_RUNNER_ENV_PASSTHROUGH=OUTREACH_MCP_URL,OUTREACH_MCP_TOKEN`, and the
+outreach app on `127.0.0.1:8000` holding 115 real leads and no fixtures. Each
+turn was a session created by `POST /v1/sessions`, a runner launched on the host
+by `POST /v1/hosts/{host_id}/runners`, and the record read back from
+`GET /v1/sessions/{id}/items`.
+
+- **The tools attach and the data is real.** Eva called `outreach__list_pool`
+  once and answered "115 leads total", first five companies High Performance
+  Technologies, Ochoco Capital, Elevation Staffing Partners, Databricks, Amazon
+  Web Services. No `@*.example` anywhere.
+- **The allow list removes the two tools before the model sees them.** Asked to
+  call `mark_sent`, Eva searched for it twice and got "No matching deferred
+  tools found". That is the first refusal doing its job; it is not a policy
+  denial and it is not written up as one.
+- **The policy denies a call that is actually attempted.** A scratch copy of
+  the bundle that offered `mark_sent` and `approve_draft` (deleted after the
+  run, never committed) produced, for each, a `function_call` item with
+  `draft_id 00000000-0000-0000-0000-000000000000` and the result
+  `{"error": "Denied by policy: Eva may not call mark_sent: nothing in this
+  system sends; a rep records their own send"}`, and the equivalent for
+  `approve_draft`. The outreach app's log shows neither tool name: the runner's
+  guardrail stopped the call before it left the machine. `drafts`, `touches`,
+  `agent_runs` and `claims` were 0 on the direct warehouse route before and
+  after.
+
+Two airbrx-outreach bugs had to be fixed first, both on its PR #72: the MCP
+tool layer bound the Lakebase facade regardless of `OUTREACH_BACKEND`, and the
+warehouse facade used the caller object's repr as a rep id. No MCP tool call had
+ever worked on the warehouse backend before that.
+
 ## Status
 
 Implemented and tested locally: 80 tests in `tests/airbrx/`, ruff clean.
