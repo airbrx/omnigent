@@ -162,6 +162,7 @@ def test_a_binding_parses_and_builds_its_mcp_url(
             [
                 {
                     "users": ["aerickson@airbrx.com"],
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
                     "base_url": "https://eva.airbrx.ai/",
                     "token_ref": "keychain:eva-outreach-token",
                 }
@@ -182,14 +183,15 @@ def test_an_unknown_key_stops_startup(tmp_path: Path, monkeypatch: pytest.Monkey
             [
                 {
                     "users": ["a@airbrx.com"],
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
                     "base_url": "https://eva.airbrx.ai",
                     "token_ref": "env:X",
-                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
+                    "workspace": "/some/path",
                 }
             ],
         ),
     )
-    with pytest.raises(ValueError, match="host_id"):
+    with pytest.raises(ValueError, match="workspace"):
         eva_config.bindings()
 
 
@@ -198,7 +200,17 @@ def test_a_binding_with_no_users_is_refused(
 ) -> None:
     monkeypatch.setenv(
         "OMNIGENT_EVA_CONFIG",
-        _write(tmp_path, [{"users": [], "base_url": "https://e.ai", "token_ref": "env:X"}]),
+        _write(
+            tmp_path,
+            [
+                {
+                    "users": [],
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
+                    "base_url": "https://e.ai",
+                    "token_ref": "env:X",
+                }
+            ],
+        ),
     )
     with pytest.raises(ValueError, match="nobody"):
         eva_config.bindings()
@@ -209,7 +221,16 @@ def test_a_live_binding_without_a_token_ref_is_refused(
 ) -> None:
     monkeypatch.setenv(
         "OMNIGENT_EVA_CONFIG",
-        _write(tmp_path, [{"users": ["a@airbrx.com"], "base_url": "https://e.ai"}]),
+        _write(
+            tmp_path,
+            [
+                {
+                    "users": ["a@airbrx.com"],
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
+                    "base_url": "https://e.ai",
+                }
+            ],
+        ),
     )
     with pytest.raises(ValueError, match="token_ref"):
         eva_config.bindings()
@@ -225,6 +246,7 @@ def test_a_fixture_binding_may_omit_the_token(
             [
                 {
                     "users": ["a@airbrx.com"],
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
                     "base_url": "https://fixture.invalid",
                     "fixture": True,
                     "label": "fixture",
@@ -241,7 +263,14 @@ def test_a_relative_base_url_is_refused(tmp_path: Path, monkeypatch: pytest.Monk
         "OMNIGENT_EVA_CONFIG",
         _write(
             tmp_path,
-            [{"users": ["a@x.com"], "base_url": "eva.airbrx.ai", "token_ref": "e:X"}],
+            [
+                {
+                    "users": ["a@x.com"],
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
+                    "base_url": "eva.airbrx.ai",
+                    "token_ref": "e:X",
+                }
+            ],
         ),
     )
     with pytest.raises(ValueError, match="absolute"):
@@ -259,12 +288,14 @@ def test_binding_for_refuses_to_guess_between_two(
             [
                 {
                     "users": ["a@x.com"],
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
                     "base_url": "https://one.invalid",
                     "token_ref": "env:A",
                     "label": "one",
                 },
                 {
                     "users": ["a@x.com"],
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
                     "base_url": "https://two.invalid",
                     "token_ref": "env:B",
                     "label": "two",
@@ -283,8 +314,18 @@ def test_duplicate_labels_are_refused(tmp_path: Path, monkeypatch: pytest.Monkey
         _write(
             tmp_path,
             [
-                {"users": ["a@x.com"], "base_url": "https://a.invalid", "token_ref": "env:A"},
-                {"users": ["b@x.com"], "base_url": "https://b.invalid", "token_ref": "env:B"},
+                {
+                    "users": ["a@x.com"],
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
+                    "base_url": "https://a.invalid",
+                    "token_ref": "env:A",
+                },
+                {
+                    "users": ["b@x.com"],
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
+                    "base_url": "https://b.invalid",
+                    "token_ref": "env:B",
+                },
             ],
         ),
     )
