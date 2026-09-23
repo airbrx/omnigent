@@ -9296,7 +9296,7 @@
     },
     "/v1/eva/readiness": {
       "get": {
-        "description": "Is the outreach app behind this binding actually usable?\n\nThree answers, and the third is the one that matters:\n\n`reachable`   the app responded at all.\n`healthy`     its own `/readyz` says ok, with a repository bound.\n`carries_crm_data`  a sync has actually run. **An app can be reachable\n                and healthy and still be showing invented rows.** That is\n                not hypothetical; it is what shipped.\n\nAnything this cannot establish is reported as `null` and never as\n`true`. A readiness check that guesses optimistically is worse than\nnone, because it is believed.",
+        "description": "Is the outreach app behind this binding actually usable?\n\nThree answers, and the third is the one that matters:\n\n`reachable`   the app responded at all.\n`healthy`     its own `/readyz` says ok, with a repository bound.\n`carries_crm_data`  the app reports leads, and none of them is a\n                fixture. **An app can be reachable and healthy and\n                still be showing invented rows.** That is not\n                hypothetical; it is what shipped. `sync_runs` rides\n                beside it and is not the same fact.\n\nAnything this cannot establish is reported as `null` and never as\n`true`. A readiness check that guesses optimistically is worse than\nnone, because it is believed.",
         "operationId": "readiness_v1_eva_readiness_get",
         "parameters": [
           {
