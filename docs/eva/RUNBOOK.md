@@ -313,12 +313,19 @@ registration expanded the bundle at startup and the coordinator has no
 `OUTREACH_MCP_TOKEN`, by design. Both crash-looped the server rather than
 disabling one agent, which PR #68 changes.
 
-**The coordinator expands the bundle in more than one place**, and PR #68 only
-fixed one of them. Registration no longer needs the credentials; creating a
-session still does. With the placeholders removed the server started cleanly
-and then returned 400 on every new Eva chat, which is a worse failure than the
-crash loop because the service looks healthy. The two `OUTREACH_MCP_` lines in
-`/etc/omnigent/server.env` are therefore load bearing and stay until the
-session-create path validates without expanding too. The regression test that
-would have caught this creates a session for an agent whose bundle names a
-variable nobody has set.
+**The placeholders are gone, as of 2026-09-24.** They were load bearing for a
+few hours and that history is worth keeping. The coordinator expanded the
+bundle in more than one place. PR #68 fixed registration, creating a session
+still expanded, and with the placeholders removed the server started cleanly
+and returned 400 on every new Eva chat, which is a worse failure than the crash
+loop because the service looks healthy. PR #75 fixed it at the root: a bundle
+declares `env_expansion: runner`, the coordinator loads it unexpanded, and the
+runner resolves the variables as it always did. Only `OMNIGENT_EVA_CONFIG`
+remains in `/etc/omnigent/server.env`.
+
+Proven with a session rather than a health check: `42f0497ed53b423f8b6b88e01bf87221`
+created without a 400 and answered `list_pool` with 115 real leads.
+
+**Do not put a real token there to make expansion succeed.** That is still the
+fix somebody reaches for, and it would hand every session of that agent, on
+every host, the same credential.
