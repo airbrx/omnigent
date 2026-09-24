@@ -168,6 +168,20 @@ Abram logs in. So the bridge is up whenever he is logged in, which is not the
 same as always. Always would be a LaunchDaemon, a different set of tradeoffs,
 and his call.
 
+**And while the Mac sleeps, Eva has no host.** The bridge reconnects on wake
+and needs no attention, but a session started during a sleep finds no runner.
+Observed on 2026-09-24: the Air slept for 85 seconds mid-test. Combined with
+the GUI-domain limit, the honest statement is that Eva is available while Abram
+is logged in and his laptop is awake, which is a laptop's availability and not
+a service's. Moving the app and the bridge to the mini, or to the EC2 box, is
+what changes that.
+
+**The first session after a bridge restart can fail once.** The first zygote
+fork on a cold host took 28 seconds and the coordinator gave up first, with
+"host did not respond to launch request". The retry succeeded. So a single
+failure immediately after a kickstart is expected rather than diagnostic; try
+again before looking for a cause.
+
 **The outreach app the bridge talks to** runs on the same Mac as the user
 LaunchAgent `ai.airbrx.outreach-app`
 (`~/Library/LaunchAgents/ai.airbrx.outreach-app.plist`, `KeepAlive`,
@@ -299,12 +313,19 @@ registration expanded the bundle at startup and the coordinator has no
 `OUTREACH_MCP_TOKEN`, by design. Both crash-looped the server rather than
 disabling one agent, which PR #68 changes.
 
-**The coordinator expands the bundle in more than one place**, and PR #68 only
-fixed one of them. Registration no longer needs the credentials; creating a
-session still does. With the placeholders removed the server started cleanly
-and then returned 400 on every new Eva chat, which is a worse failure than the
-crash loop because the service looks healthy. The two `OUTREACH_MCP_` lines in
-`/etc/omnigent/server.env` are therefore load bearing and stay until the
-session-create path validates without expanding too. The regression test that
-would have caught this creates a session for an agent whose bundle names a
-variable nobody has set.
+**The placeholders are gone, as of 2026-09-24.** They were load bearing for a
+few hours and that history is worth keeping. The coordinator expanded the
+bundle in more than one place. PR #68 fixed registration, creating a session
+still expanded, and with the placeholders removed the server started cleanly
+and returned 400 on every new Eva chat, which is a worse failure than the crash
+loop because the service looks healthy. PR #75 fixed it at the root: a bundle
+declares `env_expansion: runner`, the coordinator loads it unexpanded, and the
+runner resolves the variables as it always did. Only `OMNIGENT_EVA_CONFIG`
+remains in `/etc/omnigent/server.env`.
+
+Proven with a session rather than a health check: `42f0497ed53b423f8b6b88e01bf87221`
+created without a 400 and answered `list_pool` with 115 real leads.
+
+**Do not put a real token there to make expansion succeed.** That is still the
+fix somebody reaches for, and it would hand every session of that agent, on
+every host, the same credential.
