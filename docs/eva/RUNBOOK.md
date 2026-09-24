@@ -298,3 +298,13 @@ binding with no `host_id`, which the deployed code refuses. The second:
 registration expanded the bundle at startup and the coordinator has no
 `OUTREACH_MCP_TOKEN`, by design. Both crash-looped the server rather than
 disabling one agent, which PR #68 changes.
+
+**The coordinator expands the bundle in more than one place**, and PR #68 only
+fixed one of them. Registration no longer needs the credentials; creating a
+session still does. With the placeholders removed the server started cleanly
+and then returned 400 on every new Eva chat, which is a worse failure than the
+crash loop because the service looks healthy. The two `OUTREACH_MCP_` lines in
+`/etc/omnigent/server.env` are therefore load bearing and stay until the
+session-create path validates without expanding too. The regression test that
+would have caught this creates a session for an agent whose bundle names a
+variable nobody has set.
