@@ -38,13 +38,24 @@ REGION=us-east-1
 # it. Eva's turns run on that host and her MCP client connects from there, so
 # 127.0.0.1:8000 means the app on that Mac, which is the whole point: no DNS,
 # no certificate, no container. The coordinator never dials this URL.
+#
+# PULL MAIN BEFORE RUNNING THIS. The binding shape changed on 2026-09-22 and a
+# stale copy of this script wrote a binding the deployed code refused, which
+# crash-looped the coordinator until the rollback below was applied.
+#
+# `host_id` is the execution host that runs the outreach app and holds the
+# token. Check /v1/hosts before you bind. A wrong host puts Eva in the drawer
+# with every call failing, which looks like an auth problem and is not one.
+# On 2026-09-24 that is the Air's bridge host, not the mini
+# (882128953d2a4e178ddbd48d70b298a1): nothing serves the app on the mini and
+# its keychain holds no eva-outreach-token.
 read -r -d '' BINDINGS <<'JSON' || true
 [
   {
     "label": "live",
     "users": ["aerickson@airbrx.com"],
     "base_url": "http://127.0.0.1:8000",
-    "host_id": "882128953d2a4e178ddbd48d70b298a1",
+    "host_id": "f501802f3f0c4d22a8b1c64763cef4e1",
     "token_ref": "keychain:eva-outreach-token",
     "fixture": false
   }
@@ -59,11 +70,30 @@ ${BINDINGS}
 BIND
 chown ubuntu:ubuntu /etc/omnigent/eva.json
 chmod 640 /etc/omnigent/eva.json
+# Until PR #68 is deployed, registration expands the bundle at startup and needs
+# these two NON-SECRET placeholders to exist on the coordinator. The stored
+# artifact is the raw bundle and runners expand against their own environment,
+# so these values never reach one. Remove both lines once #68 is live: a line
+# that looks like a token invites somebody to treat it as one.
+sed -i '/^OUTREACH_MCP_URL=/d;/^OUTREACH_MCP_TOKEN=/d' /etc/omnigent/server.env
+echo 'OUTREACH_MCP_URL=http://127.0.0.1:8000/mcp/' >> /etc/omnigent/server.env
+echo 'OUTREACH_MCP_TOKEN=placeholder-for-bundle-validation-only-runners-expand-their-own' >> /etc/omnigent/server.env
 # One line, replaced rather than appended, so re-running cannot stack duplicates.
 sed -i '/^OMNIGENT_EVA_CONFIG=/d' /etc/omnigent/server.env
 echo 'OMNIGENT_EVA_CONFIG=/etc/omnigent/eva.json' >> /etc/omnigent/server.env
 systemctl restart omnigent-server
-sleep 3
+# Up to 40 seconds, not 3. The server takes longer than that to answer, and a
+# fixed sleep reported Failed on a start that had in fact succeeded, which sent
+# an operator looking for a fault that was not there.
+for _ in $(seq 1 20); do
+  if systemctl is-active --quiet omnigent-server \
+     && curl -fsS --max-time 2 http://127.0.0.1:8001/health >/dev/null 2>&1; then
+    echo active
+    exit 0
+  fi
+  sleep 2
+done
+echo "omnigent-server did not come up within 40s; journalctl -u omnigent-server -n 50" >&2
 systemctl is-active omnigent-server
 EOS
 )
