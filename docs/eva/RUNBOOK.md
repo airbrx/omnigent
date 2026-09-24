@@ -168,6 +168,20 @@ Abram logs in. So the bridge is up whenever he is logged in, which is not the
 same as always. Always would be a LaunchDaemon, a different set of tradeoffs,
 and his call.
 
+**And while the Mac sleeps, Eva has no host.** The bridge reconnects on wake
+and needs no attention, but a session started during a sleep finds no runner.
+Observed on 2026-09-24: the Air slept for 85 seconds mid-test. Combined with
+the GUI-domain limit, the honest statement is that Eva is available while Abram
+is logged in and his laptop is awake, which is a laptop's availability and not
+a service's. Moving the app and the bridge to the mini, or to the EC2 box, is
+what changes that.
+
+**The first session after a bridge restart can fail once.** The first zygote
+fork on a cold host took 28 seconds and the coordinator gave up first, with
+"host did not respond to launch request". The retry succeeded. So a single
+failure immediately after a kickstart is expected rather than diagnostic; try
+again before looking for a cause.
+
 **The outreach app the bridge talks to** runs on the same Mac as the user
 LaunchAgent `ai.airbrx.outreach-app`
 (`~/Library/LaunchAgents/ai.airbrx.outreach-app.plist`, `KeepAlive`,
