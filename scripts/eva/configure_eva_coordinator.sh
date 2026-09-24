@@ -70,11 +70,22 @@ ${BINDINGS}
 BIND
 chown ubuntu:ubuntu /etc/omnigent/eva.json
 chmod 640 /etc/omnigent/eva.json
-# Until PR #68 is deployed, registration expands the bundle at startup and needs
-# these two NON-SECRET placeholders to exist on the coordinator. The stored
-# artifact is the raw bundle and runners expand against their own environment,
-# so these values never reach one. Remove both lines once #68 is live: a line
-# that looks like a token invites somebody to treat it as one.
+# These two NON-SECRET placeholders must exist on the coordinator. It expands
+# the bundle's ${VAR} references in more than one place, and a missing variable
+# is fatal at each: at startup during registration, and again on every
+# POST /v1/sessions for this agent.
+#
+# PR #68 fixed the startup half and its body said the placeholders could then be
+# removed. They were, and the coordinator came up clean, and then every new Eva
+# chat returned 400 "Unresolved environment variable '${OUTREACH_MCP_TOKEN}' in
+# config key 'Authorization'". They went back. Do not remove them again until
+# the session-create path also validates without expanding, and until a test
+# creates a session for an agent whose bundle names an unset variable.
+#
+# They are safe because the stored artifact is the raw bundle and runners expand
+# against their own environment, so these values never reach one. A runner that
+# somehow did receive them would fail its calls with 401 rather than send
+# something wrong, which is the right direction to fail in.
 sed -i '/^OUTREACH_MCP_URL=/d;/^OUTREACH_MCP_TOKEN=/d' /etc/omnigent/server.env
 echo 'OUTREACH_MCP_URL=http://127.0.0.1:8000/mcp/' >> /etc/omnigent/server.env
 echo 'OUTREACH_MCP_TOKEN=placeholder-for-bundle-validation-only-runners-expand-their-own' >> /etc/omnigent/server.env
