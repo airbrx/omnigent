@@ -20,6 +20,13 @@ name: eva
 # If Eva ever grows a local tool, the vendoring and verification half of Iris's
 # apparatus comes back with it. Say so out loud before taking it.
 
+# Her MCP bearer token is per host (resolved on the execution host from the
+# binding's token_ref) and must never be in the coordinator's environment. So
+# only the runner expands this bundle's ${VAR}s. Without this line the
+# coordinator refuses every session create for an unset OUTREACH_MCP_TOKEN,
+# and the only workaround is a stand-in or the real token in server.env.
+env_expansion: runner
+
 # Brand voice, per the airbrx-branding skill: direct, technical, anti-hype, and
 # specific rather than vague. No buzzwords, no "robust" or "seamless", numbers
 # where numbers exist. This is the line a person reads next to her name in the

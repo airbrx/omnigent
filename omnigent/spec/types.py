@@ -1548,6 +1548,22 @@ class AgentSpec:  # type: ignore[explicit-any]  # params: dict[str, Any] field (
         ``sys_session_get_history`` / ``sys_session_get_info``)
         are always registered and are not affected by either
         opt-in.
+    :param env_expansion: Where ``${VAR}`` references in this bundle may be
+        expanded. YAML key is ``env_expansion:`` (top-level). ``everywhere``
+        (default): an operator-authored agent is expanded against the
+        server's environment on server-side loads and against the runner's
+        environment on the runner, which is how operator agents have always
+        behaved. ``runner``: the server never expands this bundle, and only
+        the runner resolves its references, against its own environment.
+        Declare ``runner`` when a reference names a per-host or per-user
+        secret (an MCP bearer token, say) that the server does not and must
+        not hold; without it the server refuses the bundle at session
+        create for an unset variable, and the only way round that is to put
+        the secret in the server's environment, which then hands one
+        credential to every session. Opting out is the safe direction, so a
+        tenant bundle may declare it too. It does not change the
+        session-scoped rule: a session-scoped bundle is never expanded
+        anywhere, whatever this says.
     :param agent_session_sharing: Authority for the agent to share the
         session it is running in, via ``sys_session_share``. YAML key is
         ``agent_session_sharing:`` (top-level, like ``spawn:``). This
@@ -1607,4 +1623,5 @@ class AgentSpec:  # type: ignore[explicit-any]  # params: dict[str, Any] field (
     timers: bool = False
     spawn: bool = False
     agent_session_sharing: SharePolicy = SharePolicy.NONE
+    env_expansion: str = "everywhere"
     source_rel_dir: str | None = field(default=None, compare=False)

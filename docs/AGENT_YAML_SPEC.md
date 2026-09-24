@@ -50,6 +50,7 @@ of the agent YAML.
 | `async` | Optional | Whether async work tools are exposed. Defaults to `true`. |
 | `cancellable` | Optional | Whether the session can be cancelled. Defaults to `true`. |
 | `timers` | Optional | Whether timer tools are exposed. Defaults to `false`. |
+| `env_expansion` | Optional | Where `${VAR}` references are resolved: `everywhere` (default) or `runner`. See [MCP server](#mcp-server). |
 
 ## Executor
 
@@ -311,6 +312,26 @@ tools:
     headers:
       Authorization: Bearer ${TOKEN}
 ```
+
+`${TOKEN}` is resolved from the environment. For an agent registered by the
+server operator (`omnigent server --agent`), that happens twice by default: the
+server expands the bundle against **its** environment whenever it loads the
+agent (listing, session create), and the runner expands it again against its
+own when it opens the connection. So the variable has to exist on the server
+too, and an unset one makes every session create fail.
+
+When the value is a per-host or per-user secret that the server does not and
+should not hold, declare that only the runner resolves it:
+
+```yaml
+env_expansion: runner
+```
+
+The server then loads the bundle unexpanded, and the runner resolves `${TOKEN}`
+from its own environment exactly as before. Do not work around an unset
+variable by setting the secret in the server's environment: every session of
+that agent, on every host, would then get that one value. Session-scoped
+(uploaded) bundles are never expanded anywhere, whatever `env_expansion` says.
 
 ### Python function tool
 

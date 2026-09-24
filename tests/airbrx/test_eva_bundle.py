@@ -33,6 +33,26 @@ def test_the_bundle_parses_and_is_named_eva() -> None:
     assert _spec().name == "eva"
 
 
+def test_only_the_runner_expands_her_bundle() -> None:
+    """Her bearer token is per host and must never be in the coordinator's env.
+
+    Without ``env_expansion: runner`` every session create on the coordinator
+    fails for an unset OUTREACH_MCP_TOKEN, which is what happened in production
+    on 2026-09-24 once the stand-in values were removed.
+    """
+    assert _spec().env_expansion == "runner"
+
+
+def test_the_coordinator_loads_her_without_the_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    from omnigent.spec import load
+
+    monkeypatch.delenv("OUTREACH_MCP_TOKEN", raising=False)
+    monkeypatch.delenv("OUTREACH_MCP_URL", raising=False)
+    spec = load(bundle_root(), expand_env=True, server_side=True)
+    (server,) = spec.mcp_servers
+    assert server.headers["Authorization"] == "Bearer ${OUTREACH_MCP_TOKEN}"
+
+
 def test_eva_runs_on_the_meta_harness_with_no_model_pinned() -> None:
     """The point of the omni harness is that the coordinator's provider decides.
 
