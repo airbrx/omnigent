@@ -170,7 +170,7 @@ def test_a_binding_parses_and_builds_its_mcp_url(
         ),
     )
     (b,) = eva_config.bindings()
-    assert b.mcp_url() == "https://eva.airbrx.ai/mcp"
+    assert b.mcp_url() == "https://eva.airbrx.ai/mcp/"
     assert b.fixture is False
 
 
