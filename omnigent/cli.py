@@ -1574,7 +1574,17 @@ def _preregister_agent(  # type: ignore[explicit-any]  # agent_store / artifact_
 
         # Validate via the materialized directory directly — cheaper
         # than round-tripping through extract.
-        spec = load(bundle_dir)
+        #
+        # expand_env=False because this call exists to read ``spec.name`` and
+        # to reject a malformed bundle, and neither needs a secret. Expanding
+        # here made the coordinator require every registered agent's
+        # credentials in its OWN environment, which took omnigent.airbrx.ai
+        # down: Eva's bundle names ${OUTREACH_MCP_TOKEN}, that token lives on
+        # the execution host by design, and startup refused the bundle it was
+        # only trying to learn the name of. The artifact stored below is the
+        # unexpanded tarball either way, and the runner expands it against its
+        # own environment, so nothing downstream loses a value by this.
+        spec = load(bundle_dir, expand_env=False)
 
     if spec.name is None:
         click.echo(f"  warning: {agent_source} has no name, skipping")
@@ -4370,7 +4380,15 @@ def server(
     from omnigent.airbrx.eva.package import bundle_root as eva_bundle
 
     if eva_bindings():
-        _preregister_agent(eva_bundle(), agent_store, artifact_store, agent_cache)
+        # A failed registration must cost Eva her place in the drawer and
+        # nothing else. She is one agent on a coordinator that also serves
+        # Iris and every ordinary session, and twice in one night a problem
+        # with her configuration crash-looped the whole server instead. The
+        # operator still gets the reason, in the log, on a running box.
+        try:
+            _preregister_agent(eva_bundle(), agent_store, artifact_store, agent_cache)
+        except Exception as exc:  # noqa: BLE001 - one agent must not take the server down
+            click.echo(f"  warning: Eva is bound but did not register: {exc}", err=True)
 
     # Managed sandbox hosts (host_type="managed" sessions): parse the
     # config's `sandbox:` section up front so an operator typo stops
