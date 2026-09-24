@@ -147,10 +147,32 @@ own token and a runner must receive only its own session's. The durable form is
 safe for the reason that file already states: there is one live runner per
 session.
 
-The bridge process dies with the shell that started it, and Eva is then in the
-drawer with no runner. A LaunchAgent whose `ProgramArguments` is the wrapper is
-the durable way to keep it up, and that plist carries no secret because the
-wrapper reads the keychain itself.
+The bridge runs as a user LaunchAgent on the Air, `ai.omnigent.eva-host`
+(`~/Library/LaunchAgents/ai.omnigent.eva-host.plist`, `KeepAlive`,
+`RunAtLoad`). It runs `~/.omnigent-eva-host/eva_host.sh`, which reads
+`keychain:eva-outreach-token` at start and execs `omnigent host --server
+https://omnigent.airbrx.ai --non-interactive --auto-upgrade` under the identity
+in `~/.omnigent-eva-host/host_id` (`f501802f3f0c4d22a8b1c64763cef4e1`). Neither
+the plist nor the script holds a secret; the plist's environment is `HOME`,
+`USER`, `LC_CTYPE` and `PATH` and nothing else, and the keychain read works
+from launchd without a prompt because the same python binary stored the entry.
+
+Rotate the token by storing a new value under the same name, then
+`launchctl kickstart -k gui/$UID/ai.omnigent.eva-host`. Stop it with
+`launchctl bootout gui/$UID/ai.omnigent.eva-host`. Its log is
+`~/.omnigent-eva-host/data/logs/launchd.log`.
+
+**A LaunchAgent lives in the user's GUI domain.** It survives a Claude session
+ending, and it stops at logout, and it does not start after a reboot until
+Abram logs in. So the bridge is up whenever he is logged in, which is not the
+same as always. Always would be a LaunchDaemon, a different set of tradeoffs,
+and his call.
+
+**What the bridge does not make durable is the outreach app itself.** It runs
+on the Air on port 8000 from a shell, and if that shell ends Eva has a host and
+no app, which presents as tools that fail rather than an agent that is missing.
+A LaunchAgent for the app is the same shape, a wrapper sourcing the runtime env
+file with no secret in the plist, and it is not written yet.
 
 ## Rollout, in order, with the owner of each step
 
@@ -242,7 +264,8 @@ correctly reported `healthy: true` with `carries_crm_data: null` and
 
 **Bound on production 2026-09-24 00:46Z** to the Air's bridge host. A
 production `list_pool` returned 115 real leads with no fixtures, in session
-`b3ea0e63bcd646f68d1c6c1b7dd3e45b`. The CRM sync itself has still never run,
+`b3ea0e63bcd646f68d1c6c1b7dd3e45b`, and again through the launchd bridge in
+`dc1e70f46a974cc4a88a2f178a95cdc5` after the session-bound process was stopped. The CRM sync itself has still never run,
 and that is reported as its own field rather than folded into the readiness
 answer.
 
