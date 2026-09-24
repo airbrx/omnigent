@@ -177,15 +177,16 @@ with its own virtualenv. Update it with `git pull --ff-only && uv sync --frozen`
 in that clone, then `launchctl kickstart -k gui/$UID/ai.airbrx.outreach-app`.
 Its log is `~/.airbrx-outreach-app-logs/launchd.log`.
 
-Its environment comes from a `0600` copy of the runtime env file at
-`~/.airbrx-outreach-app/.env`, gitignored, because a launchd agent cannot read
-`~/Documents`. **After editing the file in Documents, re-copy it with
-`install -m 600` and kickstart, or the app keeps the old values silently.**
-That silence is the problem: a credential changed in the file a person knows
-about, an app still using the previous one, and no error anywhere to say so.
-Making it one file instead of two is an open decision for Abram, and it is his
-to make because his own bring-up command and at least one other session on that
-Mac read the path in Documents.
+Its environment is the canonical runtime env file at
+`~/.airbrx-outreach-app/.env` (`0600`), and the old path under `~/Documents` is
+a symlink to it, because a launchd agent cannot read `~/Documents`. Edit either
+path, then kickstart.
+
+It was briefly a copy rather than a symlink, and that was worth correcting
+quickly: editing the file a person knows about while the app reads a different
+one leaves the app on the old values with no error anywhere to say so. That is
+the same shape as the MCP token silently replaced three times in one day, and
+worse, because there is no 401 to announce it. One file cannot drift.
 
 Like the bridge, this agent lives in the GUI domain: up while Abram is logged
 in, not after a reboot until he logs in.
