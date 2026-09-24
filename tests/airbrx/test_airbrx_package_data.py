@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import fnmatch
 import pathlib
-import tomllib
 
 import pytest
+import tomllib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 AIRBRX = REPO_ROOT / "omnigent" / "airbrx"
