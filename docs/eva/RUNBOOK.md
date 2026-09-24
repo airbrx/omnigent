@@ -121,13 +121,66 @@ server. It touches only `/etc/omnigent/eva.json` and the one
 With no bindings, Eva is entirely inert: not registered, catalog empty,
 readiness 404. Unbinding is therefore the rollback, and it needs no deploy.
 
+## The token bridge, and why it is a bridge
+
+Nothing yet turns the binding's `token_ref` into the `OUTREACH_MCP_TOKEN` the
+runner expands. The reference is parsed, validated, stored and reported, and
+until 2026-09-24 nothing resolved it, which is why every attempt to run Eva
+ended in a 401 on a literal `${OUTREACH_MCP_TOKEN}`.
+`omnigent/airbrx/eva/runtime.py` now does the resolution; it is not yet wired
+into a runner launch.
+
+Tonight's bridge on the Air, which is what makes the production binding work:
+a second host process with its own identity (`OMNIGENT_HOST_ID` /
+`OMNIGENT_HOST_NAME`, `OMNIGENT_DATA_DIR` holding a copy of
+`auth_tokens.json`), started by a wrapper that reads
+`keychain:eva-outreach-token` at start, exports
+`OUTREACH_MCP_URL=http://127.0.0.1:8000/mcp/` and `OUTREACH_MCP_TOKEN`, sets
+`OMNIGENT_RUNNER_ENV_PASSTHROUGH=OUTREACH_MCP_URL,OUTREACH_MCP_TOKEN`, and
+execs `omnigent host --server https://omnigent.airbrx.ai`. No file and no plist
+holds the token.
+
+**This is a bridge, not the design.** A host-wide variable is right for one
+developer on one Mac and wrong for the hosted product, where each rep has their
+own token and a runner must receive only its own session's. The durable form is
+`host/connect.py` resolving the binding per session at runner launch, which is
+safe for the reason that file already states: there is one live runner per
+session.
+
+The bridge runs as a user LaunchAgent on the Air, `ai.omnigent.eva-host`
+(`~/Library/LaunchAgents/ai.omnigent.eva-host.plist`, `KeepAlive`,
+`RunAtLoad`). It runs `~/.omnigent-eva-host/eva_host.sh`, which reads
+`keychain:eva-outreach-token` at start and execs `omnigent host --server
+https://omnigent.airbrx.ai --non-interactive --auto-upgrade` under the identity
+in `~/.omnigent-eva-host/host_id` (`f501802f3f0c4d22a8b1c64763cef4e1`). Neither
+the plist nor the script holds a secret; the plist's environment is `HOME`,
+`USER`, `LC_CTYPE` and `PATH` and nothing else, and the keychain read works
+from launchd without a prompt because the same python binary stored the entry.
+
+Rotate the token by storing a new value under the same name, then
+`launchctl kickstart -k gui/$UID/ai.omnigent.eva-host`. Stop it with
+`launchctl bootout gui/$UID/ai.omnigent.eva-host`. Its log is
+`~/.omnigent-eva-host/data/logs/launchd.log`.
+
+**A LaunchAgent lives in the user's GUI domain.** It survives a Claude session
+ending, and it stops at logout, and it does not start after a reboot until
+Abram logs in. So the bridge is up whenever he is logged in, which is not the
+same as always. Always would be a LaunchDaemon, a different set of tradeoffs,
+and his call.
+
+**What the bridge does not make durable is the outreach app itself.** It runs
+on the Air on port 8000 from a shell, and if that shell ends Eva has a host and
+no app, which presents as tools that fail rather than an agent that is missing.
+A LaunchAgent for the app is the same shape, a wrapper sourcing the runtime env
+file with no secret in the plist, and it is not written yet.
+
 ## Rollout, in order, with the owner of each step
 
 | # | Step | Who |
 |---|---|---|
 | 1 | The outreach app holds real CRM rows and no fixtures: `leads.total > 0` and `leads.fixture == 0` on its `/readyz`, verified on the **direct** warehouse route, not through the gateway. An import counts; `sync_runs` is reported beside it and is a separate fact. | the sync session |
 | 2 | The outreach app running on the execution host named by `host_id`, at `http://127.0.0.1:8000`, with that host online against the coordinator. No container on `i-02eb2f52439574844` and no DNS: neither is needed, and `eva.airbrx.ai` is not planned. | Abram |
-| 3 | `aws sso login --profile airbrx-prod`, then `scripts/eva/configure_eva_coordinator.sh`. | **Abram**, interactive |
+| 3 | **Pull `main` first**, then `aws sso login --profile airbrx-prod`, then `scripts/eva/configure_eva_coordinator.sh`. The binding shape changed on 2026-09-22 and a stale copy wrote a binding the deployed code refused, which crash-looped the coordinator. | **Abram**, interactive |
 | 4 | Merge to `omnigent-airbrx-server`. **This deploys production**, via `.github/workflows/deploy-omnigent-airbrx.yml`, SSM to the one box. There is no staging. | **Abram's call** |
 | 5 | Acceptance below. | anyone |
 
@@ -209,7 +262,16 @@ Readiness verified against the live outreach app on `127.0.0.1:8000`, where it
 correctly reported `healthy: true` with `carries_crm_data: null` and
 `sheets: "not configured"`.
 
-**Not done:** no binding exists on any coordinator, so Eva is inert in
-production. The outreach app on Abram's Mac holds 115 real leads and no
-fixtures; the CRM sync itself has still never run, and that is reported as its
-own field rather than folded into the readiness answer.
+**Bound on production 2026-09-24 00:46Z** to the Air's bridge host. A
+production `list_pool` returned 115 real leads with no fixtures, in session
+`b3ea0e63bcd646f68d1c6c1b7dd3e45b`, and again through the launchd bridge in
+`dc1e70f46a974cc4a88a2f178a95cdc5` after the session-bound process was stopped. The CRM sync itself has still never run,
+and that is reported as its own field rather than folded into the readiness
+answer.
+
+**Two coordinator outages the same night**, each a few minutes, each fixed by
+the rollback above. The first: a stale copy of the binding script wrote a
+binding with no `host_id`, which the deployed code refuses. The second:
+registration expanded the bundle at startup and the coordinator has no
+`OUTREACH_MCP_TOKEN`, by design. Both crash-looped the server rather than
+disabling one agent, which PR #68 changes.
