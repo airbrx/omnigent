@@ -518,3 +518,92 @@ def test_replace_swaps_spec(
     # Subsequent load() returns the new spec from memory cache
     loaded_again = agent_cache.load("agent-5", loc_v2)
     assert loaded_again.spec is loaded_v2.spec
+
+
+# --------------------------------------------------------------------------
+# env_expansion: runner, and the expand_env-keyed memory tier
+# --------------------------------------------------------------------------
+
+_RUNNER_ONLY_VAR = "OMNIGENT_TEST_CACHE_RUNNER_ONLY_TOKEN"
+
+
+def _header_bundle(env_expansion: str | None) -> dict[str, str]:
+    config: dict[str, object] = {
+        "spec_version": 1,
+        "name": "test-agent",
+        "executor": {"type": "omnigent", "config": {"harness": "claude-sdk"}},
+        "tools": {
+            "remote": {
+                "type": "mcp",
+                "url": "http://127.0.0.1:9/mcp/",
+                "headers": {"Authorization": "Bearer ${" + _RUNNER_ONLY_VAR + "}"},
+            }
+        },
+    }
+    if env_expansion is not None:
+        config["env_expansion"] = env_expansion
+    return {"config.yaml": yaml.dump(config)}
+
+
+def _auth_header(loaded) -> str:
+    (server,) = [s for s in loaded.spec.mcp_servers if s.name == "remote"]
+    return server.headers["Authorization"]
+
+
+def test_an_operator_load_of_a_runner_only_bundle_needs_no_server_variable(
+    agent_cache: AgentCache, artifact_store: LocalArtifactStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every server-side site passes expand_env=True for an operator agent."""
+    monkeypatch.delenv(_RUNNER_ONLY_VAR, raising=False)
+    _store_bundle(artifact_store, "ag_ro/v1", _header_bundle("runner"))
+    loaded = agent_cache.load("ag_ro", "ag_ro/v1", expand_env=True)
+    assert _auth_header(loaded) == "Bearer ${" + _RUNNER_ONLY_VAR + "}"
+    # And again from each tier: memory, then disk after the memory tier is cleared.
+    assert _auth_header(agent_cache.load("ag_ro", "ag_ro/v1", expand_env=True)).endswith("}")
+    agent_cache._specs.clear()
+    assert _auth_header(agent_cache.load("ag_ro", "ag_ro/v1", expand_env=True)).endswith("}")
+
+
+def test_replace_honors_the_declaration_too(
+    agent_cache: AgentCache, artifact_store: LocalArtifactStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cli.py and PUT /v1/agents re-register through replace(expand_env=True)."""
+    monkeypatch.delenv(_RUNNER_ONLY_VAR, raising=False)
+    data = _store_bundle(artifact_store, "ag_ro/v2", _header_bundle("runner"))
+    loaded = agent_cache.replace("ag_ro", "ag_ro/v2", data, expand_env=True)
+    assert _auth_header(loaded) == "Bearer ${" + _RUNNER_ONLY_VAR + "}"
+
+
+def test_an_ordinary_operator_bundle_is_still_expanded_by_the_cache(
+    agent_cache: AgentCache, artifact_store: LocalArtifactStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(_RUNNER_ONLY_VAR, "value")
+    _store_bundle(artifact_store, "ag_op/v1", _header_bundle(None))
+    assert _auth_header(agent_cache.load("ag_op", "ag_op/v1", expand_env=True)) == "Bearer value"
+
+
+def test_the_memory_tier_returns_the_parse_that_was_asked_for(
+    agent_cache: AgentCache, artifact_store: LocalArtifactStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keyed on the id alone, the first caller's expand_env decided every later one's."""
+    monkeypatch.setenv(_RUNNER_ONLY_VAR, "value")
+    _store_bundle(artifact_store, "ag_op/v1", _header_bundle(None))
+    unexpanded = agent_cache.load("ag_op", "ag_op/v1", expand_env=False)
+    expanded = agent_cache.load("ag_op", "ag_op/v1", expand_env=True)
+    assert _auth_header(unexpanded) == "Bearer ${" + _RUNNER_ONLY_VAR + "}"
+    assert _auth_header(expanded) == "Bearer value"
+    # And the reverse order, on a fresh cache entry.
+    agent_cache.evict("ag_op")
+    assert _auth_header(agent_cache.load("ag_op", "ag_op/v1", expand_env=True)) == "Bearer value"
+    assert _auth_header(agent_cache.load("ag_op", "ag_op/v1", expand_env=False)).endswith("}")
+
+
+def test_evict_drops_both_parses(
+    agent_cache: AgentCache, artifact_store: LocalArtifactStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(_RUNNER_ONLY_VAR, "value")
+    _store_bundle(artifact_store, "ag_op/v1", _header_bundle(None))
+    agent_cache.load("ag_op", "ag_op/v1", expand_env=False)
+    agent_cache.load("ag_op", "ag_op/v1", expand_env=True)
+    agent_cache.evict("ag_op")
+    assert not [k for k in agent_cache._specs if k[0] == "ag_op"]

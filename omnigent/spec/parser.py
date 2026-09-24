@@ -279,6 +279,7 @@ def parse(root: Path, *, expand_env: bool = True) -> AgentSpec:
     # granting named users; ``public`` also allows ``__public__``
     # anonymous read.
     agent_session_sharing = _parse_share_policy(raw.get("agent_session_sharing"))
+    env_expansion = _parse_env_expansion(raw.get("env_expansion"))
 
     # Honor ``prompt:`` as the legacy alias for ``instructions:`` (per
     # ``_OMNIGENT_SYSTEM_PROMPT_KEYS``); ``instructions:`` wins if both set.
@@ -316,6 +317,7 @@ def parse(root: Path, *, expand_env: bool = True) -> AgentSpec:
         timers=timers,
         spawn=spawn,
         agent_session_sharing=agent_session_sharing,
+        env_expansion=env_expansion,
     )
 
 
@@ -2140,6 +2142,60 @@ def _parse_share_policy(raw: object) -> SharePolicy:
             f"top-level agent_session_sharing: must be one of {valid}; got {raw!r}",
             code=ErrorCode.INVALID_INPUT,
         ) from None
+
+
+#: Values of the top-level ``env_expansion:`` key. See
+#: :attr:`omnigent.spec.types.AgentSpec.env_expansion`.
+ENV_EXPANSION_EVERYWHERE = "everywhere"
+ENV_EXPANSION_RUNNER = "runner"
+_ENV_EXPANSION_VALUES = (ENV_EXPANSION_EVERYWHERE, ENV_EXPANSION_RUNNER)
+
+
+def _parse_env_expansion(raw: object) -> str:
+    """
+    Parse the top-level YAML ``env_expansion:`` field.
+
+    An unrecognized value fails loud rather than defaulting: a typo that
+    silently meant ``everywhere`` would put the bundle back on the path
+    that refuses it, or invites a secret into the server environment.
+
+    :param raw: The raw YAML value, e.g. ``"runner"``. ``None`` means the
+        default, ``"everywhere"``.
+    :returns: ``"everywhere"`` or ``"runner"``.
+    :raises OmnigentError: For any other value.
+    """
+    if raw is None:
+        return ENV_EXPANSION_EVERYWHERE
+    if raw in _ENV_EXPANSION_VALUES:
+        return str(raw)
+    valid = ", ".join(repr(v) for v in _ENV_EXPANSION_VALUES)
+    raise OmnigentError(
+        f"top-level env_expansion: must be one of {valid}; got {raw!r}",
+        code=ErrorCode.INVALID_INPUT,
+    )
+
+
+def declared_env_expansion(root: Path) -> str:
+    """
+    Read ``env_expansion:`` from ``root/config.yaml`` without parsing the spec.
+
+    Used by :func:`omnigent.spec.load` on server-side loads to decide whether
+    to expand at all, which has to be known before :func:`parse` runs,
+    because :func:`parse` is where an unset variable raises. A root with no
+    ``config.yaml`` (the omnigent single-file YAML shape) reports the default;
+    that path never expands anyway.
+
+    :param root: An extracted bundle directory.
+    :returns: ``"everywhere"`` or ``"runner"``.
+    :raises OmnigentError: If the declared value is not recognized.
+    """
+    config_path = root / "config.yaml"
+    if not config_path.exists():
+        return ENV_EXPANSION_EVERYWHERE
+    raw = yaml.load(config_path.read_text(), Loader=_ConfigYamlLoader)
+    if not isinstance(raw, dict):
+        return ENV_EXPANSION_EVERYWHERE
+    return _parse_env_expansion(raw.get("env_expansion"))
 
 
 def _parse_skills_filter(raw: object) -> str | list[str]:
