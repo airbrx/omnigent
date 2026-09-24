@@ -168,11 +168,32 @@ Abram logs in. So the bridge is up whenever he is logged in, which is not the
 same as always. Always would be a LaunchDaemon, a different set of tradeoffs,
 and his call.
 
-**What the bridge does not make durable is the outreach app itself.** It runs
-on the Air on port 8000 from a shell, and if that shell ends Eva has a host and
-no app, which presents as tools that fail rather than an agent that is missing.
-A LaunchAgent for the app is the same shape, a wrapper sourcing the runtime env
-file with no secret in the plist, and it is not written yet.
+**The outreach app the bridge talks to** runs on the same Mac as the user
+LaunchAgent `ai.airbrx.outreach-app`
+(`~/Library/LaunchAgents/ai.airbrx.outreach-app.plist`, `KeepAlive`,
+`RunAtLoad`). It runs `~/.omnigent-eva-host/outreach_app.sh`, which starts
+uvicorn on `127.0.0.1:8000` from a clone of `main` at `~/.airbrx-outreach-app`
+with its own virtualenv. Update it with `git pull --ff-only && uv sync --frozen`
+in that clone, then `launchctl kickstart -k gui/$UID/ai.airbrx.outreach-app`.
+Its log is `~/.airbrx-outreach-app-logs/launchd.log`.
+
+Its environment is the canonical runtime env file at
+`~/.airbrx-outreach-app/.env` (`0600`), and the old path under `~/Documents` is
+a symlink to it, because a launchd agent cannot read `~/Documents`. Edit either
+path, then kickstart.
+
+It was briefly a copy rather than a symlink, and that was worth correcting
+quickly: editing the file a person knows about while the app reads a different
+one leaves the app on the old values with no error anywhere to say so. That is
+the same shape as the MCP token silently replaced three times in one day, and
+worse, because there is no 401 to announce it. One file cannot drift.
+
+Like the bridge, this agent lives in the GUI domain: up while Abram is logged
+in, not after a reboot until he logs in.
+
+Without the app, Eva has a host and no tools, which presents as calls that fail
+rather than an agent that is missing. That is the more confusing of the two
+failures, so check `curl 127.0.0.1:8000/readyz` before reaching for the token.
 
 ## Rollout, in order, with the owner of each step
 
@@ -265,7 +286,9 @@ correctly reported `healthy: true` with `carries_crm_data: null` and
 **Bound on production 2026-09-24 00:46Z** to the Air's bridge host. A
 production `list_pool` returned 115 real leads with no fixtures, in session
 `b3ea0e63bcd646f68d1c6c1b7dd3e45b`, and again through the launchd bridge in
-`dc1e70f46a974cc4a88a2f178a95cdc5` after the session-bound process was stopped. The CRM sync itself has still never run,
+`dc1e70f46a974cc4a88a2f178a95cdc5` after the session-bound process was stopped,
+and again in `e498122ffb334cea99fb67d8e39369e4` with both the bridge and the app
+running as LaunchAgents. The CRM sync itself has still never run,
 and that is reported as its own field rather than folded into the readiness
 answer.
 
@@ -275,3 +298,13 @@ binding with no `host_id`, which the deployed code refuses. The second:
 registration expanded the bundle at startup and the coordinator has no
 `OUTREACH_MCP_TOKEN`, by design. Both crash-looped the server rather than
 disabling one agent, which PR #68 changes.
+
+**The coordinator expands the bundle in more than one place**, and PR #68 only
+fixed one of them. Registration no longer needs the credentials; creating a
+session still does. With the placeholders removed the server started cleanly
+and then returned 400 on every new Eva chat, which is a worse failure than the
+crash loop because the service looks healthy. The two `OUTREACH_MCP_` lines in
+`/etc/omnigent/server.env` are therefore load bearing and stay until the
+session-create path validates without expanding too. The regression test that
+would have caught this creates a session for an agent whose bundle names a
+variable nobody has set.

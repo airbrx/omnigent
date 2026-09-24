@@ -457,6 +457,12 @@ include = ["omnigent*"]
 
 [tool.setuptools.package-data]
 "omnigent.airbrx.iris" = ["*.zip", "*.json", "*.js"]
+# Eva's bundle is config.yaml and AGENTS.md under a plain directory, not a
+# package, so packages.find does not see it and a wheel shipped without this
+# line has her Python modules and no bundle. bundle_root() then raises and a
+# host installed from install.sh cannot register her at all. Production runs
+# from source, which is why this survived a deploy.
+"omnigent.airbrx.eva" = ["bundle/**/*"]
 "omnigent.db" = ["alembic.ini"]
 "omnigent.db.migrations" = ["script.py.mako"]
 "omnigent.resources.examples" = ["*.yaml", "*.sh", "debby/**/*", "polly/**/*"]

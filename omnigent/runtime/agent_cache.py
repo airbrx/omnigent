@@ -48,7 +48,11 @@ class AgentCache:
         """
         self._artifact_store = artifact_store
         self._cache_dir = cache_dir
-        self._specs: dict[str, AgentSpec] = {}
+        # Keyed on (agent id, the expand_env the caller asked for). Keying on
+        # the id alone meant the spec was parsed with the expand_env of
+        # whichever caller populated it first, and every later caller got
+        # that parse regardless of what it asked for.
+        self._specs: dict[tuple[str, bool], AgentSpec] = {}
 
     def _cache_path(self, agent_id: str, *, suffix: str = "") -> Path:
         """Return a direct child of the cache root for an agent id."""
@@ -103,18 +107,17 @@ class AgentCache:
         """
         workdir = self._cache_path(agent_id)
 
-        # Tier 1: in-memory spec. The cached spec was parsed with the
-        # *expand_env* value of whichever caller populated it first.
-        # That is consistent across callers because *expand_env* is
-        # derived from the agent's immutable ``session_id`` provenance,
-        # which never changes for a given ``agent_id``.
-        if agent_id in self._specs:
-            return LoadedAgent(spec=self._specs[agent_id], workdir=workdir)
+        # Tier 1: in-memory spec, keyed on the expand_env asked for.
+        key = (agent_id, expand_env)
+        if key in self._specs:
+            return LoadedAgent(spec=self._specs[key], workdir=workdir)
 
         # Tier 2: disk cache (directory already extracted)
         if workdir.is_dir():
-            spec = load_spec(workdir, expand_env=expand_env, prune_invalid_sub_agents=True)
-            self._specs[agent_id] = spec
+            spec = load_spec(
+                workdir, expand_env=expand_env, prune_invalid_sub_agents=True, server_side=True
+            )
+            self._specs[key] = spec
             return LoadedAgent(spec=spec, workdir=workdir)
 
         # Cache miss — download bundle, write to temp file, extract
@@ -166,12 +169,15 @@ class AgentCache:
                 dest=staging_dir,
                 expand_env=expand_env,
                 prune_invalid_sub_agents=True,
+                server_side=True,
             )
         finally:
             tmp_path.unlink()
 
-        # Swap in-memory entry (atomic dict assignment)
-        self._specs[agent_id] = spec
+        # Swap in-memory entries. The new bundle invalidates both parses of
+        # the old one; the other expand_env variant is re-parsed on demand.
+        self._specs.pop((agent_id, not expand_env), None)
+        self._specs[(agent_id, expand_env)] = spec
 
         # Replace disk directory: remove old, rename staging into place
         if workdir.is_dir():
@@ -189,7 +195,8 @@ class AgentCache:
             e.g. ``"ag_abc123"``.
         """
         workdir = self._cache_path(agent_id)
-        self._specs.pop(agent_id, None)
+        self._specs.pop((agent_id, True), None)
+        self._specs.pop((agent_id, False), None)
         if workdir.is_dir():
             shutil.rmtree(workdir)
 
@@ -240,6 +247,7 @@ class AgentCache:
                     dest=staging_dir,
                     expand_env=expand_env,
                     prune_invalid_sub_agents=True,
+                    server_side=True,
                 )
             finally:
                 tmp_path.unlink()
@@ -260,5 +268,5 @@ class AgentCache:
                 raise
             shutil.rmtree(staging_dir, ignore_errors=True)
 
-        self._specs[agent_id] = spec
+        self._specs[(agent_id, expand_env)] = spec
         return LoadedAgent(spec=spec, workdir=workdir)
