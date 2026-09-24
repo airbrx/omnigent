@@ -35,10 +35,18 @@ _ALLOWED = {"users", "host_id", "base_url", "token_ref", "label", "fixture"}
 class Binding:
     #: Omnigent user ids allowed to open this Eva. The authorization decision.
     users: tuple[str, ...]
-    #: The execution host that runs Eva's turns, from ``/v1/hosts``. Her MCP
-    #: client runs here, so ``base_url`` is resolved from THIS machine and not
-    #: from the coordinator. Bind one host per label: the selection must be
-    #: unambiguous, not redundant.
+    #: The execution host that runs Eva's turns, from ``/v1/hosts``, or empty.
+    #:
+    #: This field answers one question: **whose loopback is ``base_url``?**
+    #: Named, and her MCP client runs on that host, so the app is resolved from
+    #: THAT machine. Empty, and the coordinator dials the app itself, which is
+    #: the case when the two run on the same box.
+    #:
+    #: Both are real deployments, and this file has been wrong about that in
+    #: both directions. It first omitted the field, which removed the mechanism
+    #: that lets Iris work without public infrastructure. It then required the
+    #: field, which refuses the hosted shape where no execution host exists.
+    #: Bind one host per label: the selection must be unambiguous, not redundant.
     host_id: str
     #: The outreach app as the EXECUTION HOST sees it. Normally
     #: ``http://127.0.0.1:8000`` because the app runs on that same Mac. A public
@@ -54,7 +62,14 @@ class Binding:
     fixture: bool = False
 
     def mcp_url(self) -> str:
-        return self.base_url.rstrip("/") + "/mcp"
+        """The MCP endpoint, with the trailing slash the transport requires.
+
+        The outreach app mounts streamable HTTP at ``/mcp/`` and answers 307 to
+        ``/mcp``. A POST that does not follow that redirect fails in a way that
+        reads as an authentication problem, which is how an hour went missing
+        once already.
+        """
+        return self.base_url.rstrip("/") + "/mcp/"
 
     def is_host_local(self) -> bool:
         """Is ``base_url`` only meaningful on the execution host?
@@ -63,7 +78,15 @@ class Binding:
         cannot probe a loopback address belonging to another machine. It reports
         that honestly rather than reporting a connection failure as if the app
         were down.
+
+        A loopback address is only unreachable from here when it belongs to
+        another machine, and ``host_id`` is what says that it does. Without one
+        the loopback is the coordinator's own and the probe is the real answer,
+        so deciding from the URL alone would make readiness go blind on exactly
+        the deployment where it works best.
         """
+        if not self.host_id:
+            return False
         return any(h in self.base_url for h in ("127.0.0.1", "localhost", "::1"))
 
 
@@ -88,12 +111,9 @@ def bindings() -> tuple[Binding, ...]:
         users = tuple(row["users"])
         if not users:
             raise ValueError("An Eva binding with no users can be opened by nobody")
+        # Optional on purpose; see the field's note. Empty means the
+        # coordinator reaches the app itself.
         host_id = str(row.get("host_id", "")).strip()
-        if not host_id:
-            raise ValueError(
-                "An Eva binding needs a host_id: her MCP client runs on the execution "
-                "host, which is what lets her reach a local outreach app without DNS"
-            )
         base_url = str(row["base_url"]).strip()
         if not base_url.startswith(("http://", "https://")):
             raise ValueError("Eva binding base_url must be an absolute http(s) URL")
