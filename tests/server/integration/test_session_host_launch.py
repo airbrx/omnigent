@@ -156,7 +156,10 @@ async def _connect_host(app: FastAPI) -> ApplicationCommunicator:
     path = f"/v1/hosts/{_HOST_ID}/tunnel"
     comm = ApplicationCommunicator(app, _websocket_scope(path))
     await comm.send_input({"type": "websocket.connect"})
-    accepted = await comm.receive_output(timeout=1.0)
+    # Must exceed the server's 5 s host.stat timeout (_STAT_TIMEOUT_S): a CI
+    # runner slow enough to stall this accept stalls the stat too, and the test
+    # must not give up on the server before the server gives up on the host.
+    accepted = await comm.receive_output(timeout=5.0)
     assert accepted["type"] == "websocket.accept"
 
     hello = encode_host_frame(
@@ -222,8 +225,12 @@ async def _serve_one_launch(
     """
     # Bounded so a routing bug can't hang the test: stat + launch are
     # 2 frames, the rest of the budget absorbs interleaved pings.
+    # Per-frame budget must exceed the server's 5 s host.stat timeout
+    # (_STAT_TIMEOUT_S, routes/_workspace_validation.py): a slow CI runner must
+    # trip the server's deadline, not this wait (gate runs 35694698832 on
+    # 22 Sep and 36098542835 on 24 Sep 2026 both timed out here, both flakes).
     for _ in range(40):
-        output = await comm.receive_output(timeout=3.0)
+        output = await comm.receive_output(timeout=15.0)
         if output["type"] != "websocket.send":
             continue
         frame = decode_host_frame(output["text"])
