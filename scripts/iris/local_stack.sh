@@ -107,23 +107,30 @@ SRV_PID=$!
 until curl -fsS -m 2 http://127.0.0.1:$PORT/api/version >/dev/null 2>&1; do sleep 1; done
 
 if [[ -n "${OMNIGENT_EVA_CONFIG:-}" ]]; then
-  # Eva's host: its own identity, data dir and config home, so IRIS's host is
-  # never handed her token. It logs to its own file and starts AFTER the
+  # Eva's host: its own identity, data dir and config home, so IRIS's host
+  # never resolves her token. It logs to its own file and starts AFTER the
   # host_id rewrite above, which takes the last id out of $STATE/host.log and
   # writes it to every Iris binding — if Eva's host shared that log, Iris's
   # tenants would be repointed at a host that has neither their workspaces nor
   # their PAT.
   #
-  # BRIDGE, not the design: one token for every runner this host launches,
-  # which is right for one person on one Mac and wrong for anything shared.
-  # The token is read from the login keychain and lives only in this process's
-  # environment; it is never written to disk, never passed as an argument.
+  # The token never enters this process. Since omnigent #78/#80/#81 the
+  # coordinator sends a runner launch frame carrying OUTREACH_MCP_URL as a
+  # plain value (from the binding's base_url, omnigent/airbrx/eva/runtime.py)
+  # and OUTREACH_MCP_TOKEN as the secret REFERENCE keychain:eva-outreach-token;
+  # the host resolves that reference from its own keychain at launch, for that
+  # one runner only, and only if the reference is named in
+  # OMNIGENT_HOST_SECRET_REFS (omnigent/host/connect.py, resolve_agent_secret_env).
+  # OMNIGENT_RUNNER_ENV_PASSTHROUGH is gone with it: nothing here is forwarded
+  # host-wide any more. This is the design the RUNBOOK's "bridge" section
+  # points at, and it works on a shared host too because #81 sends the
+  # reference only for the host owner's own runners.
   if [[ ! -f "$EVA_HOME/host_id" ]]; then
     echo "· eva host SKIPPED: no host id at $EVA_HOME/host_id"
   else
     EVA_HOST_ID="$(cat "$EVA_HOME/host_id")"
-    EVA_TOKEN=$("$(dirname "$OMNI")/python" -c 'from omnigent.onboarding.provider_config import resolve_secret; print(resolve_secret("keychain:eva-outreach-token"))' 2>/dev/null || true)
-    if [[ -z "$EVA_TOKEN" ]]; then
+    # Presence check only: the value is never printed, captured or exported.
+    if ! "$(dirname "$OMNI")/python" -c 'import sys; from omnigent.onboarding.provider_config import resolve_secret; sys.exit(0 if resolve_secret("keychain:eva-outreach-token") else 1)' >/dev/null 2>&1; then
       # Say it and carry on. Eva listed with failing tools is a clearer state
       # than a stack refusing to start because one agent's secret is absent,
       # and Iris is unaffected either way.
@@ -144,13 +151,10 @@ EVAJSON
       OMNIGENT_HOST_NAME="$(hostname) (eva local)" \
       OMNIGENT_DATA_DIR="$EVA_HOME/data" \
       OMNIGENT_CONFIG_HOME="$EVA_HOME" \
-      OUTREACH_MCP_URL="http://127.0.0.1:8000/mcp/" \
-      OUTREACH_MCP_TOKEN="$EVA_TOKEN" \
-      OMNIGENT_RUNNER_ENV_PASSTHROUGH="OUTREACH_MCP_URL,OUTREACH_MCP_TOKEN" \
+      OMNIGENT_HOST_SECRET_REFS="keychain:eva-outreach-token" \
         "$OMNI" host --server "http://127.0.0.1:$PORT" --non-interactive \
           > "$STATE/eva-host.log" 2>&1 &
       EVA_HOST_PID=$!
-      unset EVA_TOKEN
     fi
   fi
 fi
