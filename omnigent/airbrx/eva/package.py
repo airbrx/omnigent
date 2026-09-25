@@ -45,3 +45,13 @@ def is_eva(spec: Any) -> bool:
     """
     name = getattr(spec, "name", None) or ""
     return bool(spec and (name == "eva" or name.startswith("eva (fork ")))
+
+
+def portrait_path() -> Path:
+    """Eva's avatar, a tracked asset rather than a member of an archive.
+
+    Iris's portrait ships inside her vendored source zip because she vendors
+    one. Eva does not, so hers lies in the tree next to the bundle it belongs
+    with, and `scripts/eva/make_portrait.py` regenerates it.
+    """
+    return Path(__file__).resolve().parent / "assets" / "eva-portrait.png"

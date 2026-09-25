@@ -389,6 +389,7 @@ def register_core_routes(
         host_id: str,
         workspace: str | None,
         harness: str | None,
+        agent_id: str | None = None,
     ) -> tuple[str, bool] | None:
         """
         Bind a just-created session to a caller-supplied host and launch.
@@ -438,6 +439,7 @@ def register_core_routes(
             encode_host_frame,
         )
         from omnigent.runner.identity import token_bound_runner_id
+        from omnigent.runtime.launch_env import collect as collect_launch_env
         from omnigent.server.routes._host_launch import resolve_host_launch
 
         target = await asyncio.to_thread(
@@ -473,12 +475,24 @@ def register_core_routes(
                 "schema constraint should have prevented this",
                 code=ErrorCode.INTERNAL_ERROR,
             )
+        # What this agent needs in its runner's environment, for this session
+        # only. Secret references travel and values do not: the host resolves
+        # them from its own store, so a credential belonging to one rep's
+        # machine never reaches this process. See omnigent.runtime.launch_env.
+        agent_name = None
+        if agent_id is not None:
+            agent_row = agent_store.get(agent_id)
+            agent_name = getattr(agent_row, "name", None) if agent_row is not None else None
+        launch_env = collect_launch_env(agent_name, user_id)
+
         launch_frame = encode_host_frame(
             HostLaunchRunnerFrame(
                 request_id=request_id,
                 binding_token=binding_token,
                 workspace=workspace,
                 session_id=session_id,
+                agent_env=launch_env.env or None,
+                agent_secret_env=launch_env.secret_refs or None,
                 # Lets the host refuse an unconfigured harness before
                 # spawning. None (agent not resolvable) skips the
                 # host-side check.
@@ -717,6 +731,7 @@ def register_core_routes(
                 # Already written by _create_session_from_existing_agent;
                 # only runner_id still needs the atomic set inside.
                 workspace=resp.workspace,
+                agent_id=conv.agent_id if conv is not None else None,
                 # Already canonical (see _resolve_harness).
                 harness=resp.harness,
             )

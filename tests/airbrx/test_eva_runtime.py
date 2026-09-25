@@ -14,10 +14,17 @@ but the two variables the bundle names.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from omnigent.airbrx.eva.config import Binding
-from omnigent.airbrx.eva.runtime import OUTREACH_TOKEN_VAR, OUTREACH_URL_VAR, session_env
+from omnigent.airbrx.eva.runtime import (
+    OUTREACH_TOKEN_VAR,
+    OUTREACH_URL_VAR,
+    launch_env,
+    session_env,
+)
 
 
 def _binding(**over: object) -> Binding:
@@ -125,3 +132,78 @@ def test_a_binding_without_a_host_id_is_resolved_the_same_way(
     env = session_env(_binding(host_id=""))
     assert env[OUTREACH_TOKEN_VAR] == "tok-live"
     assert env[OUTREACH_URL_VAR] == "http://127.0.0.1:8000/mcp/"
+
+
+def test_launch_env_hands_over_the_reference_and_not_the_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The coordinator must never hold Eva's bearer token.
+
+    This is the difference between :func:`launch_env` and :func:`session_env`
+    and the reason both exist: one resolves here, the other defers to the host
+    that actually has the secret.
+    """
+    monkeypatch.setenv(
+        "OMNIGENT_EVA_CONFIG_JSON",
+        json.dumps(
+            [
+                {
+                    "label": "live",
+                    "users": ["aerickson@airbrx.com"],
+                    "base_url": "http://127.0.0.1:8000",
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
+                    "token_ref": "keychain:eva-outreach-token",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "omnigent.airbrx.eva.runtime.bindings",
+        lambda: (_binding(),),
+    )
+
+    got = launch_env("eva", "aerickson@airbrx.com")
+
+    assert got is not None
+    assert got.env == {OUTREACH_URL_VAR: "http://127.0.0.1:8000/mcp/"}
+    assert got.secret_refs == {OUTREACH_TOKEN_VAR: "env:TEST_OUTREACH_TOKEN"}
+    # The token value appears nowhere in what crosses the wire.
+    assert "tok-live" not in str(got)
+
+
+def test_launch_env_declines_an_agent_that_is_not_eva() -> None:
+    assert launch_env("iris", "aerickson@airbrx.com") is None
+
+
+def test_launch_env_declines_an_anonymous_caller() -> None:
+    assert launch_env("eva", None) is None
+
+
+def test_launch_env_refuses_to_guess_between_two_bindings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two bindings for one user is what readiness answers with a 404.
+
+    Picking one here would silently send a rep's turn at the wrong app, which
+    is worse than a session that fails to launch and says why.
+    """
+    monkeypatch.setattr(
+        "omnigent.airbrx.eva.runtime.bindings",
+        lambda: (_binding(label="a"), _binding(label="b")),
+    )
+
+    assert launch_env("eva", "aerickson@airbrx.com") is None
+
+
+def test_launch_env_for_a_fixture_binding_carries_no_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "omnigent.airbrx.eva.runtime.bindings",
+        lambda: (_binding(fixture=True, token_ref=""),),
+    )
+
+    got = launch_env("eva", "aerickson@airbrx.com")
+
+    assert got is not None
+    assert got.secret_refs == {}
