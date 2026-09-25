@@ -59,7 +59,8 @@ different token.
 
 from __future__ import annotations
 
-from omnigent.airbrx.eva.config import Binding
+from omnigent.airbrx.eva.config import Binding, bindings
+from omnigent.runtime.launch_env import LaunchEnv
 
 #: The bundle's ``url:``. Named here so the bundle and the loader cannot drift
 #: apart silently; ``tests/airbrx/test_eva_bundle.py`` reads the bundle and
@@ -108,3 +109,43 @@ def session_env(binding: Binding) -> dict[str, str]:
 
     env[OUTREACH_TOKEN_VAR] = resolve_secret(binding.token_ref)
     return env
+
+
+def launch_env(agent_name: str, user_id: str | None) -> LaunchEnv | None:
+    """Eva's provider for :mod:`omnigent.runtime.launch_env`.
+
+    The difference from :func:`session_env` is where the token is resolved, and
+    it is the whole point. ``session_env`` resolves here, which is right only
+    when "here" is the machine holding the secret. This returns the *reference*
+    and lets the host resolve it, so the coordinator that builds the launch
+    request never holds Eva's bearer token and never can.
+
+    :param agent_name: The agent being launched. Anything but ``"eva"`` is not
+        ours and gets ``None``.
+    :param user_id: The acting user, matched against each binding's ``users``.
+    :returns: The URL as a value and the token as a reference, or ``None`` when
+        this user has no single unambiguous binding.
+
+    Ambiguity is declined rather than guessed. Two bindings for one user is the
+    same condition ``/v1/eva/readiness`` refuses with a 404: picking one would
+    silently send a rep's turn at the wrong app.
+    """
+    if agent_name != "eva" or user_id is None:
+        return None
+
+    candidates = [b for b in bindings() if user_id in b.users]
+    if len(candidates) != 1:
+        return None
+    binding = candidates[0]
+
+    env = {OUTREACH_URL_VAR: binding.mcp_url()}
+    if binding.fixture:
+        return LaunchEnv(env=env)
+
+    if not binding.token_ref:
+        raise ValueError(
+            "A live Eva binding needs a token_ref: without one she would reach a "
+            "real outreach app with no credential, which is the fixture shape "
+            "wearing a live label"
+        )
+    return LaunchEnv(env=env, secret_refs={OUTREACH_TOKEN_VAR: binding.token_ref})

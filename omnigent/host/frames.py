@@ -241,6 +241,16 @@ class HostLaunchRunnerFrame:
         :data:`HARNESS_NOT_CONFIGURED_ERROR_CODE` when not.
         ``None`` (older server, or no resolvable harness) skips
         the check — fail open.
+    :param agent_env: Plain, non-secret values this agent's runner needs in
+        its environment, e.g. ``{"OUTREACH_MCP_URL": "http://127.0.0.1:8000/mcp/"}``.
+        ``None`` means an older server did not send any.
+    :param agent_secret_env: Environment variable to secret *reference*, e.g.
+        ``{"OUTREACH_MCP_TOKEN": "keychain:eva-outreach-token"}``. The reference
+        travels and the value does not: the host resolves it from its own store
+        at launch, so the secret never crosses this wire and never exists on the
+        coordinator. The host refuses any name its owner has not allowed in
+        ``OMNIGENT_HOST_SECRET_REFS``, because a coordinator naming a secret is
+        a request rather than an instruction.
     """
 
     request_id: str
@@ -248,6 +258,8 @@ class HostLaunchRunnerFrame:
     workspace: str
     session_id: str | None = None
     harness: str | None = None
+    agent_env: dict[str, str] | None = None
+    agent_secret_env: dict[str, str] | None = None
 
 
 @dataclass
@@ -1178,6 +1190,8 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "workspace": frame.workspace,
                 "session_id": frame.session_id,
                 "harness": frame.harness,
+                "agent_env": frame.agent_env,
+                "agent_secret_env": frame.agent_secret_env,
             }
         )
     if isinstance(frame, HostLaunchRunnerResultFrame):
@@ -1708,6 +1722,33 @@ def _decode_harness_readiness(msg: _JsonObject) -> HostHarnessReadinessFrame:
     )
 
 
+def _optional_env_map(msg: _JsonObject, key: str) -> dict[str, str] | None:
+    """Decode an optional object of environment variable names to strings.
+
+    Absent or null gives ``None``, which is how an older server that sends
+    neither map is handled. A present value that is not an object of strings is
+    a protocol error rather than something to salvage: these values become a
+    runner's environment, and a half-decoded one would produce a runner that
+    starts and then fails on a variable nobody can see.
+
+    :param msg: Decoded frame object.
+    :param key: The field name, e.g. ``"agent_env"``.
+    :returns: The map, or ``None``.
+    :raises ValueError: If present and not an object of string to string.
+    """
+    raw = msg.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"{key} must be an object")
+    out: dict[str, str] = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise ValueError(f"{key} must map strings to strings")
+        out[name] = value
+    return out
+
+
 def _decode_launch_runner(msg: _JsonObject) -> HostLaunchRunnerFrame:
     """Decode a launch-runner frame.
 
@@ -1720,6 +1761,8 @@ def _decode_launch_runner(msg: _JsonObject) -> HostLaunchRunnerFrame:
         workspace=_required_str(msg, "workspace"),
         session_id=_optional_nullable_str(msg, "session_id"),
         harness=_optional_nullable_str(msg, "harness"),
+        agent_env=_optional_env_map(msg, "agent_env"),
+        agent_secret_env=_optional_env_map(msg, "agent_secret_env"),
     )
 
 

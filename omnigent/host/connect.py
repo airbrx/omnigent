@@ -21,7 +21,7 @@ import shlex
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, NoReturn, Protocol, SupportsIndex, SupportsInt, cast
@@ -923,6 +923,107 @@ HARNESS_CREDENTIAL_ENV_VARS: frozenset[str] = frozenset(
 # SDK knobs). Operator-controlled: the host owner names exactly what
 # their runners need; everything unnamed stays behind the allowlist.
 RUNNER_ENV_PASSTHROUGH_ENV_VAR: str = "OMNIGENT_RUNNER_ENV_PASSTHROUGH"
+
+#: Secret references this host will resolve when a coordinator asks for one, as
+#: an exact-match comma-separated list, e.g.
+#: ``OMNIGENT_HOST_SECRET_REFS=keychain:eva-outreach-token``.
+#:
+#: It holds names and never values, so it is safe in a launchd plist, which is
+#: the point: the credential itself stays in the keychain and only this host
+#: reads it.
+#:
+#: Empty, the default, means this host resolves nothing. A coordinator naming a
+#: secret is a request rather than an instruction, and without this gate a
+#: coordinator could ask a host to read any entry in its keychain and hand it to
+#: an agent that can print its own environment, which is exactly what
+#: :data:`_RUNNER_ENV_ALLOWLIST` exists to prevent by another route.
+HOST_SECRET_REFS_ENV_VAR: str = "OMNIGENT_HOST_SECRET_REFS"
+
+
+class SecretRefNotAllowed(Exception):
+    """A coordinator asked for a secret reference this host has not allowed."""
+
+
+def allowed_secret_refs(base_env: Mapping[str, str]) -> frozenset[str]:
+    """The exact secret references this host will resolve.
+
+    :param base_env: Host process environment, e.g. ``os.environ``.
+    :returns: The allowed references, empty when the variable is unset.
+    """
+    raw = base_env.get(HOST_SECRET_REFS_ENV_VAR, "")
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+def resolve_agent_secret_env(
+    refs: Mapping[str, str],
+    *,
+    base_env: Mapping[str, str],
+    already_set: Collection[str] = (),
+) -> dict[str, str]:
+    """Resolve a launch frame's secret references into values for one runner.
+
+    :param refs: Environment variable to secret reference, from
+        :attr:`HostLaunchRunnerFrame.agent_secret_env`.
+    :param base_env: Host process environment, for the allowlist.
+    :param already_set: Variables the runner environment already carries, which
+        on a host still configured with
+        :data:`RUNNER_ENV_PASSTHROUGH_ENV_VAR` is where the value comes from
+        today.
+    :returns: Environment variable to resolved value.
+    :raises SecretRefNotAllowed: If a reference is not allowed or will not
+        resolve, AND the variable is not already set.
+
+    Refusing is a refused launch rather than a runner missing one variable. A
+    runner that starts without its credential fails its first call with a 401,
+    which reads as an authentication problem and sends whoever is looking at
+    the token rather than at the host.
+
+    The exception for a variable that is already set is what makes the
+    migration off the passthrough survivable. A coordinator that has been
+    upgraded starts naming references for hosts that have not been configured
+    to resolve them yet, and refusing there would break every session on a host
+    that was working a moment earlier, at whatever hour it happened to upgrade.
+    Continuing is safe because the guarantee is about the runner having its
+    credential, not about where it came from.
+    """
+    if not refs:
+        return {}
+    allowed = allowed_secret_refs(base_env)
+    resolved: dict[str, str] = {}
+    for name, ref in refs.items():
+        problem: str | None = None
+        if ref not in allowed:
+            problem = (
+                f"this host will not resolve {ref!r} for {name}: add it to "
+                f"{HOST_SECRET_REFS_ENV_VAR} on the host to allow it"
+            )
+        else:
+            from omnigent.onboarding.provider_config import resolve_secret
+
+            try:
+                resolved[name] = resolve_secret(ref)
+            except Exception as exc:  # noqa: BLE001 - a keychain backend must not crash the host
+                # Deliberately broad. resolve_secret documents OmnigentError,
+                # but it reaches an OS keychain, and a host that dies because a
+                # secret store misbehaved takes every session on this machine
+                # with it. Turning any failure into a refused launch for the
+                # one agent is the proportionate outcome.
+                problem = f"{ref!r} is allowed but did not resolve: {exc}"
+
+        if problem is None:
+            continue
+        if name in already_set:
+            _logger.warning(
+                "%s; the runner already has %s from the host environment, so this "
+                "launch continues. Configure %s and drop %s to stop relying on it.",
+                problem,
+                name,
+                HOST_SECRET_REFS_ENV_VAR,
+                RUNNER_ENV_PASSTHROUGH_ENV_VAR,
+            )
+            continue
+        raise SecretRefNotAllowed(problem)
+    return resolved
 
 # HTTP statuses on the WebSocket upgrade that are worth retrying. Everything
 # else in the 4xx range is a permanent client error (auth, authorization,
@@ -2041,6 +2142,26 @@ class HostProcess:
             harness=frame.harness,
             interactive_shells=self._interactive_shells,
         )
+        # What this agent needs to reach its own service, for this session only.
+        # The plain values as sent; the secret references resolved HERE, from
+        # this host's own store, so the credential never crossed the wire and
+        # never existed on the coordinator. Safe to put in a process
+        # environment because this process serves one session: see the comment
+        # on reuse above, "One live runner per session".
+        if frame.agent_env:
+            env.update(frame.agent_env)
+        if frame.agent_secret_env:
+            try:
+                env.update(
+                    resolve_agent_secret_env(
+                        frame.agent_secret_env,
+                        base_env=os.environ,
+                        already_set=set(env),
+                    )
+                )
+            except SecretRefNotAllowed as exc:
+                return self._launch_failed(frame, str(exc))
+
         # The runner serves one primary session (plus any co-located subagents);
         # pass it so runner-level log records can be attributed to that session.
         if frame.session_id:
