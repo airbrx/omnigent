@@ -485,7 +485,12 @@ def register_core_routes(
                 binding_token=binding_token,
                 workspace=workspace,
                 session_id=session_id,
-                **launch_env_fields(agent_id=agent_id, user_id=user_id, agent_store=agent_store),
+                **launch_env_fields(
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    host_owner=target.host.user_id,
+                    agent_store=agent_store,
+                ),
                 # Lets the host refuse an unconfigured harness before
                 # spawning. None (agent not resolvable) skips the
                 # host-side check.

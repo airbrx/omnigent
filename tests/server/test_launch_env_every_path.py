@@ -68,3 +68,16 @@ def test_no_launch_frame_sets_the_fields_by_hand() -> None:
         if any(kw.arg in {"agent_env", "agent_secret_env"} for kw in call.keywords)
     ]
     assert not by_hand, ", ".join(by_hand)
+
+
+def test_every_launch_site_names_the_host_owner() -> None:
+    """The helper withholds a host secret from anyone but the host's owner, so
+    every site must tell it who that is. Omitting it would be a TypeError at
+    runtime; this makes it a build failure instead."""
+    missing = []
+    for path, call in _launch_frames():
+        for kw in call.keywords:
+            if kw.arg is None and isinstance(kw.value, ast.Call):
+                if "host_owner" not in {k.arg for k in kw.value.keywords}:
+                    missing.append(f"{path.relative_to(SERVER.parent.parent)}:{call.lineno}")
+    assert not missing, ", ".join(missing)
