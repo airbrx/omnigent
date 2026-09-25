@@ -45,11 +45,17 @@ jobs:
   # cannot be skipped past by a rerun of a later step, and so the failure reads
   # as "tests failed" rather than as a deploy that died halfway.
   #
-  # Why the suite is split across three parallel shards: it is 4931 tests and a
+  # Why the suite is split across parallel shards: it is 4931 tests and a
   # single process climbs past what a small runner will hold. Sharding is also
   # what makes this affordable to gate on, since the slowest shard rather than
   # the sum sets the wait. Measured locally: routes 6m, root files 5m,
   # integration 22m.
+  #
+  # The runtime-host-spec shard was added 2026-09-25. Before it, nothing on
+  # the path to production ran tests/runtime, tests/host or tests/spec, so
+  # the AgentCache race test (PR #59) and the launch-env tests (#78, #80)
+  # were never gated before a deploy. Same sync line and flags as the others;
+  # nothing in those folders needs env the gate does not already set.
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -63,6 +69,8 @@ jobs:
             paths: tests/server/*.py
           - name: integration
             paths: tests/server/integration
+          - name: runtime-host-spec
+            paths: tests/runtime tests/host tests/spec
     steps:
       - uses: actions/checkout@v4
 
