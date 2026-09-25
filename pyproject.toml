@@ -462,7 +462,7 @@ include = ["omnigent*"]
 # line has her Python modules and no bundle. bundle_root() then raises and a
 # host installed from install.sh cannot register her at all. Production runs
 # from source, which is why this survived a deploy.
-"omnigent.airbrx.eva" = ["bundle/**/*", "assets/**/*"]
+"omnigent.airbrx.eva" = ["bundle/**/*", "assets/**/*", "ui/**/*"]
 "omnigent.db" = ["alembic.ini"]
 "omnigent.db.migrations" = ["script.py.mako"]
 "omnigent.resources.examples" = ["*.yaml", "*.sh", "debby/**/*", "polly/**/*"]
