@@ -151,3 +151,68 @@ async def test_relaunch_after_the_runner_is_gone_carries_the_launch_env(
         set_runner_client(None)
     assert frame.session_id == session_id
     _assert_carries_launch_env(frame, provider)
+
+
+async def _connect_shared_host(app: FastAPI):  # noqa: F811
+    """A host that announced ``--shared``: any authenticated user may reach it."""
+    from asgiref.testing import ApplicationCommunicator
+
+    from omnigent.host.frames import HostHelloFrame, encode_host_frame
+    from tests.server.integration.test_session_host_launch import _websocket_scope
+
+    comm = ApplicationCommunicator(app, _websocket_scope(f"/v1/hosts/{_HOST_ID}/tunnel"))
+    await comm.send_input({"type": "websocket.connect"})
+    accepted = await comm.receive_output(timeout=1.0)
+    assert accepted["type"] == "websocket.accept"
+    hello = HostHelloFrame(
+        version="0.1.0-test",
+        frame_protocol_version=1,
+        name="shared-laptop",
+        shared=True,
+        workroot=_WORKSPACE,
+    )
+    await comm.send_input({"type": "websocket.receive", "text": encode_host_frame(hello)})
+    while app.state.host_registry.get(_HOST_ID) is None:
+        await asyncio.sleep(0.01)
+    return comm
+
+
+async def test_relaunch_on_a_shared_host_withholds_the_launch_env(
+    client: httpx.AsyncClient,
+    app: FastAPI,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    provider: list[tuple[str, str | None]],
+) -> None:
+    """On a shared host the relaunch path cannot establish whose session it is.
+
+    A secret reference resolves from the host owner's own store, so sending it
+    for a session that may belong to another user would hand that user the
+    owner's credential. The relaunch withholds it instead. The owner's own
+    session create, where the caller is known, still receives it.
+    """
+    from omnigent.runtime import set_runner_client
+    from omnigent.server.routes import sessions as sessions_module
+    from omnigent.server.routes.sessions import routes_events as routes_events_module
+
+    monkeypatch.setattr(sessions_module, "_HOST_BOUND_RUNNER_CONNECT_GRACE_S", 0.0)
+    monkeypatch.setattr(routes_events_module, "_HOST_RELAUNCH_RUNNER_CONNECT_TIMEOUT_S", 0.0)
+    comm = await _connect_shared_host(app)
+    agent = await create_test_agent(client, name=AGENT)
+    created = await _create_session(client, comm, agent["id"])
+    _assert_carries_launch_env(created["frame"], provider)
+
+    set_runner_client(None)
+    relaunch = asyncio.create_task(_serve_one_launch(comm, launch_status="launched"))
+    try:
+        await client.post(
+            f"/v1/sessions/{created['session']['id']}/events",
+            json={
+                "type": "message",
+                "data": {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            },
+        )
+    finally:
+        frame = await relaunch
+        set_runner_client(None)
+    assert frame.agent_env is None
+    assert frame.agent_secret_env is None

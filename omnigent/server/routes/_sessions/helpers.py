@@ -5538,6 +5538,11 @@ async def _launch_runner_on_host_impl(
         return attempt
 
 
+def _host_is_shared(host_conn: HostConnection) -> bool:
+    """Whether the host announced ``--shared`` on connect, when any user may reach it."""
+    return bool(getattr(getattr(host_conn, "hello", None), "shared", False))
+
+
 async def _launch_runner_on_host_locked(
     conv: Conversation,
     conversation_store: ConversationStore,
@@ -5594,9 +5599,17 @@ async def _launch_runner_on_host_locked(
             # (agent not resolvable) skips the host-side check — fail open.
             harness=_resolve_harness(conv),
             # The relaunch a message triggers when the runner is gone (sleep,
-            # host restart, idle reap). A runner is one-to-one with its host's
-            # owner, so that is the acting user here. See launch_env_fields.
-            **launch_env_fields(agent_id=conv.agent_id, user_id=host_conn.owner),
+            # host restart, idle reap). There is no caller here to say whose
+            # session this is. On a private host only its owner can have a
+            # session on it, so the owner is the acting user. On a shared host
+            # the session may be anyone's and that is not knowable from here,
+            # so the environment is withheld. See launch_env_fields.
+            **launch_env_fields(
+                agent_id=conv.agent_id,
+                user_id=host_conn.owner,
+                host_owner=host_conn.owner,
+                identity_established=not _host_is_shared(host_conn),
+            ),
         )
     )
     try:
