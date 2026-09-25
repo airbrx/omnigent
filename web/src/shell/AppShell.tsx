@@ -2271,20 +2271,22 @@ export function AppShell() {
               the mounted screen, after the mount-time draft restore, so it
               also wins over a parked landing draft. */}
               <AgentDrawer
-                onOpenWorkspace={() => {
+                onOpenWorkspace={(agentName) => {
                   setAgentDrawerOpen(false);
                   navigate(
-                    activeSessionMatchesRoute && activeSession?.agentName === "iris"
-                      ? `/iris/${conversationId}`
-                      : "/iris",
+                    activeSessionMatchesRoute && activeSession?.agentName === agentName
+                      ? `/${agentName}/${conversationId}`
+                      : `/${agentName}`,
                   );
                 }}
                 open={agentDrawerOpen}
                 onClose={handleCloseAgents}
                 onSelectAgent={(agent) => {
                   setAgentDrawerOpen(false);
-                  if (agent.name === "iris") {
-                    navigate("/iris?mode=chat");
+                  // Iris and Eva start through their workspace landing, which
+                  // creates the session on the host their binding names.
+                  if (agent.name === "iris" || agent.name === "eva") {
+                    navigate(`/${agent.name}?mode=chat`);
                     return;
                   }
                   writeLastAgentId(agent.id);

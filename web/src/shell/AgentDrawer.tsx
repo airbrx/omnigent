@@ -30,7 +30,7 @@ interface AgentDrawerProps {
    * whole object rather than a single field.
    */
   onSelectAgent: (agent: AvailableAgent) => void;
-  onOpenWorkspace?: () => void;
+  onOpenWorkspace?: (agentName: string) => void;
 }
 
 const AVATAR_CHIP = "size-10 shrink-0 rounded-full";
@@ -220,6 +220,9 @@ function AvatarControls({ name, hasStoredAvatar }: { name: string; hasStoredAvat
   );
 }
 
+/** Agents with a workspace of their own, served by the host: `/iris`, `/eva`. */
+const WORKSPACE_AGENTS: Record<string, string> = { iris: "Iris", eva: "Eva" };
+
 export function AgentDrawer({ open, onClose, onSelectAgent, onOpenWorkspace }: AgentDrawerProps) {
   const { data: agents } = useAvailableAgents();
   const { data: avatars } = useAgentAvatars();
@@ -375,7 +378,11 @@ export function AgentDrawer({ open, onClose, onSelectAgent, onOpenWorkspace }: A
                         // the chip. No other agent has a portrait to fall back to.
                         url={
                           avatars?.[agent.name] ??
-                          (agent.name === "iris" ? "/v1/iris/portrait" : undefined)
+                          (agent.name === "iris"
+                            ? "/v1/iris/portrait"
+                            : agent.name === "eva"
+                              ? "/v1/eva/portrait"
+                              : undefined)
                         }
                       />
                       <span className="min-w-0">
@@ -392,12 +399,12 @@ export function AgentDrawer({ open, onClose, onSelectAgent, onOpenWorkspace }: A
                         ) : null}
                       </span>
                     </button>
-                    {agent.name === "iris" && onOpenWorkspace && (
+                    {agent.name in WORKSPACE_AGENTS && onOpenWorkspace && (
                       <Button
                         variant="ghost"
                         className="ml-12"
-                        aria-label="Open Iris workspace"
-                        onClick={onOpenWorkspace}
+                        aria-label={`Open ${WORKSPACE_AGENTS[agent.name]} workspace`}
+                        onClick={() => onOpenWorkspace(agent.name)}
                       >
                         Open workspace
                       </Button>
