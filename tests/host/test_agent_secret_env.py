@@ -70,3 +70,30 @@ def test_allowed_but_unresolvable_is_still_refused(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(SecretRefNotAllowed, match="did not resolve"):
         resolve_agent_secret_env({"T": "env:A_MISSING_TOKEN"}, base_env=base)
+
+
+def test_an_unallowed_reference_is_tolerated_when_the_variable_is_already_set() -> None:
+    """The migration off OMNIGENT_RUNNER_ENV_PASSTHROUGH has to survive an upgrade.
+
+    A coordinator that ships this feature starts naming references for hosts
+    that nobody has configured yet. Refusing there would break every session on
+    a host that was working a moment earlier, at whatever hour it upgraded. The
+    guarantee is that a runner has its credential, not where it came from.
+    """
+    got = resolve_agent_secret_env(
+        {"OUTREACH_MCP_TOKEN": REF},
+        base_env={},
+        already_set={"OUTREACH_MCP_TOKEN"},
+    )
+
+    assert got == {}
+
+
+def test_a_different_variable_being_set_does_not_excuse_the_missing_one() -> None:
+    """The tolerance is per variable, not a blanket off switch."""
+    with pytest.raises(SecretRefNotAllowed):
+        resolve_agent_secret_env(
+            {"OUTREACH_MCP_TOKEN": REF},
+            base_env={},
+            already_set={"SOMETHING_ELSE"},
+        )
