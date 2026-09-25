@@ -4362,10 +4362,26 @@ def server(
     from omnigent.airbrx.iris.package import source_root as iris_source
 
     if iris_bindings():
-        _preregister_agent(iris_bundle(), agent_store, artifact_store, agent_cache)
-        if agent_avatar_store.get("iris") is None:
-            agent_avatar_store.put(
-                "iris", (iris_source() / "ui/assets/iris-portrait.png").read_bytes(), "image/png"
+        # A failed registration must cost Iris her place in the catalog and the
+        # drawer, and nothing else. Same posture as Eva below: one agent's bad
+        # bundle or failed archive integrity check must not crash-loop a
+        # coordinator that also serves every ordinary session. The portrait is
+        # inside the try because it comes out of the same pinned archive, so a
+        # digest failure would otherwise take the server down one line later.
+        # The operator still gets the reason, in the log, on a running box.
+        try:
+            _preregister_agent(iris_bundle(), agent_store, artifact_store, agent_cache)
+            if agent_avatar_store.get("iris") is None:
+                agent_avatar_store.put(
+                    "iris",
+                    (iris_source() / "ui/assets/iris-portrait.png").read_bytes(),
+                    "image/png",
+                )
+        except Exception as exc:  # noqa: BLE001 - one agent must not take the server down
+            click.echo(
+                "  warning: Iris is bound but did not register, so she will be absent "
+                f"from the agent catalog and drawer: {exc}",
+                err=True,
             )
 
     # Eva, the outreach agent. Same shape as the Iris block above and gated the
