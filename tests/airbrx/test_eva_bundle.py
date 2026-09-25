@@ -206,12 +206,14 @@ def test_an_unknown_key_stops_startup(tmp_path: Path, monkeypatch: pytest.Monkey
                     "host_id": "882128953d2a4e178ddbd48d70b298a1",
                     "base_url": "https://eva.airbrx.ai",
                     "token_ref": "env:X",
-                    "workspace": "/some/path",
+                    # "workspace" became a real field for the workspace; a
+                    # misspelling of it is the realistic typo now.
+                    "worksapce": "/some/path",
                 }
             ],
         ),
     )
-    with pytest.raises(ValueError, match="workspace"):
+    with pytest.raises(ValueError, match="worksapce"):
         eva_config.bindings()
 
 
@@ -350,4 +352,25 @@ def test_duplicate_labels_are_refused(tmp_path: Path, monkeypatch: pytest.Monkey
         ),
     )
     with pytest.raises(ValueError, match="distinct labels"):
+        eva_config.bindings()
+
+
+def test_a_relative_workspace_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Session create needs an absolute runner directory; say so at startup."""
+    monkeypatch.setenv(
+        "OMNIGENT_EVA_CONFIG",
+        _write(
+            tmp_path,
+            [
+                {
+                    "users": ["a@airbrx.com"],
+                    "host_id": "882128953d2a4e178ddbd48d70b298a1",
+                    "base_url": "http://127.0.0.1:8000",
+                    "token_ref": "keychain:eva-outreach-token",
+                    "workspace": "relative/dir",
+                }
+            ],
+        ),
+    )
+    with pytest.raises(ValueError, match="absolute"):
         eva_config.bindings()

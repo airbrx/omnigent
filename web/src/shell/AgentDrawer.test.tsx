@@ -130,6 +130,28 @@ it("keeps Iris chat and workspace as separate accessible actions", () => {
   // where a bare "Open workspace" says nothing about whose.
   fireEvent.click(screen.getByRole("button", { name: "Open Iris workspace" }));
   expect(workspace).toHaveBeenCalledOnce();
+  expect(workspace).toHaveBeenCalledWith("iris");
+});
+
+it("gives Eva her own workspace action and her packaged portrait", () => {
+  vi.mocked(useAvailableAgents).mockReturnValue({
+    data: [
+      { id: "eva-id", name: "eva", display_name: "Eva", description: "Works the lead list" },
+      { id: "a1", name: "researcher", display_name: "Researcher", description: "Reads things" },
+    ],
+  } as never);
+  const workspace = vi.fn();
+  const client = new QueryClient();
+  render(
+    <QueryClientProvider client={client}>
+      <AgentDrawer open onClose={vi.fn()} onSelectAgent={vi.fn()} onOpenWorkspace={workspace} />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open Eva workspace" }));
+  expect(workspace).toHaveBeenCalledWith("eva");
+  expect(screen.getByAltText("eva")).toHaveAttribute("src", "/v1/eva/portrait");
+  // Only agents that have a workspace get the button.
+  expect(screen.queryByRole("button", { name: /Open Researcher workspace/ })).toBeNull();
 });
 
 it("opens with focus on the way out, and traps Tab inside the drawer", () => {

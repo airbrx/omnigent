@@ -28,7 +28,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-_ALLOWED = {"users", "host_id", "base_url", "token_ref", "label", "fixture"}
+_ALLOWED = {"users", "host_id", "base_url", "token_ref", "label", "fixture", "workspace"}
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,12 @@ class Binding:
     label: str = "live"
     #: A visibly synthetic binding for acceptance runs. Never real data.
     fixture: bool = False
+    #: Absolute directory on the execution host for the runner's working
+    #: directory, the same field Iris's binding has. Creating a session on a
+    #: host requires one, so the workspace cannot start Eva without it. Empty
+    #: is allowed, and the workspace then says the binding needs one rather
+    #: than failing on the first click.
+    workspace: str = ""
 
     def mcp_url(self) -> str:
         """The MCP endpoint, with the trailing slash the transport requires.
@@ -121,6 +127,9 @@ def bindings() -> tuple[Binding, ...]:
         token_ref = str(row.get("token_ref", ""))
         if not fixture and not token_ref:
             raise ValueError("A live Eva binding needs a token_ref")
+        workspace = str(row.get("workspace", "")).strip()
+        if workspace and not workspace.startswith("/"):
+            raise ValueError("Eva binding workspace must be an absolute path on the host")
         result.append(
             Binding(
                 users=users,
@@ -129,6 +138,7 @@ def bindings() -> tuple[Binding, ...]:
                 token_ref=token_ref,
                 label=str(row.get("label", "live")),
                 fixture=fixture,
+                workspace=workspace,
             )
         )
     labels = [b.label for b in result]

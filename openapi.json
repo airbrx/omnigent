@@ -9346,6 +9346,235 @@
         ]
       }
     },
+    "/v1/eva/sessions/{session_id}/ui/api/cancel": {
+      "post": {
+        "operationId": "cancel_v1_eva_sessions__session_id__ui_api_cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Cancel V1 Eva Sessions  Session Id  Ui Api Cancel Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
+    "/v1/eva/sessions/{session_id}/ui/api/chat": {
+      "post": {
+        "operationId": "chat_v1_eva_sessions__session_id__ui_api_chat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Chat V1 Eva Sessions  Session Id  Ui Api Chat Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
+    "/v1/eva/sessions/{session_id}/ui/api/readiness": {
+      "get": {
+        "description": "What has actually been checked about this session. Not a prediction.",
+        "operationId": "readiness_v1_eva_sessions__session_id__ui_api_readiness_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Readiness V1 Eva Sessions  Session Id  Ui Api Readiness Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
+    "/v1/eva/sessions/{session_id}/ui/api/refresh": {
+      "post": {
+        "operationId": "refresh_v1_eva_sessions__session_id__ui_api_refresh_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Refresh V1 Eva Sessions  Session Id  Ui Api Refresh Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
+    "/v1/eva/sessions/{session_id}/ui/api/state": {
+      "get": {
+        "operationId": "state_v1_eva_sessions__session_id__ui_api_state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response State V1 Eva Sessions  Session Id  Ui Api State Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "State",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
     "/v1/extensions": {
       "get": {
         "description": "List extensions installed and enabled when the server started.\n\nV1 treats operator installation as enablement. Installing, removing, or\nupgrading a package requires a server restart to refresh this snapshot.",

@@ -60,6 +60,7 @@ def _public(binding: Binding) -> dict[str, Any]:
         "mcp_url": binding.mcp_url(),
         "host_local": binding.is_host_local(),
         "fixture": binding.fixture,
+        "workspace": binding.workspace or None,
     }
 
 
@@ -137,6 +138,11 @@ def assess_readyz(body: dict[str, Any]) -> dict[str, Any]:
 
 def create_eva_router(*, auth_provider: Any, agent_store: Any) -> APIRouter:
     router = APIRouter()
+    # The everyday workspace: session-scoped adapter routes, the framed app and
+    # her portrait. See docs/eva/WORKSPACE.md.
+    from omnigent.airbrx.eva.workspace import add_workspace_routes
+
+    add_workspace_routes(router, auth_provider=auth_provider, agent_store=agent_store)
 
     @router.get("/eva")
     async def catalog(request: Request) -> dict[str, Any]:
