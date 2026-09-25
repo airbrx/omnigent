@@ -7,12 +7,19 @@ import { authenticatedFetch } from "@/lib/identity";
 import { useNavigate, useParams, useSearchParams } from "@/lib/routing";
 import { IrisAccountView, type IrisAccount } from "./IrisAccountView";
 
+// The per-binding shape GET /v1/iris returns (omnigent/airbrx/iris/routes.py).
 interface IrisBinding {
   tenant_id: string;
   name?: string;
   host_id: string;
   workspace: string;
   fixture: boolean;
+  /** Whether the execution host behind this binding is connected right now.
+   *
+   * `null` means the server could not tell (and `undefined` that it predates
+   * the field). Neither is offline: only `false` refuses the drill-in. Reading
+   * unknown as offline would let a missing lookup grey out every tenant. */
+  host_online?: boolean | null;
 }
 interface IrisCatalog {
   agent_id: string | null;
@@ -70,6 +77,14 @@ export function IrisWorkspace() {
   async function create(tenantId: string) {
     const binding = data?.bindings.find((b) => b.tenant_id === tenantId);
     if (!data?.agent_id || !binding) return;
+    // The row is already disabled for a known-offline host, but this is the
+    // last stop before POST /v1/sessions, which would refuse with a 400 and a
+    // less specific message. Only `false` refuses: `null` and `undefined` are
+    // "could not tell", and a session on a host we cannot see may well work.
+    if (binding.host_online === false) {
+      setError(`Host "${binding.host_id}" is offline, so Iris cannot start there yet.`);
+      return;
+    }
     setBusy(true);
     setError("");
     try {
