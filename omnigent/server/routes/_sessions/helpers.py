@@ -5547,6 +5547,7 @@ async def _launch_runner_on_host_locked(
     """The launch round-trip proper; runs under the conversation's lock."""
     from omnigent.host.frames import HostLaunchRunnerFrame, encode_host_frame
     from omnigent.runner.identity import token_bound_runner_id
+    from omnigent.server.routes._host_launch import launch_env_fields
 
     superseded_runner_id = conv.runner_id
     binding_token = secrets.token_urlsafe(32)
@@ -5592,6 +5593,10 @@ async def _launch_runner_on_host_locked(
             # same configuration check it does at create-time launch. None
             # (agent not resolvable) skips the host-side check — fail open.
             harness=_resolve_harness(conv),
+            # The relaunch a message triggers when the runner is gone (sleep,
+            # host restart, idle reap). A runner is one-to-one with its host's
+            # owner, so that is the acting user here. See launch_env_fields.
+            **launch_env_fields(agent_id=conv.agent_id, user_id=host_conn.owner),
         )
     )
     try:
