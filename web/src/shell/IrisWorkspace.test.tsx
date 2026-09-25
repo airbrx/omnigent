@@ -42,8 +42,10 @@ function show() {
 const CATALOG = {
   agent_id: "registered-iris",
   bindings: [
-    { tenant_id: "fixture", host_id: "approved-host", workspace: "/approved", fixture: true },
-    { tenant_id: "live-tenant", host_id: "approved-host", workspace: "/live", fixture: false },
+    // One host the server can see and one it cannot: `true` and `null` are
+    // both openable, so every existing drill-in test exercises that contract.
+    { tenant_id: "fixture", host_id: "approved-host", workspace: "/approved", fixture: true, host_online: true },
+    { tenant_id: "live-tenant", host_id: "quiet-host", workspace: "/live", fixture: false, host_online: null },
   ],
 };
 const ACCOUNT = {
@@ -134,6 +136,70 @@ it("says Ranking… while the account query is pending, without disabling drill-
   const buttons = screen.getAllByRole("button", { name: /^Open workspace/ });
   expect(buttons).toHaveLength(2);
   for (const button of buttons) expect(button).not.toBeDisabled();
+});
+
+it("will not offer a tenant whose host the catalog reports offline, and never POSTs for it", async () => {
+  // Production Iris was bound only to a Mac mini that had gone to sleep: every
+  // tenant looked openable and every session creation failed with a 400.
+  serve({
+    "/v1/iris": () =>
+      new Response(
+        JSON.stringify({
+          ...CATALOG,
+          bindings: CATALOG.bindings.map((b) =>
+            b.tenant_id === "fixture" ? { ...b, host_online: false } : b,
+          ),
+        }),
+      ),
+  });
+  show();
+  await screen.findByText("Never collected");
+  const down = rowFor("fixture");
+  expect(down).toHaveTextContent("host offline");
+  const button = within(down).getByRole("button", { name: /^Open workspace/ });
+  expect(button).toBeDisabled();
+  fireEvent.click(button);
+  expect(vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  expect(routing.navigate).not.toHaveBeenCalled();
+  // The other binding is unaffected: one sleeping host is not an outage.
+  expect(within(rowFor("live-tenant")).getByRole("button", { name: /^Open workspace/ })).not.toBeDisabled();
+});
+
+it("offers a tenant whose host is online, with the same create request as before", async () => {
+  serve();
+  show();
+  await screen.findByText("Never collected");
+  const up = rowFor("fixture");
+  expect(up).not.toHaveTextContent(/offline/);
+  fireEvent.click(within(up).getByRole("button", { name: /^Open workspace/ }));
+  await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
+  const create = vi.mocked(authenticatedFetch).mock.calls.find(([, init]) => init?.method === "POST");
+  // host_online is a catalog fact, not a session parameter: the body is unchanged.
+  expect(JSON.parse(create?.[1]?.body as string)).toEqual({
+    agent_id: "registered-iris",
+    host_id: "approved-host",
+    workspace: "/approved",
+  });
+});
+
+it("treats unknown host liveness as openable and says nothing about it", async () => {
+  // `null`: the server could not tell. That is not offline, and greying the
+  // row out would manufacture an outage every time the lookup went missing.
+  serve();
+  show();
+  await screen.findByText("Never collected");
+  const unknown = rowFor("live-tenant");
+  expect(unknown).not.toHaveTextContent(/offline/);
+  expect(unknown).not.toHaveTextContent(/unknown/);
+  fireEvent.click(within(unknown).getByRole("button", { name: /^Open workspace/ }));
+  await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
+  const create = vi.mocked(authenticatedFetch).mock.calls.find(([, init]) => init?.method === "POST");
+  expect(JSON.parse(create?.[1]?.body as string)).toEqual({
+    agent_id: "registered-iris",
+    host_id: "quiet-host",
+    workspace: "/live",
+  });
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 it("mounts the accepted UI at the authenticated session route, in the shell's appearance", () => {
