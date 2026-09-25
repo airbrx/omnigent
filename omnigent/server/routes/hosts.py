@@ -1117,7 +1117,10 @@ def create_hosts_router(
                 # this an agent whose credential is a host secret reference
                 # starts with no credential. See launch_env_fields.
                 **launch_env_fields(
-                    agent_id=target.conv.agent_id, user_id=user_id, agent_store=agent_store
+                    agent_id=target.conv.agent_id,
+                    user_id=user_id,
+                    host_owner=target.host.user_id,
+                    agent_store=agent_store,
                 ),
             )
         )
