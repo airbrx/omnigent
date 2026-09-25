@@ -60,7 +60,11 @@ from omnigent.server.host_wake import (
     wake_host,
 )
 from omnigent.server.routes._auth_helpers import require_user
-from omnigent.server.routes._host_launch import host_absent_error, resolve_host_launch
+from omnigent.server.routes._host_launch import (
+    host_absent_error,
+    launch_env_fields,
+    resolve_host_launch,
+)
 from omnigent.server.routes._workspace_validation import (
     _is_windows_absolute_path,
     restore_host_filesystem_url_path,
@@ -1109,6 +1113,12 @@ def create_hosts_router(
                 workspace=workspace,
                 session_id=body.session_id,
                 harness=harness,
+                # Resume, switch host and fork launch through here; without
+                # this an agent whose credential is a host secret reference
+                # starts with no credential. See launch_env_fields.
+                **launch_env_fields(
+                    agent_id=target.conv.agent_id, user_id=user_id, agent_store=agent_store
+                ),
             )
         )
         try:

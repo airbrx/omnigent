@@ -213,3 +213,54 @@ def resolve_host_launch(
         raise HTTPException(status_code=404, detail="session not found")
 
     return HostLaunchTarget(host=host, conn=conn, conv=conv)
+
+
+def launch_env_fields(
+    *,
+    agent_id: str | None,
+    user_id: str | None,
+    agent_store: object | None = None,
+) -> dict[str, dict[str, str] | None]:
+    """The ``agent_env`` / ``agent_secret_env`` of a runner launch frame.
+
+    **Every site that builds a** :class:`~omnigent.host.frames.HostLaunchRunnerFrame`
+    **spreads this into it**, and ``tests/server/test_launch_env_every_path.py``
+    fails the build if one does not. The rule exists because the first version
+    of the mechanism (#78) collected the environment at one launch site of
+    three: session create with a host. ``POST /v1/hosts/{id}/runners`` (resume,
+    switch host, fork) and the relaunch that runs when a message arrives for a
+    session whose runner is gone (after sleep, host restart, idle reap) sent
+    nothing. An agent whose credential comes only from a host secret reference
+    then failed turn setup on every relaunched session, which is most of them,
+    and nothing in the suite noticed because the one test covered the one site
+    that worked.
+
+    :param agent_id: The session's agent, e.g. ``conv.agent_id``. ``None``
+        (no resolvable agent) collects nothing.
+    :param user_id: The acting user the providers match against. The caller
+        where there is one; on the relaunch path, the host connection's owner,
+        which a runner is one-to-one with.
+    :param agent_store: Store to resolve ``agent_id`` to a name. ``None``
+        uses the runtime's store; a server wired without one collects nothing.
+    :returns: ``{"agent_env": ..., "agent_secret_env": ...}``, each ``None``
+        when empty, ready to spread into the frame.
+    """
+    from omnigent.runtime.launch_env import collect
+
+    agent_name: str | None = None
+    if agent_id is not None:
+        store = agent_store
+        if store is None:
+            try:
+                from omnigent.runtime import get_agent_store
+
+                store = get_agent_store()
+            except Exception:  # noqa: BLE001 - an unwired runtime collects nothing
+                store = None
+        row = store.get(agent_id) if store is not None else None  # type: ignore[attr-defined]
+        agent_name = getattr(row, "name", None) if row is not None else None
+    launch = collect(agent_name, user_id)
+    return {
+        "agent_env": launch.env or None,
+        "agent_secret_env": launch.secret_refs or None,
+    }
