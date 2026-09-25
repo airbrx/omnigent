@@ -16,13 +16,18 @@
 # whatever branch is checked out is what it serves — which is how a fix gets
 # tested before it deploys.
 #
-# Port 6768, not 6767: on 2026-09-21 another agent session (Eva, hosted the
-# same way Iris is) started its own `omnigent server --port 6767` from the uv
-# tools install and took the port. Two servers on one port is not a draw — the
-# survivor served an OLDER vendored Iris with no registered agent and no
-# bindings, so sessions created against it vanished a moment later. Moved
-# rather than fought over.
-#   Ctrl-C stops both.
+# Port 6768, and Iris and Eva now SHARE it (2026-09-24). They did not always:
+# on 2026-09-21 Eva's session started its own `omnigent server --port 6767`
+# from the uv tools install and took that port, and Iris moved rather than
+# fight over it. Sharing one stack replaced that, deliberately.
+#
+# The reason the old collision is still worth reading: two servers on one port
+# is not a draw. The survivor served an OLDER vendored Iris with no registered
+# agent and no bindings, so sessions created against it reported "Session not
+# found" moments later — which reads like data loss and is not. Before
+# trusting this stack, check `lsof -nP -iTCP:6768 -sTCP:LISTEN` finds exactly
+# one listener, and that GET /v1/iris returns a non-null agent_id.
+#   Ctrl-C stops the server and both hosts.
 set -euo pipefail
 
 # Resolve the checkout from this script's own location rather than a path that
@@ -35,6 +40,14 @@ STATE="${IRIS_LOCAL_HOME:-$HOME/iris-local}"
 BIND="$STATE/iris-bindings.json"
 export OMNIGENT_DATA_DIR="$STATE/data"
 export OMNIGENT_IRIS_CONFIG="$BIND"
+
+# Eva shares this stack (2026-09-24, Abram's call: one stack, not two). The
+# server registers her at STARTUP when OMNIGENT_EVA_CONFIG names a binding
+# file, so this has to be exported before the first server start below — a
+# late export lists nothing and looks like Eva is broken.
+EVA_BIND="$STATE/eva-bindings.json"
+EVA_HOME="$STATE/eva-host"
+if [[ -f "$EVA_BIND" ]]; then export OMNIGENT_EVA_CONFIG="$EVA_BIND"; fi
 
 if [[ ! -x "$OMNI" ]]; then
   echo "no omnigent at $OMNI — set OMNIGENT_BIN, or create the venv in $REPO" >&2
@@ -55,6 +68,7 @@ fi
 mkdir -p "$OMNIGENT_DATA_DIR" "$STATE/workspaces/live" "$STATE/workspaces/fixture"
 
 cleanup() { [[ -n "${HOST_PID:-}" ]] && kill "$HOST_PID" 2>/dev/null || true
+            [[ -n "${EVA_HOST_PID:-}" ]] && kill "$EVA_HOST_PID" 2>/dev/null || true
             [[ -n "${SRV_PID:-}"  ]] && kill "$SRV_PID"  2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
@@ -92,8 +106,58 @@ kill "$SRV_PID" 2>/dev/null || true; wait "$SRV_PID" 2>/dev/null || true
 SRV_PID=$!
 until curl -fsS -m 2 http://127.0.0.1:$PORT/api/version >/dev/null 2>&1; do sleep 1; done
 
+if [[ -n "${OMNIGENT_EVA_CONFIG:-}" ]]; then
+  # Eva's host: its own identity, data dir and config home, so IRIS's host is
+  # never handed her token. It logs to its own file and starts AFTER the
+  # host_id rewrite above, which takes the last id out of $STATE/host.log and
+  # writes it to every Iris binding — if Eva's host shared that log, Iris's
+  # tenants would be repointed at a host that has neither their workspaces nor
+  # their PAT.
+  #
+  # BRIDGE, not the design: one token for every runner this host launches,
+  # which is right for one person on one Mac and wrong for anything shared.
+  # The token is read from the login keychain and lives only in this process's
+  # environment; it is never written to disk, never passed as an argument.
+  if [[ ! -f "$EVA_HOME/host_id" ]]; then
+    echo "· eva host SKIPPED: no host id at $EVA_HOME/host_id"
+  else
+    EVA_HOST_ID="$(cat "$EVA_HOME/host_id")"
+    EVA_TOKEN=$("$(dirname "$OMNI")/python" -c 'from omnigent.onboarding.provider_config import resolve_secret; print(resolve_secret("keychain:eva-outreach-token"))' 2>/dev/null || true)
+    if [[ -z "$EVA_TOKEN" ]]; then
+      # Say it and carry on. Eva listed with failing tools is a clearer state
+      # than a stack refusing to start because one agent's secret is absent,
+      # and Iris is unaffected either way.
+      echo "· eva host SKIPPED: no keychain:eva-outreach-token; Iris is unaffected"
+    else
+      # Keep Eva's binding honest the same way the Iris one is kept: derive the
+      # host_id rather than trust a hand-edited file to have kept up.
+      python3 - "$EVA_BIND" "$EVA_HOST_ID" <<'EVAJSON'
+import json, sys
+path, host_id = sys.argv[1], sys.argv[2]
+rows = json.load(open(path))
+for row in rows:
+    row["host_id"] = host_id
+json.dump(rows, open(path, "w"), indent=2)
+EVAJSON
+      echo "· eva host (runs Eva's turns; outreach app at 127.0.0.1:8000)"
+      OMNIGENT_HOST_ID="$EVA_HOST_ID" \
+      OMNIGENT_HOST_NAME="$(hostname) (eva local)" \
+      OMNIGENT_DATA_DIR="$EVA_HOME/data" \
+      OMNIGENT_CONFIG_HOME="$EVA_HOME" \
+      OUTREACH_MCP_URL="http://127.0.0.1:8000/mcp/" \
+      OUTREACH_MCP_TOKEN="$EVA_TOKEN" \
+      OMNIGENT_RUNNER_ENV_PASSTHROUGH="OUTREACH_MCP_URL,OUTREACH_MCP_TOKEN" \
+        "$OMNI" host --server "http://127.0.0.1:$PORT" --non-interactive \
+          > "$STATE/eva-host.log" 2>&1 &
+      EVA_HOST_PID=$!
+      unset EVA_TOKEN
+    fi
+  fi
+fi
+
 echo
 echo "  Iris:  http://127.0.0.1:$PORT/iris"
-echo "  logs:  $STATE/{server,host}.log"
+[[ -n "${EVA_HOST_PID:-}" ]] && echo "  Eva:   http://127.0.0.1:$PORT (pick Eva in the agent drawer)"
+echo "  logs:  $STATE/{server,host,eva-host}.log"
 echo "  Ctrl-C to stop both."
 wait
