@@ -4373,13 +4373,27 @@ def server(
     # written OMNIGENT_EVA_CONFIG gets an inert feature rather than an agent
     # nobody is authorized to open.
     #
-    # There is no avatar line and no source_root(). Eva vendors no package: her
-    # bundle is two tracked files read where they lie, and her portrait, if she
-    # gets one, would be a tracked asset rather than a member of an archive.
+    # There is no source_root(). Eva vendors no package: her bundle is two
+    # tracked files read where they lie, and her portrait is a tracked asset
+    # rather than a member of an archive, which is the one place her shape
+    # differs from Iris's here.
     from omnigent.airbrx.eva.config import bindings as eva_bindings
     from omnigent.airbrx.eva.package import bundle_root as eva_bundle
+    from omnigent.airbrx.eva.package import portrait_path as eva_portrait
 
     if eva_bindings():
+        # Her runner needs OUTREACH_MCP_URL and a resolvable reference to her
+        # bearer token, per session. Registered here rather than at import so an
+        # unbound Eva contributes nothing, and next to her agent registration so
+        # the two cannot get out of step.
+        from omnigent.airbrx.eva.runtime import launch_env as eva_launch_env
+        from omnigent.runtime.launch_env import register as register_launch_env
+
+        register_launch_env(eva_launch_env)
+
+        if agent_avatar_store.get("eva") is None:
+            agent_avatar_store.put("eva", eva_portrait().read_bytes(), "image/png")
+
         # A failed registration must cost Eva her place in the drawer and
         # nothing else. She is one agent on a coordinator that also serves
         # Iris and every ordinary session, and twice in one night a problem
