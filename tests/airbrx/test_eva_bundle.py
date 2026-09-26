@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -129,6 +130,68 @@ def test_her_instructions_answer_both_dashboard_asks() -> None:
     # No browser is the usual case, and the rep must hear it rather than get made-up numbers.
     assert "no browser tool" in text
     assert "paste" in text
+
+
+# --------------------------------------------------------------------------
+# The browser: approved 2026-09-26, but her host has none, so none is allowed.
+# --------------------------------------------------------------------------
+
+#: Browser tools as each candidate names them, and the ambient tools a harness
+#: could hand her. None may pass until a browser is declared in her bundle and
+#: fenced to linkedin.com, with its own tests (docs/eva/RUNBOOK.md).
+NOT_HERS = (
+    "mcp__claude-in-chrome__navigate",
+    "mcp__claude-in-chrome__computer",
+    "mcp__claude-in-chrome__form_input",
+    "mcp__claude-in-chrome__javascript_tool",
+    "mcp__playwright__browser_navigate",
+    "mcp__omnigent__playwright__browser_navigate",
+    "mcp__omnigent__browser__browser_click",
+    "browser_navigate",
+    "browser_type",
+    "Bash",
+    "Write",
+    "Edit",
+    "WebFetch",
+    "mcp__omnigent__sys_os_shell",
+    "mcp__claude_ai_Gmail__send_message",
+    "mcp__claude_ai_Slack__slack_send_message",
+)
+
+
+@pytest.mark.parametrize("name", NOT_HERS)
+def test_no_browser_shell_file_or_other_server_tool_is_allowed(name: str) -> None:
+    assert tool_boundary({"type": "tool_call", "target": name})["result"] == "DENY"
+
+
+def test_her_one_mcp_server_carries_only_outreach_tools() -> None:
+    """Nothing broader: no browser, shell or file tool slipped into the spec."""
+    spec = _spec()
+    assert [s.name for s in spec.mcp_servers] == ["outreach"]
+    broader = re.compile(r"browser|chrome|navigate|click|shell|bash|exec|write_file|upload", re.I)
+    assert not [t for t in EVA_TOOLS if broader.search(t)]
+
+
+def test_her_instructions_carry_the_browser_rules() -> None:
+    """Abram's rules for the browser, in the file that tells her."""
+    text = (bundle_root() / "AGENTS.md").read_text()
+    rules = text[text.index("### The browser rules") :]
+    rules = rules[: rules.index("\n### ", 1)]
+    lower = rules.lower()
+    assert "https://www.linkedin.com/" in rules
+    assert "airbrx's and the founders' own linkedin posts" in lower
+    for never in ("post", "comment", "react", "message", "connect", "follow", "edit a profile"):
+        assert never in lower, never
+    assert "never visit another site" in lower
+    assert "sign in" in lower and "stop" in lower
+    assert "record_linkedin_metrics" in rules and "once" in lower
+    assert "never" in lower and "estimate" in lower
+
+
+def test_the_paste_in_route_stays_while_there_is_no_browser() -> None:
+    text = (bundle_root() / "AGENTS.md").read_text()
+    assert "If you have no browser tool, or a browser call is refused" in text
+    assert "paste each post's numbers" in text
 
 
 def test_no_em_dash_in_eva_s_own_instructions() -> None:
