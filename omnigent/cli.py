@@ -4008,8 +4008,12 @@ def _assert_server_port_bindable(host: str, port: int) -> None:
 @click.option(
     "--database-uri",
     default=None,
-    help="Database URI for stores.  [default: sqlite at <data-dir>/chat.db, "
-    "machine-global so `server` and `run` share one admin]",
+    # An env binding keeps the URI (and its password) off the command line,
+    # where any user on the host can read it with `ps`. The flag still wins.
+    envvar="OMNIGENT_DATABASE_URI",
+    help="Database URI for stores; also read from OMNIGENT_DATABASE_URI, which the "
+    "flag overrides.  [default: sqlite at <data-dir>/chat.db, machine-global so "
+    "`server` and `run` share one admin]",
 )
 @click.option(
     "--conversation-database-uri",
@@ -4249,8 +4253,8 @@ def server(
     if config_path:
         os.environ["OMNIGENT_CONFIG"] = str(Path(config_path).resolve())
 
-    # CLI args take precedence over config file, which takes precedence
-    # over defaults.
+    # CLI args (and their env bindings, e.g. OMNIGENT_DATABASE_URI) take
+    # precedence over config file, which takes precedence over defaults.
     db_uri = database_uri or cfg.get("database_uri", _default_db_uri())
     conv_db_uri = conversation_database_uri or cfg.get("conversation_database_uri", None)
     art_loc = artifact_location or cfg.get("artifact_location", _default_artifact_location())

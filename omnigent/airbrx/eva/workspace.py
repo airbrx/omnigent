@@ -19,10 +19,12 @@ the state is empty and says so. It never falls back to sample data: Iris's
 workspace once opened on a complete synthetic report behind a small chip, and a
 rep reading it could not tell.
 
-The outreach app remains the deeper surface, for configuration, approvals and
-edits. The state carries the binding's ``base_url`` so the workspace can link
-there; it is the app as the execution host sees it, which on a single Mac is
-also what the browser sees.
+The outreach app is served inside Omnigent at ``/eva/app`` (``proxy.py``), so
+the state links there rather than to the binding's ``base_url``, which is the
+app as the execution host sees it and means nothing to a browser.
+
+The five routes return Iris's shapes, key for key; where Eva adds a key or a
+body is Eva's own, docs/eva/WORKSPACE.md ("Adapter API") says so.
 """
 
 from __future__ import annotations
@@ -43,10 +45,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from omnigent.airbrx.eva.config import Binding, bindings
 from omnigent.airbrx.eva.package import portrait_path
 from omnigent.airbrx.eva.policy import EVA_TOOLS
+from omnigent.airbrx.eva.proxy import PREFIX as OUTREACH_APP_PATH
 from omnigent.server.routes._auth_helpers import require_user
 from omnigent.server.routes._content_type import require_json_content_type
 
 UI_ROOT = Path(__file__).parent / "ui"
+
+#: Iris's threshold: state older than this is flagged ``stale``.
+STALE_AFTER_SECONDS = 300
+
+#: The read tools a Refresh turn must record for the refresh to count.
+_REFRESH_READS = frozenset({"list_pool", "list_my_leads"})
 
 #: Harness tools a recorded turn may contain without breaching the boundary.
 #: ``ToolSearch`` only loads schemas; anything it surfaces still has to be
@@ -253,17 +262,38 @@ def workspace_state(
                 lead["profile"] = profile
 
     refreshed = [x["at"] for x in (pool, mine) if x and x.get("at")]
+    refreshed_at = max(refreshed) if refreshed else None
+    age = None if refreshed_at is None else max(0, round(time.time() - refreshed_at))
     return {
         "pool": pool,
         "mine": mine,
         "leads": leads,
         "drafts": sorted(drafts.values(), key=lambda d: d.get("updated_at") or 0, reverse=True),
-        "refreshed_at": max(refreshed) if refreshed else None,
+        "refreshed_at": refreshed_at,
         "errors": errors[-5:],
         "empty": pool is None and mine is None and not leads and not drafts,
-        "outreach_url": binding.base_url.rstrip("/") if binding else None,
+        "stale": age is None or age > STALE_AFTER_SECONDS,
+        "cache_age_seconds": age,
+        "outreach_url": OUTREACH_APP_PATH if binding else None,
         "binding_label": binding.label if binding else None,
     }
+
+
+def refreshed_by(items: list[dict[str, Any]], marker_id: str) -> bool:
+    """Did the turn that starts at ``marker_id`` record a successful pool or lead read?
+
+    Iris's rule: a refresh that shows the previous capture is worse than one
+    that admits it collected nothing.
+    """
+    start = next((n for n, i in enumerate(items) if i.get("id") == marker_id), None)
+    if start is None:
+        return False
+    return any(
+        call["tool"] in _REFRESH_READS
+        and isinstance(call["result"], dict)
+        and "error" not in call["result"]
+        for call in tool_results(items[start:])
+    )
 
 
 def completed_answer(items: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -288,7 +318,7 @@ def completed_answer(items: list[dict[str, Any]]) -> dict[str, Any] | None:
     text = "\n".join(
         c.get("text", "") for c in answers[-1].get("content", []) if c.get("type") == "output_text"
     )
-    return {"text": text, "tools": tools} if text.strip() else None
+    return {"text": text, "tools": tools, "failed": None} if text.strip() else None
 
 
 # --------------------------------------------------------------------------
@@ -400,15 +430,27 @@ def add_workspace_routes(router: APIRouter, *, auth_provider: Any, agent_store: 
                 )
                 raise
 
-    async def read_state(request: Request, session_id: str) -> dict[str, Any]:
+    async def read_state(request: Request, session_id: str, fresh: bool = False) -> dict[str, Any]:
         async with _session_client(request) as client:
             _, binding = await authorize(request, session_id, client)
+            marker = None
+            if fresh:
+                marker = (await turn(request, session_id, client, REFRESH_PROMPT))["item_id"]
             page = await _checked(
                 await client.get(
                     f"/v1/sessions/{session_id}/items", params={"limit": 1000, "order": "desc"}
                 )
             )
-        return workspace_state(list(reversed(page["data"])), binding)
+        items = list(reversed(page["data"]))
+        if marker is not None and not refreshed_by(items, marker):
+            raise HTTPException(
+                409, "The refresh read nothing; open native chat to see what Eva did."
+            )
+        state = workspace_state(items, binding)
+        if state["empty"]:
+            # Iris answers 409 until there is something to show; so does Eva.
+            raise HTTPException(409, "No workspace state yet; use Refresh")
+        return state
 
     @router.get("/eva/portrait", include_in_schema=False)
     async def portrait(request: Request) -> FileResponse:
@@ -435,10 +477,7 @@ def add_workspace_routes(router: APIRouter, *, auth_provider: Any, agent_store: 
             raise HTTPException(422, "The last message must be a nonempty user question")
         # Only the last message is forwarded; the native session owns history.
         async with _session_client(request) as client:
-            answer = await turn(
-                request, session_id, client, body.history[-1].content, body.deadline
-            )
-        return {**answer, "state": await read_state(request, session_id)}
+            return await turn(request, session_id, client, body.history[-1].content, body.deadline)
 
     @router.post(
         "/eva/sessions/{session_id}/ui/api/cancel",
@@ -462,9 +501,7 @@ def add_workspace_routes(router: APIRouter, *, auth_provider: Any, agent_store: 
         dependencies=[Depends(require_json_content_type)],
     )
     async def refresh(request: Request, session_id: str) -> dict[str, Any]:
-        async with _session_client(request) as client:
-            answer = await turn(request, session_id, client, REFRESH_PROMPT)
-        return {**answer, "state": await read_state(request, session_id)}
+        return await read_state(request, session_id, fresh=True)
 
     @router.get("/eva/sessions/{session_id}/ui/api/readiness")
     async def readiness(request: Request, session_id: str) -> dict[str, Any]:
@@ -483,11 +520,17 @@ def add_workspace_routes(router: APIRouter, *, auth_provider: Any, agent_store: 
             for i in page["data"]
         )
         return {
-            "label": binding.label,
+            # Iris's keys. Eva has no tenant; her binding label is the thing
+            # a rep chose, so it stands in for both.
+            "tenant_id": binding.label,
+            "name": binding.label,
+            "fixture": binding.fixture,
             "session_status": session.get("status"),
             "turn_completed_here": completed,
             "last_task_failed": bool(session.get("last_task_error")),
-            "outreach_url": binding.base_url.rstrip("/"),
+            # Eva's additions.
+            "label": binding.label,
+            "outreach_url": OUTREACH_APP_PATH,
             "verified": [
                 "you are authenticated to this Omnigent host",
                 "Eva is a registered agent on this host",

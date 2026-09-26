@@ -121,6 +121,51 @@ server. It touches only `/etc/omnigent/eva.json` and the one
 With no bindings, Eva is entirely inert: not registered, catalog empty,
 readiness 404. Unbinding is therefore the rollback, and it needs no deploy.
 
+## The outreach app inside Omnigent (`/eva/app`)
+
+Since 2026-09-26 the outreach app runs on the same box as the Omnigent server
+and is served inside it at `https://omnigent.airbrx.ai/eva/app`, with the rep's
+identity signed by Omnigent. The contract and why are in
+[WORKSPACE.md](WORKSPACE.md) ("Identity contract v1"). Two settings, both
+environment variables on the coordinator (`/etc/omnigent/server.env`), never
+files:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `OUTREACH_IDENTITY_SECRET` | The HMAC key shared with the outreach app. At least 32 bytes. The **same value** goes in the outreach app's environment. | unset: `/eva/app` answers 503 and forwards nothing |
+| `OUTREACH_UPSTREAM` | The outreach app's origin as the coordinator reaches it. An origin only, no path. | `http://127.0.0.1:8000` |
+
+Generate the secret once, on the box, and put it in both environments without
+it passing through a terminal log or a file in a repository:
+
+```sh
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Then restart the Omnigent server. The secret is read per request, but only a
+restarted process sees a changed environment. Rotating it means changing both
+sides and restarting both; in between, every `/eva/app` request is refused by
+the outreach app (401), which is the correct failure.
+
+Checks, in order:
+
+- Signed out: `curl -sS -o /dev/null -w '%{http_code}' https://omnigent.airbrx.ai/eva/app/`
+  answers `401`, from Omnigent, and the outreach app's log shows nothing.
+- Signed in as a rep, in a browser: `/eva/app/` renders the app without its
+  own top nav. As a signed-in Airbrx user who is not an active rep: `403`,
+  from the outreach app.
+- `503` means the secret is unset or shorter than 32 bytes on the coordinator,
+  or `OUTREACH_UPSTREAM` is not an origin. `502` means nothing answered at
+  the upstream: `curl -sS http://127.0.0.1:8000/readyz` on the box.
+- `https://omnigent.airbrx.ai/eva/app/mcp` is always `404`. Eva's MCP calls go
+  to `http://127.0.0.1:8000/mcp` directly with the rep's own token, never
+  through Omnigent.
+
+**Never mark an Omnigent host shared.** On a shared host a relaunched session
+resolves launch providers for the host owner, so one rep's session could
+receive another rep's outreach MCP token. Per-rep tokens and single-owner
+hosts stay as they are.
+
 ## The token bridge, and why it is a bridge
 
 Nothing yet turns the binding's `token_ref` into the `OUTREACH_MCP_TOKEN` the

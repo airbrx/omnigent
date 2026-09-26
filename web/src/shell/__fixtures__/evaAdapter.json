@@ -1,0 +1,253 @@
+{
+  "fresh_session": {
+    "readiness": {
+      "body": {
+        "fixture": false,
+        "label": "live",
+        "last_task_failed": false,
+        "name": "live",
+        "outreach_url": "/eva/app",
+        "session_status": "idle",
+        "tenant_id": "live",
+        "turn_completed_here": false,
+        "unverified": [
+          "no turn has completed in this session, so whether Eva's host can reach the model and the outreach app is unknown until Refresh or a question runs"
+        ],
+        "verified": [
+          "you are authenticated to this Omnigent host",
+          "Eva is a registered agent on this host",
+          "this session belongs to Eva and you may run turns in it",
+          "your Eva binding authorizes you on this session's host"
+        ]
+      },
+      "status": 200
+    },
+    "state": {
+      "body": {
+        "detail": "No workspace state yet; use Refresh"
+      },
+      "status": 409
+    }
+  },
+  "read_session": {
+    "chat": {
+      "body": {
+        "failed": null,
+        "item_id": "u1",
+        "text": "One lead in the pool: Pat Example at Example Analytics Co.",
+        "tools": ["list_pool", "list_my_leads", "get_lead"]
+      },
+      "status": 200
+    },
+    "readiness": {
+      "body": {
+        "fixture": false,
+        "label": "live",
+        "last_task_failed": false,
+        "name": "live",
+        "outreach_url": "/eva/app",
+        "session_status": "idle",
+        "tenant_id": "live",
+        "turn_completed_here": true,
+        "unverified": [],
+        "verified": [
+          "you are authenticated to this Omnigent host",
+          "Eva is a registered agent on this host",
+          "this session belongs to Eva and you may run turns in it",
+          "your Eva binding authorizes you on this session's host"
+        ]
+      },
+      "status": 200
+    },
+    "refresh": {
+      "body": {
+        "binding_label": "live",
+        "cache_age_seconds": 60,
+        "drafts": [
+          {
+            "channel": "Email",
+            "company": "Example Analytics Co",
+            "draft_id": "00000000-0000-4000-8000-000000000002",
+            "lead_id": "00000000-0000-4000-8000-000000000001",
+            "name": "Pat Example",
+            "status": "draft",
+            "subject": "An invented subject",
+            "updated_at": 1790000000,
+            "version_no": 1
+          }
+        ],
+        "empty": false,
+        "errors": [],
+        "leads": {
+          "00000000-0000-4000-8000-000000000001": {
+            "at": 1790000000,
+            "drafts": [
+              {
+                "channel": "Email",
+                "draft_id": "00000000-0000-4000-8000-000000000002",
+                "status": "draft",
+                "subject": "An invented subject",
+                "version_no": 1
+              }
+            ],
+            "lead_id": "00000000-0000-4000-8000-000000000001",
+            "profile": {
+              "city": "Springfield",
+              "company": "Example Analytics Co",
+              "id": "00000000-0000-4000-8000-000000000001",
+              "lead_status": "New",
+              "name": "Pat Example",
+              "priority": 2,
+              "title": "Head of Data",
+              "warehouse": "Snowflake"
+            },
+            "qualification": {
+              "rationale": "Invented for a test.",
+              "score": 3,
+              "warehouse_fit": "good"
+            },
+            "touches": []
+          }
+        },
+        "mine": {
+          "at": 1790000000,
+          "leads": [],
+          "total": 0
+        },
+        "outreach_url": "/eva/app",
+        "pool": {
+          "at": 1790000000,
+          "leads": [
+            {
+              "company": "Example Analytics Co",
+              "id": "00000000-0000-4000-8000-000000000001",
+              "lead_status": "New",
+              "name": "Pat Example",
+              "priority": 2,
+              "title": "Head of Data",
+              "warehouse": "Snowflake"
+            }
+          ],
+          "total": 1
+        },
+        "refreshed_at": 1790000000,
+        "stale": false
+      },
+      "status": 200
+    },
+    "state": {
+      "body": {
+        "binding_label": "live",
+        "cache_age_seconds": 60,
+        "drafts": [
+          {
+            "channel": "Email",
+            "company": "Example Analytics Co",
+            "draft_id": "00000000-0000-4000-8000-000000000002",
+            "lead_id": "00000000-0000-4000-8000-000000000001",
+            "name": "Pat Example",
+            "status": "draft",
+            "subject": "An invented subject",
+            "updated_at": 1790000000,
+            "version_no": 1
+          }
+        ],
+        "empty": false,
+        "errors": [],
+        "leads": {
+          "00000000-0000-4000-8000-000000000001": {
+            "at": 1790000000,
+            "drafts": [
+              {
+                "channel": "Email",
+                "draft_id": "00000000-0000-4000-8000-000000000002",
+                "status": "draft",
+                "subject": "An invented subject",
+                "version_no": 1
+              }
+            ],
+            "lead_id": "00000000-0000-4000-8000-000000000001",
+            "profile": {
+              "city": "Springfield",
+              "company": "Example Analytics Co",
+              "id": "00000000-0000-4000-8000-000000000001",
+              "lead_status": "New",
+              "name": "Pat Example",
+              "priority": 2,
+              "title": "Head of Data",
+              "warehouse": "Snowflake"
+            },
+            "qualification": {
+              "rationale": "Invented for a test.",
+              "score": 3,
+              "warehouse_fit": "good"
+            },
+            "touches": []
+          }
+        },
+        "mine": {
+          "at": 1790000000,
+          "leads": [],
+          "total": 0
+        },
+        "outreach_url": "/eva/app",
+        "pool": {
+          "at": 1790000000,
+          "leads": [
+            {
+              "company": "Example Analytics Co",
+              "id": "00000000-0000-4000-8000-000000000001",
+              "lead_status": "New",
+              "name": "Pat Example",
+              "priority": 2,
+              "title": "Head of Data",
+              "warehouse": "Snowflake"
+            }
+          ],
+          "total": 1
+        },
+        "refreshed_at": 1790000000,
+        "stale": false
+      },
+      "status": 200
+    }
+  },
+  "refresh_read_nothing": {
+    "refresh": {
+      "body": {
+        "detail": "The refresh read nothing; open native chat to see what Eva did."
+      },
+      "status": 409
+    },
+    "state": {
+      "body": {
+        "binding_label": "live",
+        "cache_age_seconds": 660,
+        "drafts": [],
+        "empty": false,
+        "errors": [],
+        "leads": {},
+        "mine": null,
+        "outreach_url": "/eva/app",
+        "pool": {
+          "at": 1789999400,
+          "leads": [
+            {
+              "company": "Example Analytics Co",
+              "id": "00000000-0000-4000-8000-000000000001",
+              "lead_status": "New",
+              "name": "Pat Example",
+              "priority": 2,
+              "title": "Head of Data",
+              "warehouse": "Snowflake"
+            }
+          ],
+          "total": 1
+        },
+        "refreshed_at": 1789999400,
+        "stale": true
+      },
+      "status": 200
+    }
+  }
+}
