@@ -33,6 +33,9 @@
     { id: "pool", label: "Pool", path: "/eva/app/leads/pool" },
     { id: "accounts", label: "Accounts", path: "/eva/app/accounts" },
     { id: "analytics", label: "Analytics", path: "/eva/app/analytics" },
+    { id: "scoreboard", label: "Scoreboard", path: "/eva/app/scoreboard" },
+    { id: "linkedin", label: "LinkedIn", path: "/eva/app/linkedin" },
+    { id: "plan", label: "GTM plan", path: "/eva/app/plan" },
     { id: "guardrails", label: "Guardrails", path: "/eva/app/guardrails" },
     { id: "sync", label: "Sync", path: "/eva/app/sync" },
     { id: "settings", label: "Settings", path: "/eva/app/settings/token" },
@@ -42,7 +45,11 @@
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const LEAD_PATH =
     /^\/eva\/app\/leads\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
+  // A scoreboard month as the page sends it: a real year and month, nothing else.
+  const MONTH = /^20\d{2}-(0[1-9]|1[0-2])$/;
   const DOCK_KEY = "eva.dockCollapsed";
+  // What a tile shows for a count Eva has not read. An en dash, never an em dash.
+  const UNREAD = "\u2013";
 
   const $ = (id) => document.getElementById(id);
   let state = null;
@@ -612,8 +619,10 @@
     const pool = state && state.pool;
     const mine = state && state.mine;
     const drafts = (state && state.drafts) || [];
-    const poolCount = pool ? (pool.total ?? pool.leads.length) : 0;
-    const mineCount = mine ? (mine.total ?? mine.leads.length) : 0;
+    // A count Eva has not read is a dash, not a zero: "0 claimable leads"
+    // beside a Pool tab full of leads reads as broken.
+    const poolCount = pool ? (pool.total ?? pool.leads.length) : null;
+    const mineCount = mine ? (mine.total ?? mine.leads.length) : null;
     const review = drafts.filter((d) => d.status === "in_review").length;
     for (const [id, value] of [
       ["kpi-pool", poolCount],
@@ -624,7 +633,16 @@
       ["nav-drafts", drafts.length],
       ["kpi-review", review],
     ])
-      $(id).textContent = String(value);
+      $(id).textContent = value === null ? UNREAD : String(value);
+    for (const [id, value, note] of [
+      ["kpi-pool", poolCount, "claimable leads"],
+      ["kpi-mine", mineCount, "owned or claimed"],
+    ]) {
+      const tile = $(id).parentElement;
+      tile.classList.toggle("unread", value === null);
+      tile.querySelector(".note").textContent =
+        value === null ? "not read yet" : note;
+    }
     $("freshness").textContent =
       state && state.refreshed_at
         ? `Eva read the pipeline ${shortWhen(state.refreshed_at)}${state.stale ? ", may be out of date" : ""}`
@@ -652,6 +670,89 @@
 
   // ---------------------------------------------------------------- chat
 
+  // Eva writes a little markdown. Her answers render a safe subset of it:
+  // bold, italics, inline code, bullet and numbered lists, and line breaks.
+  // Everything is built as DOM nodes with text content, so any HTML in her
+  // text (which can quote CRM data) shows as the characters it is and never
+  // becomes markup. Anything outside the subset shows as written.
+  const INLINE = new RegExp(
+    [
+      /`([^`\n]+)`/.source,
+      /\*\*(?=\S)([^\n]*?\S)\*\*/.source,
+      /(?<!\w)__(?=\S)([^\n]*?\S)__(?!\w)/.source,
+      /\*([^\s*](?:[^*\n]*?[^\s*])?)\*/.source,
+      /(?<!\w)_([^\s_](?:[^_\n]*?[^\s_])?)_(?!\w)/.source,
+    ].join("|"),
+  );
+
+  function inline(text) {
+    const out = [];
+    let rest = text;
+    for (let match = INLINE.exec(rest); match; match = INLINE.exec(rest)) {
+      if (match.index) out.push(rest.slice(0, match.index));
+      const [, code, bold, bold2, em, em2] = match;
+      if (code !== undefined) out.push(el("code", {}, code));
+      else if (bold !== undefined || bold2 !== undefined)
+        out.push(el("strong", {}, inline(bold ?? bold2)));
+      else out.push(el("em", {}, inline(em ?? em2)));
+      rest = rest.slice(match.index + match[0].length);
+    }
+    if (rest) out.push(rest);
+    return out;
+  }
+
+  const BULLET = /^\s*[-*+]\s+(.*)$/;
+  const NUMBERED = /^\s*(\d{1,9})[.)]\s+(.*)$/;
+  const HEADING = /^\s*#{1,6}\s+(.*)$/;
+
+  /** Eva's text as nodes: paragraphs, lists and inline marks, never HTML. */
+  function markdown(text) {
+    const blocks = [];
+    let paragraph = null;
+    let list = null;
+    for (const line of String(text).replace(/\r\n?/g, "\n").split("\n")) {
+      const bullet = BULLET.exec(line);
+      const numbered = !bullet && NUMBERED.exec(line);
+      if (bullet || numbered) {
+        paragraph = null;
+        const tag = bullet ? "ul" : "ol";
+        if (!list || list.tagName.toLowerCase() !== tag) {
+          list = el(
+            tag,
+            numbered && numbered[1] !== "1"
+              ? { start: Number(numbered[1]) }
+              : {},
+          );
+          blocks.push(list);
+        }
+        list.append(el("li", {}, inline(bullet ? bullet[1] : numbered[2])));
+        continue;
+      }
+      list = null;
+      if (!line.trim()) {
+        paragraph = null;
+        continue;
+      }
+      const heading = HEADING.exec(line);
+      if (heading) {
+        paragraph = null;
+        blocks.push(el("p", {}, el("strong", {}, inline(heading[1]))));
+        continue;
+      }
+      if (paragraph) paragraph.append(el("br"), ...inline(line));
+      else blocks.push((paragraph = el("p", {}, inline(line))));
+    }
+    return blocks;
+  }
+
+  /** What each of Eva's answer lines says, as she wrote it. */
+  const rawText = new WeakMap();
+
+  function setEvaText(line, text) {
+    rawText.set(line, text);
+    line.replaceChildren(...markdown(text));
+  }
+
   function addMessage(kind, text, retry) {
     const list = $("messages");
     if (kind === "eva" && waitingLine) {
@@ -662,7 +763,7 @@
       el(
         "li",
         { class: kind },
-        text,
+        kind === "eva" ? null : text,
         retry
           ? el(
               "button",
@@ -677,6 +778,7 @@
           : null,
       ),
     );
+    if (kind === "eva") setEvaText(line, text);
     list.scrollTop = list.scrollHeight;
     return line;
   }
@@ -711,6 +813,10 @@
     list_guardrails: "Reading the guardrails",
     query_analytics: "Reading the analytics",
     record_agent_run: "Recording her work",
+    list_linkedin_posts: "Reading the LinkedIn posts",
+    record_linkedin_metrics: "Recording LinkedIn post stats",
+    list_plan_items: "Reading the GTM plan",
+    record_plan_actual: "Recording a plan actual",
     ToolSearch: "Getting her tools ready",
   };
 
@@ -767,7 +873,9 @@
       if (!text.trim()) return;
       const line = answerLines.get(item.id);
       if (line) {
-        if (line.textContent !== text) line.textContent = text;
+        if (rawText.get(line) !== text) setEvaText(line, text);
+        // The grown text is what the reply will carry, so it is shown too.
+        if (shown) shown.add(text.trim());
         return;
       }
       if (handled.has(item.id)) return;
@@ -1159,26 +1267,59 @@
   //     lead_name}, location.origin)
   // A message listener is an injection surface, so this accepts a message only
   // from this origin AND from one of this workspace's own management frames,
-  // and only a draft intent with a well-formed lead id.
+  // and only an intent listed below with well-formed fields. Each intent turns
+  // into a fixed sentence; nothing the page sends reaches Eva except a lead id
+  // checked as a UUID, a lead name cleaned to one bounded line, and a month
+  // checked as YYYY-MM.
+  const LEAD_ASK = (verb) => (data) => {
+    if (typeof data.lead_id !== "string" || !UUID.test(data.lead_id))
+      return null;
+    const id = data.lead_id.toLowerCase();
+    const name = cleanName(data.lead_name) || "this lead";
+    return {
+      text: `${verb(name)} (id ${id}).`,
+      later: verb(name).replace(/^./, (c) => c.toLowerCase()),
+    };
+  };
+  const INTENTS = {
+    // "Draft with Eva" on a lead page.
+    draft: LEAD_ASK((name) => `Draft a first touch for ${name}`),
+    // "Qualify with Eva" on a lead page.
+    qualify: LEAD_ASK((name) => `Qualify ${name}`),
+    // The LinkedIn page's refresh button.
+    refresh_linkedin: () => ({
+      text: "Refresh the LinkedIn post stats: read the latest analytics for our recent posts and record them.",
+      later: "refresh the LinkedIn post stats",
+    }),
+    // The scoreboard's "Ask Eva for a read" for the month on screen.
+    read_scoreboard: (data) => {
+      if (typeof data.month !== "string" || !MONTH.test(data.month))
+        return null;
+      return {
+        text: `Give me a read on the outreach scoreboard for ${data.month}: what changed, what's working, what needs attention.`,
+        later: `give you a read on the scoreboard for ${data.month}`,
+      };
+    },
+  };
   window.addEventListener("message", (event) => {
     const data = event.data;
     if (!data || data.type !== "eva.ask") return;
     if (event.origin !== location.origin || !event.source) return;
     const frames = [...document.querySelectorAll("#frames iframe")];
     if (!frames.some((frame) => frame.contentWindow === event.source)) return;
-    if (data.intent !== "draft") return;
-    if (typeof data.lead_id !== "string" || !UUID.test(data.lead_id)) return;
-    const id = data.lead_id.toLowerCase();
-    const name = cleanName(data.lead_name) || "this lead";
+    if (!Object.hasOwn(INTENTS, data.intent)) return;
+    const asked = INTENTS[data.intent](data);
+    if (!asked) return;
     setDockCollapsed(false);
     if (busy) {
       addMessage(
         "system",
-        `Eva is busy with another turn. Ask her to draft for ${name} when she finishes.`,
+        `Eva is busy with another turn. Ask her to ${asked.later} when she finishes.`,
       );
       return;
     }
-    void ask(`Draft a first touch for ${name} (id ${id}).`, false);
+    // The ask says what it is about, so no page note is added to it.
+    void ask(asked.text, false);
   });
 
   $("outreach-link").addEventListener("click", (event) =>
