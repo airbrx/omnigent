@@ -113,6 +113,8 @@ it.each(TABS)("the %s tab frames %s", async (label, path) => {
   expect(screen.getByRole("tab", { name: label })).toHaveAttribute("aria-selected", "true");
   expect(screen.getByTitle(`Eva ${label}`)).toHaveAttribute("src", path);
   expect(document.getElementById("home")).not.toBeVisible();
+  // Freshness and refresh describe the pipeline, which only the Chat tab shows.
+  expect(document.getElementById("actions")).not.toBeVisible();
   expect(window.location.hash).toBe(`#${label.toLowerCase()}`);
 });
 
@@ -182,7 +184,7 @@ it("docked beside a tab, the question says what the rep is looking at", async ()
 it("the context can be left out of a question", async () => {
   await mount();
   fireEvent.click(screen.getByRole("tab", { name: "Pool" }));
-  fireEvent.click(screen.getByRole("button", { name: "Leave out" }));
+  fireEvent.click(screen.getByRole("button", { name: "Don't include this page" }));
   ask("Hello");
   await screen.findByText("Two leads are due today.");
   expect(chatBodies()[0].history).toEqual([{ role: "user", content: "Hello" }]);
@@ -193,7 +195,7 @@ it("the chat is one conversation across tabs", async () => {
   ask("First");
   await screen.findByText("Two leads are due today.");
   fireEvent.click(screen.getByRole("tab", { name: "Accounts" }));
-  fireEvent.click(screen.getByRole("button", { name: "Leave out" }));
+  fireEvent.click(screen.getByRole("button", { name: "Don't include this page" }));
   ask("Second");
   await waitFor(() => expect(chatBodies()).toHaveLength(2));
   expect(chatBodies()[1].history.map((t: { role: string }) => t.role)).toEqual([
@@ -242,15 +244,19 @@ it("Stop interrupts the running turn", async () => {
 it("an empty session says so rather than calling it an error", async () => {
   await mount();
   expect(screen.getByText("Nothing loaded yet")).toBeInTheDocument();
+  expect(document.getElementById("freshness")).toHaveTextContent(
+    "Eva has not read the pipeline yet",
+  );
   expect(document.getElementById("notice")).not.toBeVisible();
 });
 
 it("Refresh shows the state the adapter answers with", async () => {
   serve({ refresh: () => Response.json(STATE) });
   await mount();
-  fireEvent.click(screen.getByRole("button", { name: "Refresh from host" }));
+  fireEvent.click(screen.getByRole("button", { name: "Refresh pipeline" }));
   expect(await screen.findByText("Pat Example")).toBeInTheDocument();
   expect(document.getElementById("kpi-pool")).toHaveTextContent("1");
+  expect(document.getElementById("freshness")).toHaveTextContent("Eva read the pipeline");
 });
 
 it("a lead's outreach link opens in the Leads tab, beside Eva", async () => {

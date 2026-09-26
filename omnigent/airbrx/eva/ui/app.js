@@ -360,7 +360,7 @@
           el(
             "p",
             {},
-            "This workspace shows only what Eva has read in this session. Refresh from host asks her to read the pool and your leads. Nothing is shown until she has.",
+            "This workspace shows only what Eva has read in this session. Refresh pipeline asks her to read the pool and your leads. Nothing is shown until she has.",
           ),
         ),
       );
@@ -583,8 +583,8 @@
       $(id).textContent = String(value);
     $("freshness").textContent =
       state && state.refreshed_at
-        ? `Read ${when(state.refreshed_at)}${state.stale ? ", may be out of date" : ""}`
-        : "Not refreshed yet";
+        ? `Eva read the pipeline ${when(state.refreshed_at)}${state.stale ? ", so it may be out of date" : ""}`
+        : "Eva has not read the pipeline yet";
     const link = $("outreach-link");
     if (state && state.outreach_url) link.href = state.outreach_url;
     else link.removeAttribute("href");
@@ -717,6 +717,8 @@
     document.body.classList.toggle("docked", docked);
     document.body.classList.toggle("collapsed", collapsed);
     $("home").hidden = docked;
+    // Freshness and refresh are about the pipeline, which only the Chat tab shows.
+    $("actions").hidden = docked;
     $("frames").hidden = !docked;
     $("chat").hidden = collapsed;
     $("dock-rail").hidden = !collapsed;

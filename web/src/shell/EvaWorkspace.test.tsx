@@ -100,6 +100,15 @@ it("a host binding without a workspace directory says so instead of failing on c
   );
 });
 
+it("shows the binding by name, branded, and never its loopback URL", async () => {
+  catalog();
+  show();
+  const start = await screen.findByRole("button", { name: "Start" });
+  expect(screen.getByText("Live")).toBeInTheDocument();
+  expect(screen.queryByText(/127\.0\.0\.1/)).toBeNull();
+  expect(start.className).toContain("bg-[#FD6C1D]");
+});
+
 it("no binding for the caller is an explicit message, not an empty page", async () => {
   catalog([]);
   show();

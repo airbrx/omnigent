@@ -41,6 +41,7 @@ export function EvaWorkspace() {
   useEffect(() => {
     frame.current?.contentWindow?.postMessage({ evaHostTheme: mode }, window.location.origin);
   }, [mode]);
+  useEffect(loadInter, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const { data, isLoading } = useQuery({
@@ -114,43 +115,87 @@ export function EvaWorkspace() {
       />
     );
   return (
-    <main className="mx-auto flex w-full max-w-xl flex-col gap-4 p-6">
-      <h1 className="font-semibold text-xl">Eva workspace</h1>
-      <p>
-        One workspace for the airbrx lead list: Eva's chat, and the outreach app's leads, pool,
-        accounts, analytics, guardrails, sync and settings as tabs, with Eva docked beside whichever
-        one is open.
-      </p>
-      {isLoading ? (
-        <p role="status">Loading Eva…</p>
-      ) : !data?.agent_id || !data.bindings.length ? (
-        <p role="alert">
-          Eva has no binding for you on this host. Ask the host operator to complete the Eva setup.
+    <div
+      className="flex min-h-0 w-full flex-1 overflow-y-auto bg-[#F0EFED] text-[#1A1A1A] antialiased dark:bg-[#121212] dark:text-[#E0E0E0]"
+      style={{ fontFamily: "Inter, system-ui, -apple-system, sans-serif" }}
+    >
+      <main className="mx-auto flex w-full max-w-xl flex-col gap-5 px-4 py-12">
+        <div className="flex items-center gap-3">
+          <img
+            src="/v1/eva/portrait"
+            alt=""
+            className="size-12 rounded-xl bg-[#F5F5F5] object-cover dark:bg-[#242424]"
+          />
+          <div>
+            <p className="font-bold text-[#8A8A8A] text-[10px] uppercase tracking-[0.12em]">
+              airbrx outreach agent
+            </p>
+            <h1 className="font-extrabold text-2xl tracking-[-0.02em]">Eva workspace</h1>
+          </div>
+        </div>
+        <p className="text-[#505050] text-sm leading-relaxed dark:text-[#A0A0A0]">
+          One workspace for the airbrx lead list: Eva's chat, and the outreach app's leads, pool,
+          accounts, analytics, guardrails, sync and settings as tabs, with Eva docked beside
+          whichever one is open.
         </p>
-      ) : (
-        <ul className="flex flex-col gap-2">
-          {data.bindings.map((binding) => (
-            <li
-              key={binding.label}
-              className="flex items-center justify-between gap-3 rounded-md border p-3"
-            >
-              <span className="min-w-0">
-                <span className="block font-medium">
-                  {binding.label}
-                  {binding.fixture ? " (fixture)" : ""}
+        {isLoading ? (
+          <p role="status" className="text-[#8A8A8A] text-sm">
+            Loading Eva…
+          </p>
+        ) : !data?.agent_id || !data.bindings.length ? (
+          <p role="alert" className="text-sm">
+            Eva has no binding for you on this host. Ask the host operator to complete the Eva
+            setup.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-3">
+            {data.bindings.map((binding) => (
+              <li
+                key={binding.label}
+                className="flex items-center justify-between gap-3 rounded-2xl border border-[#E8E8E8] bg-white px-5 py-4 shadow-[0_2px_8px_rgba(0,0,0,0.06),0_0_1px_rgba(0,0,0,0.08)] dark:border-[#333333] dark:bg-[#1A1A1A]"
+              >
+                <span className="min-w-0">
+                  <span className="block font-semibold text-sm">{displayName(binding)}</span>
+                  <span className="block text-[#8A8A8A] text-xs">
+                    {binding.fixture ? "Sample data for trying Eva out" : "Your leads and pool"}
+                  </span>
                 </span>
-                <span className="block truncate text-muted-foreground text-xs">
-                  {binding.base_url}
-                </span>
-              </span>
-              <Button disabled={busy} onClick={() => void create(binding)}>
-                {chatMode ? "Start chat" : "Start"}
-              </Button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {error && <p role="alert">{error}</p>}
-    </main>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void create(binding)}
+                  className="shrink-0 rounded-xl bg-[#FD6C1D] px-5 py-2 font-semibold text-sm text-white transition-colors hover:bg-[#E65A0D] disabled:opacity-50"
+                >
+                  {chatMode ? "Start chat" : "Start"}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {error && (
+          <p role="alert" className="text-[#DC2626] text-sm">
+            {error}
+          </p>
+        )}
+      </main>
+    </div>
   );
+}
+
+/** A binding as a rep reads it: its label, never the loopback URL behind it. */
+export function displayName(binding: EvaBinding): string {
+  const label = binding.label.trim() || "Eva";
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+const INTER =
+  "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap";
+
+/** Inter is the airbrx typeface; the rest of the shell does not load it. */
+function loadInter() {
+  if (document.querySelector(`link[href="${INTER}"]`)) return;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = INTER;
+  document.head.appendChild(link);
 }
