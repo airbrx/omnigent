@@ -3,7 +3,154 @@
 Design approved by Abram on 2026-09-24. This page is what gets built, and why
 it is shaped this way.
 
-## Two surfaces, two jobs
+## One surface, as of 2026-09-26
+
+**Abram changed the design on 2026-09-26: Eva runs entirely inside
+`https://omnigent.airbrx.ai` as one workspace, like Iris.** Her chat and the
+outreach app's management tabs (leads, pool, accounts, analytics, guardrails,
+sync, settings) are in one place. There is no `outreach.airbrx.ai`, no DNS
+record, and no second Google sign-in.
+
+**Why it changed.** The 2026-09-24 design below had two surfaces for one
+reason: the coordinator could not reach an outreach app on another machine's
+loopback, so the app had to be a separate place a rep went to. The outreach
+app now runs on the **same box** as the Omnigent server, bound to
+`127.0.0.1:8000`, and that removes the reason. Omnigent reverse-proxies it at
+`/eva/app` and tells it who the caller is with a signed header, so the rep's
+Omnigent sign-in is the only sign-in.
+
+What this supersedes below: "Two surfaces, two jobs" and every "links to the
+outreach app at the binding's `base_url`". The workspace links to `/eva/app`
+instead, and the adapter's `outreach_url` follows with the adapter change. The
+binding's `base_url` is unchanged and still means the app as Eva's MCP client
+sees it.
+
+## Identity contract v1.3: Omnigent to outreach
+
+This text is shared, identically, with the outreach app and the frontend.
+Neither side reinterprets it. v1.1, v1.2 and v1.3 (all 2026-09-26) amend only
+the forwarding rules; everything else is v1.
+
+- Omnigent reverse-proxies `https://omnigent.airbrx.ai/eva/app/<path>` to
+  `http://127.0.0.1:8000/<path>`, STRIPPING the `/eva/app` prefix.
+- Before forwarding it deletes every inbound header whose name starts with
+  `X-Omnigent-` (case-insensitive), then sets:
+  - `X-Omnigent-User-Email`: signed-in user's email, lowercased
+  - `X-Omnigent-Timestamp`: unix seconds, integer
+  - `X-Omnigent-Signature`: lowercase hex HMAC-SHA256, key
+    `OUTREACH_IDENTITY_SECRET`, message = email + "\n" + timestamp + "\n" +
+    METHOD + "\n" + path_after_prefix_including_query
+- (v1.1) It PRESERVES the `Host` header as the browser sent it
+  (`omnigent.airbrx.ai`), so the app's `url_for` builds public URLs, and sets
+  `X-Forwarded-Proto: https`. It DELETES every inbound `X-Forwarded-*` header
+  from the client, in addition to `X-Omnigent-*`, and never sets
+  `X-Forwarded-For`. Why: the app runs on `127.0.0.1:8000` with
+  `uvicorn --proxy-headers --forwarded-allow-ips 127.0.0.1`, so a forwarded
+  client `X-Forwarded-For` would become the app's peer address and its
+  loopback check could be spoofed with one header. The app refuses a
+  request carrying `X-Forwarded-For` outright.
+- (v1.2) The signature covers the RAW request target plus query, exactly the
+  bytes forwarded upstream, before any percent-decoding or normalisation
+  (`/leads?q=O%27Connor` is signed as those bytes).
+- (v1.2) `Cookie`, `Set-Cookie` and `X-CSRF-Token` pass through unchanged;
+  CSRF on every form POST depends on it. v1.3 narrows the cookie rules:
+- (v1.3) Omnigent's own session cookies (`ap_*`, including `__Host-ap_*`)
+  are stripped from the forwarded `Cookie`; every other cookie passes byte
+  for byte. An upstream that never receives them cannot leak them.
+- (v1.3) Any upstream `Set-Cookie` whose name starts with `ap_` is DROPPED,
+  so the app can never overwrite Omnigent's login cookie. Every other
+  `Set-Cookie` passes, carrying `Path=/eva/app`: left byte for byte when its
+  path is already `/eva/app` or under it, otherwise given that path.
+- No signed-in Omnigent user: Omnigent answers 401 itself and never forwards.
+- Outreach, in `OUTREACH_AUTH_MODE=omnigent`, runs with root path `/eva/app`.
+  It accepts identity only from a loopback peer, with a constant-time
+  signature check and |now - timestamp| <= 60s. It maps the email to an ACTIVE
+  rep; unknown or inactive gets 403, anything else 401, with no fallback to
+  another mode. It refuses to start if the secret is unset or under 32 bytes.
+  It renders without its own top nav and sends
+  `Content-Security-Policy: frame-ancestors 'self'`.
+- MCP is unchanged: Eva calls `http://127.0.0.1:8000/mcp` directly with the
+  rep's own bearer token.
+- Test vector, which both sides reproduce: secret
+  `test-secret-0123456789abcdef0123456789abcdef`, email
+  `aerickson@airbrx.com`, timestamp `1790000000`, method `GET`, path
+  `/leads?page=2`, signature
+  `e21566ae5280a70c8f7ba6b55e6c11b2465634d6b101c67ee5a844f4a12ecaad`.
+
+### How Omnigent's side honours it
+
+`omnigent/airbrx/eva/proxy.py`, tested in `tests/airbrx/test_eva_app_proxy.py`.
+
+**Where the email comes from.** Omnigent's own authenticated identity, the
+user id its auth provider resolves, and nothing the client sends. On
+`omnigent.airbrx.ai` the provider is `oidc` against JumpCloud: the callback
+takes the id_token's `email` claim only when the IdP marks it verified,
+lowercases it, checks the domain allow list (`airbrx.com`, `airbrx.ai`), and
+mints the session cookie with that email as its subject. So the user id *is*
+the verified, lowercased email. The proxy forwards it only when the auth
+source is `oidc` or `header` (a trusted SSO proxy) and the id is shaped like an
+address. `accounts` mode (usernames an admin typed), the single-user `local`
+identity, and anything not shaped like an email get **403** and are not
+forwarded. There is no mapping table: whether the email is a rep is the
+outreach app's decision, against its `reps` table.
+
+**Readings the contract leaves implicit, stated so both sides agree:**
+
+- *path_after_prefix_including_query* is the raw request target as sent on
+  the wire, percent-encoding untouched: the path after `/eva/app`, then `?`
+  and the raw query string when there is one. `/eva/app` and `/eva/app/` both
+  forward, and sign, as `/`.
+- A target with a `.` or `..` segment (encoded or not) is refused with 400,
+  not resolved. The HTTP client would collapse it, so `/eva/app/x/../mcp`
+  would otherwise reach `/mcp`, and the signed path would not be the path
+  sent.
+- `/mcp` is refused with 404 however it is spelt: `/eva/app/mcp`, `/MCP`,
+  `/%6Dcp`, `//mcp`, `/%2Fmcp`. `/mcp-help` is forwarded.
+
+**Beyond the contract, all on the forwarding side:**
+
+- The secret is read from the environment per request. Unset, or under 32
+  bytes, and `/eva/app` answers **503** and forwards nothing; the server does
+  not refuse to start, because a coordinator crash loop takes Iris down too.
+- `Authorization` is dropped, for v1.3's reason: it carries an Omnigent
+  credential the app has no use for.
+- A `Set-Cookie` given `Path=/eva/app` loses any other `Path`; a `__Host-`
+  cookie, which must have `Path=/`, is therefore rejected by the browser.
+  That is the safe failure, and the app, living under a root path, has no
+  reason to set one.
+- `Forwarded` and `X-Real-IP` are dropped along with `X-Forwarded-*`, for
+  the same reason as v1.1's rule, and so is Omnigent's own auth header.
+  The only forwarding header the app receives is `X-Forwarded-Proto: https`.
+- Hop-by-hop headers, and any named in `Connection`, are stripped both ways.
+  Status codes and `Location` (never followed) pass through untouched.
+  `Set-Cookie` follows v1.3: `ap_*` is dropped, and every other one is scoped
+  to `Path=/eva/app` (left byte for byte when it already is; when rewritten,
+  attribute order is not guaranteed). Responses stream.
+- Request bodies are capped at 10 MiB (413). Upstream timeouts: 5s connect,
+  60s read, 30s write. Unreachable is 502, a timeout 504.
+- WebSockets are not proxied.
+
+## What the workspace UI can rely on from the backend
+
+For the frontend (`omnigent/airbrx/eva/ui/`, owned by the UI branch):
+
+- **The outreach app's base is `/eva/app`,** same origin as the workspace.
+  Every management tab is a page under it: `/eva/app/`, `/eva/app/leads`,
+  and so on, exactly the outreach app's own routes with `/eva/app` in front.
+  Frame or link them directly; the rep's Omnigent session cookie is what
+  authenticates them, so nothing needs a token or a second sign-in. The app
+  sends `Content-Security-Policy: frame-ancestors 'self'`, so it frames inside
+  Omnigent and nowhere else.
+- **Status codes mean:** 401 not signed in to Omnigent; 403 either a sign-in
+  with no verified email (from Omnigent) or not an active rep (from the app);
+  503 the server is missing `OUTREACH_IDENTITY_SECRET`; 502 or 504 the app is
+  down or slow. None of these is worth retrying automatically.
+- **Never `/eva/app/mcp`.** It is always 404.
+- **The adapter API** is `/v1/eva/sessions/{session_id}/ui/api/{chat,cancel,state,refresh,readiness}`.
+  Its alignment with Iris's shapes is a separate change; the table of
+  differences lands with it, in the section below this one.
+
+## Two surfaces, two jobs (superseded 2026-09-26, see above)
 
 **The Omnigent workspace is the everyday surface.** A rep picks Eva in the
 agent drawer, lands in her Airbrx-branded workspace, sees the pipeline, and
@@ -30,8 +177,10 @@ framed by the Omnigent web app at `/iris/:sessionId`. Eva's is the same shape:
 
 ## Where the data comes from
 
-The coordinator never talks to the outreach app. For a binding on an execution
-host's loopback it cannot, and it should not need to.
+The adapter routes never talk to the outreach app. For a binding on an
+execution host's loopback they cannot, and they should not need to. (Since
+2026-09-26 the coordinator does talk to it, but only as the `/eva/app` proxy,
+on behalf of a signed-in rep; the workspace state is still built as below.)
 
 **State is assembled from Eva's own tool results already recorded in the
 session, with no model call.** Those results are the newest `list_pool` and

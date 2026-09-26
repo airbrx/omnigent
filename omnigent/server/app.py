@@ -2826,13 +2826,11 @@ def create_app(
         prefix="/v1",
         tags=["iris"],
     )
-    # Eva, the outreach agent. Two routes rather than Iris's workspace adapter:
-    # Eva's user interface is the airbrx-outreach app, which serves itself, so
-    # Omnigent only supplies what the app cannot, which is who may open her and
-    # whether the app behind her is genuinely carrying CRM data rather than seed
-    # rows. Mounted unconditionally; with no bindings the catalog is empty and
-    # readiness 404s, so an operator who has not configured Eva gets an inert
+    # Eva, the outreach agent: catalog, readiness and her workspace adapter,
+    # shaped like Iris's. Mounted unconditionally; with no bindings the catalog
+    # is empty and readiness 404s, so an unconfigured server gets an inert
     # feature rather than a broken one.
+    from omnigent.airbrx.eva.proxy import create_eva_app_router
     from omnigent.airbrx.eva.routes import create_eva_router
 
     app.include_router(
@@ -2840,6 +2838,9 @@ def create_app(
         prefix="/v1",
         tags=["eva"],
     )
+    # The co-located outreach app at /eva/app, with a signed identity. Answers
+    # 503 until OUTREACH_IDENTITY_SECRET is set. See docs/eva/WORKSPACE.md.
+    app.include_router(create_eva_app_router(auth_provider=auth_provider), tags=["eva"])
     # Read-only built-in agent discovery (designs/BUILTIN_AGENTS.md).
     # Successor to the removed GET /api/agents list; lists only
     # built-in (session_id IS NULL) agents for the new-session picker.
