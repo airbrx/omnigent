@@ -108,7 +108,7 @@ def executions(items):
     """
     runs = {}
     for item, name in paired(items):
-        if name in TOOLS:
+        if isinstance(name, str) and name in TOOLS:
             digest = hashlib.sha256((item.get("output") or "").encode()).hexdigest()
             runs.setdefault(digest, name)
     return sorted(runs.values())
