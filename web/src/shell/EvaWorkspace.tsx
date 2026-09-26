@@ -117,8 +117,9 @@ export function EvaWorkspace() {
     <main className="mx-auto flex w-full max-w-xl flex-col gap-4 p-6">
       <h1 className="font-semibold text-xl">Eva workspace</h1>
       <p>
-        Work the airbrx lead list with Eva: the pool, your leads, drafts and approvals, and a chat
-        beside them. Configuration and approvals live in the outreach app.
+        One workspace for the airbrx lead list: Eva's chat, and the outreach app's leads, pool,
+        accounts, analytics, guardrails, sync and settings as tabs, with Eva docked beside whichever
+        one is open.
       </p>
       {isLoading ? (
         <p role="status">Loading Eva…</p>
@@ -143,7 +144,7 @@ export function EvaWorkspace() {
                 </span>
               </span>
               <Button disabled={busy} onClick={() => void create(binding)}>
-                {chatMode ? "Start chat" : "Open workspace"}
+                {chatMode ? "Start chat" : "Start"}
               </Button>
             </li>
           ))}

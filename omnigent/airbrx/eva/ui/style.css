@@ -58,9 +58,13 @@ body {
   -webkit-font-smoothing: antialiased;
   line-height: 1.6;
   font-size: 14px;
-  display: grid;
-  grid-template-columns: 232px 1fr;
-  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+[hidden] {
+  display: none !important;
 }
 a {
   color: var(--accent-dark);
@@ -72,39 +76,38 @@ a {
   font-size: 11px;
 }
 
-/* Sidebar */
-.sidebar {
-  background: var(--bg);
-  border-right: 1px solid var(--border);
-  padding: 20px 16px;
+/* Top bar: brand, the tabs, refresh */
+.topbar {
   display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-height: 100vh;
+  align-items: center;
+  gap: 20px;
+  padding: 10px 20px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
-.brand img {
-  height: 24px;
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand > img {
+  height: 20px;
   display: block;
 }
 .agent {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   font-weight: 700;
   font-size: 15px;
   letter-spacing: -0.01em;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
 }
 .agent img {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-}
-.agent small {
-  display: block;
-  font-weight: 500;
-  font-size: 11px;
-  color: var(--muted);
-  letter-spacing: 0.02em;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
 }
 .eyebrow,
 .section-title,
@@ -115,50 +118,48 @@ a {
   letter-spacing: 0.12em;
   color: var(--muted);
 }
-nav {
+#tabs,
+.views {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 4px;
 }
-nav a {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  border-radius: 12px;
+#tabs button,
+.views button {
+  background: transparent;
   color: var(--body);
-  text-decoration: none;
   font-weight: 500;
-  gap: 8px;
+  padding: 7px 12px;
 }
-nav a:hover {
+#tabs button:hover,
+.views button:hover {
   background: var(--surface);
+  color: var(--ink);
 }
-nav a.active {
+#tabs button.active,
+.views button.active {
   background: var(--accent-tint);
   color: var(--accent-dark);
   font-weight: 600;
 }
-nav b {
+.views b {
   font-size: 11px;
   font-weight: 700;
   color: var(--muted);
   font-family: var(--mono);
+  margin-left: 4px;
 }
-nav a.active b {
+.views button.active b {
   color: var(--accent-dark);
 }
-.sidebar-bottom {
-  margin-top: auto;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ink);
+.actions {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
 }
-.sidebar-bottom small {
-  font-weight: 400;
+.footnote {
+  font-size: 12px;
   color: var(--muted);
   line-height: 1.5;
 }
@@ -171,41 +172,73 @@ nav a.active b {
   margin-right: 4px;
 }
 .outlink {
-  font-size: 12px;
   font-weight: 600;
   text-decoration: none;
+  margin-left: 4px;
 }
 .outlink:hover {
   text-decoration: underline;
 }
 
-/* Shell */
-.shell {
+/* Workspace: the open tab on the left, Eva's chat docked on the right */
+.workspace {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px 20px 20px;
+}
+body.collapsed .workspace {
+  grid-template-columns: minmax(0, 1fr) 44px;
+}
+.home {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 20px 24px 32px;
   min-width: 0;
+  overflow-y: auto;
 }
-.topbar {
+.frames {
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+}
+.frames iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+.dock-rail {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
   align-items: center;
-  gap: 16px;
+  gap: 10px;
+  padding: 12px 0;
+  background: var(--bg);
+  color: var(--body);
+  border: 1px solid var(--border);
+  border-radius: 16px;
 }
-.crumb {
-  font-size: 15px;
+.dock-rail img {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
 }
-.slash {
-  color: var(--border-strong);
-  margin: 0 8px;
+.dock-rail span {
+  writing-mode: vertical-rl;
+  font-size: 12px;
 }
-.actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.dock-rail:hover {
+  color: var(--accent-dark);
+  border-color: var(--accent);
 }
-
 button {
   font-family: inherit;
   font-size: 13px;
@@ -288,6 +321,7 @@ button:disabled {
 }
 
 .notice {
+  margin: 12px 20px 0;
   background: var(--accent-tint);
   border-left: 3px solid var(--accent);
   border-radius: 0 12px 12px 0;
@@ -300,13 +334,6 @@ button:disabled {
   border-left-color: var(--urgent);
 }
 
-/* Columns */
-.columns {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
-  gap: 16px;
-  align-items: start;
-}
 .content {
   display: flex;
   flex-direction: column;
@@ -470,11 +497,36 @@ td strong {
 
 /* Chat */
 .chat {
-  position: sticky;
-  top: 16px;
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 40px);
+  min-height: 0;
+}
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.chat-head .section-title {
+  margin-bottom: 0;
+  flex: 1;
+}
+.context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+button.link {
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+button.link:hover {
+  color: var(--ink);
 }
 .messages {
   list-style: none;
@@ -537,41 +589,39 @@ textarea:focus {
 }
 
 @media (max-width: 1100px) {
-  .columns {
-    grid-template-columns: 1fr;
-  }
-  .chat {
-    position: static;
-    max-height: none;
+  .workspace {
+    grid-template-columns: minmax(0, 1fr) 320px;
   }
 }
 @media (max-width: 760px) {
-  /* The sidebar becomes a compact top bar: brand, Eva, the three views. */
+  /* One column: the open tab, then the chat below it. */
   body {
+    height: auto;
+    overflow: visible;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 16px;
+  }
+  .actions {
+    margin-left: 0;
+  }
+  .workspace,
+  body.collapsed .workspace {
     grid-template-columns: 1fr;
+    grid-template-rows: none;
+    padding: 12px 16px 16px;
   }
-  .sidebar {
-    min-height: 0;
+  .frames {
+    height: 70vh;
+  }
+  .dock-rail {
     flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
+    justify-content: center;
   }
-  .sidebar .eyebrow,
-  .sidebar-bottom small,
-  .sidebar-bottom .dot {
-    display: none;
-  }
-  nav {
-    flex-direction: row;
-    flex-wrap: wrap;
-  }
-  .sidebar-bottom {
-    margin-top: 0;
-    margin-left: auto;
+  .dock-rail span {
+    writing-mode: horizontal-tb;
   }
   .kpis {
     grid-template-columns: repeat(2, 1fr);

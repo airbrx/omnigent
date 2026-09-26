@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { getOmnigentHostConfig } from "@/lib/host";
 import { authenticatedFetch } from "@/lib/identity";
-import { EvaWorkspace } from "./EvaWorkspace";
+import { type EvaBinding, EvaWorkspace } from "./EvaWorkspace";
 
 const routing = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -40,7 +40,7 @@ function show() {
   );
 }
 
-const BINDING = {
+const BINDING: EvaBinding = {
   label: "live",
   host_id: "eva-host",
   base_url: "http://127.0.0.1:8000",
@@ -72,7 +72,7 @@ it("frames the per-session app with the host's theme", () => {
 it("starts a session on the bound host and workspace, then opens the workspace", async () => {
   catalog();
   show();
-  fireEvent.click(await screen.findByRole("button", { name: "Open workspace" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Start" }));
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/eva/new-session"));
   const post = vi.mocked(authenticatedFetch).mock.calls.find(([url]) => url === "/v1/sessions");
   expect(JSON.parse(String(post?.[1]?.body))).toEqual({
@@ -93,7 +93,7 @@ it("chat mode lands in the native chat instead", async () => {
 it("a host binding without a workspace directory says so instead of failing on create", async () => {
   catalog([{ ...BINDING, workspace: null }]);
   show();
-  fireEvent.click(await screen.findByRole("button", { name: "Open workspace" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Start" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("no workspace directory");
   expect(vi.mocked(authenticatedFetch).mock.calls.some(([url]) => url === "/v1/sessions")).toBe(
     false,

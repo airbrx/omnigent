@@ -12,98 +12,124 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <aside class="sidebar">
-      <div class="brand"><img src="assets/airbrx-logo.png" alt="airbrx" /></div>
-      <div class="agent">
-        <img src="assets/eva-portrait.png" alt="" />
-        <div>Eva<small>Outreach workspace</small></div>
-      </div>
-      <div class="eyebrow">Workspace</div>
-      <nav aria-label="Workspace">
-        <a href="#pipeline" data-view="pipeline"
-          >Pipeline <b id="nav-pool">0</b></a
-        >
-        <a href="#mine" data-view="mine">My leads <b id="nav-mine">0</b></a>
-        <a href="#drafts" data-view="drafts"
-          >Drafts and approvals <b id="nav-drafts">0</b></a
-        >
-      </nav>
-      <div class="sidebar-bottom">
-        <span class="dot"></span> Eva drafts, you send
-        <small
-          >She never sends and never approves her own drafts. Approval and mark
-          sent happen in the outreach app.</small
-        >
-        <a id="outreach-link" class="outlink" target="_blank" rel="noopener"
-          >Open the outreach app</a
+    <header class="topbar">
+      <div class="brand">
+        <img src="assets/airbrx-logo.png" alt="airbrx" />
+        <span class="agent"
+          ><img src="assets/eva-portrait.png" alt="" /> Eva</span
         >
       </div>
-    </aside>
+      <nav id="tabs" role="tablist" aria-label="Workspace"></nav>
+      <div class="actions">
+        <span id="freshness" class="muted small"></span>
+        <button id="refresh" class="primary" type="button">
+          Refresh from host
+        </button>
+      </div>
+    </header>
 
-    <main class="shell">
-      <header class="topbar">
-        <div class="crumb">
-          <span class="muted">Eva</span><span class="slash">/</span
-          ><strong id="view-label">Pipeline</strong>
-        </div>
-        <div class="actions">
-          <span id="freshness" class="muted small"></span>
-          <button id="refresh" class="primary" type="button">
-            Refresh from host
+    <div id="notice" class="notice" role="status" hidden></div>
+
+    <div id="workspace" class="workspace">
+      <section id="home" class="home" aria-label="Eva's read of the pipeline">
+        <section class="kpis" aria-label="Summary">
+          <div class="kpi">
+            <div class="label">In the pool</div>
+            <div class="value" id="kpi-pool">0</div>
+            <div class="note">claimable leads</div>
+          </div>
+          <div class="kpi">
+            <div class="label">Yours</div>
+            <div class="value" id="kpi-mine">0</div>
+            <div class="note">owned or claimed</div>
+          </div>
+          <div class="kpi">
+            <div class="label">Drafts</div>
+            <div class="value" id="kpi-drafts">0</div>
+            <div class="note">seen by Eva</div>
+          </div>
+          <div class="kpi">
+            <div class="label">Awaiting approval</div>
+            <div class="value" id="kpi-review">0</div>
+            <div class="note">in review</div>
+          </div>
+        </section>
+
+        <div
+          id="views"
+          class="views"
+          role="group"
+          aria-label="What Eva has read"
+        >
+          <button type="button" data-view="pipeline">
+            Pipeline <b id="nav-pool">0</b>
+          </button>
+          <button type="button" data-view="mine">
+            My leads <b id="nav-mine">0</b>
+          </button>
+          <button type="button" data-view="drafts">
+            Drafts and approvals <b id="nav-drafts">0</b>
           </button>
         </div>
-      </header>
 
-      <section class="kpis" aria-label="Summary">
-        <div class="kpi">
-          <div class="label">In the pool</div>
-          <div class="value" id="kpi-pool">0</div>
-          <div class="note">claimable leads</div>
-        </div>
-        <div class="kpi">
-          <div class="label">Yours</div>
-          <div class="value" id="kpi-mine">0</div>
-          <div class="note">owned or claimed</div>
-        </div>
-        <div class="kpi">
-          <div class="label">Drafts</div>
-          <div class="value" id="kpi-drafts">0</div>
-          <div class="note">seen by Eva</div>
-        </div>
-        <div class="kpi">
-          <div class="label">Awaiting approval</div>
-          <div class="value" id="kpi-review">0</div>
-          <div class="note">in review</div>
-        </div>
-      </section>
-
-      <div id="notice" class="notice" role="status" hidden></div>
-
-      <div class="columns">
         <section class="content" aria-live="polite">
           <div id="detail" class="card detail" hidden></div>
           <div id="view"></div>
         </section>
 
-        <section class="chat card" aria-label="Chat with Eva">
+        <p class="footnote">
+          <span class="dot"></span> Eva drafts, you send. She never sends and
+          never approves her own drafts; approval and mark sent happen in the
+          outreach app.
+          <a id="outreach-link" class="outlink" target="_blank" rel="noopener"
+            >Open the outreach app</a
+          >
+        </p>
+      </section>
+
+      <section id="frames" class="frames" hidden></section>
+
+      <button id="dock-rail" class="dock-rail" type="button" hidden>
+        <img src="assets/eva-portrait.png" alt="" />
+        <span>Ask Eva</span>
+      </button>
+
+      <section id="chat" class="chat card" aria-label="Chat with Eva">
+        <div class="chat-head">
           <div class="section-title">Ask Eva</div>
-          <ol id="messages" class="messages"></ol>
-          <form id="composer">
-            <textarea
-              id="input"
-              rows="3"
-              placeholder="Ask Eva to find, qualify or draft. Enter sends, Shift+Enter adds a line."
-            ></textarea>
-            <div class="composer-row">
-              <button id="cancel" type="button" class="secondary" hidden>
-                Stop
-              </button>
-              <button id="send" type="submit" class="primary">Send</button>
-            </div>
-          </form>
-        </section>
-      </div>
-    </main>
+          <button
+            id="collapse"
+            type="button"
+            class="chip"
+            aria-label="Collapse chat"
+            hidden
+          >
+            Hide
+          </button>
+        </div>
+        <ol id="messages" class="messages"></ol>
+        <form id="composer">
+          <div id="context" class="context" hidden>
+            <span id="context-label" class="badge accent"></span>
+            <button id="context-remove" type="button" class="link">
+              Leave out
+            </button>
+          </div>
+          <textarea
+            id="input"
+            rows="3"
+            aria-label="Message Eva"
+            placeholder="Ask Eva to find, qualify or draft. Enter sends, Shift+Enter adds a line."
+          ></textarea>
+          <div class="composer-row">
+            <button id="cancel" type="button" class="secondary" hidden>
+              Stop
+            </button>
+            <button id="send" type="submit" class="primary">Send</button>
+          </div>
+        </form>
+      </section>
+    </div>
 
     <script src="app.js"></script>
   </body>
