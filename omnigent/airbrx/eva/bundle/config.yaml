@@ -70,7 +70,8 @@ tools:
     max_retries: 0
 
   # The airbrx-outreach MCP surface. `contracts/mcp_tools.md` in
-  # airbrx/airbrx-outreach fixes these 17 tools, their schemas and their
+  # airbrx/airbrx-outreach fixes these tools (17, plus the four the Scoreboard,
+  # LinkedIn and GTM plan pages added on 2026-09-26), their schemas and their
   # permission rules.
   #
   # The URL and the bearer token are expanded from the RUNNER's environment,
@@ -84,7 +85,7 @@ tools:
   # This is an ALLOW LIST rather than a passthrough. Everything absent is
   # unavailable to Eva even if the server advertises it, which is how the
   # boundary is expressed in the spec as well as in the tool layer. Two of the
-  # seventeen are deliberately withheld below.
+  # contract's tools are deliberately withheld below.
   outreach:
     type: mcp
     url: ${OUTREACH_MCP_URL}
@@ -107,6 +108,10 @@ tools:
       - list_guardrails
       - query_analytics
       - record_agent_run
+      - list_linkedin_posts
+      - record_linkedin_metrics
+      - list_plan_items
+      - record_plan_actual
 
 # Withheld from the list above, and the reason is the product's, not Omnigent's:
 #

@@ -7,8 +7,8 @@ it is shaped this way.
 
 **Abram changed the design on 2026-09-26: Eva runs entirely inside
 `https://omnigent.airbrx.ai` as one workspace, like Iris.** Her chat and the
-outreach app's management tabs (leads, pool, accounts, analytics, guardrails,
-sync, settings) are in one place. There is no `outreach.airbrx.ai`, no DNS
+outreach app's management tabs (leads, pool, accounts, analytics, scoreboard,
+LinkedIn, GTM plan, guardrails, sync, settings) are in one place. There is no `outreach.airbrx.ai`, no DNS
 record, and no second Google sign-in.
 
 **Why it changed.** The 2026-09-24 design below had two surfaces for one

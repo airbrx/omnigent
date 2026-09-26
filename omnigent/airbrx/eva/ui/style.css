@@ -549,7 +549,8 @@ button.link:hover {
   min-height: 160px;
   margin-bottom: 12px;
 }
-.messages li {
+/* Direct children only: an answer's own list items are not chat bubbles. */
+.messages > li {
   padding: 10px 12px;
   border-radius: 12px;
   font-size: 13px;
@@ -566,6 +567,35 @@ button.link:hover {
 .messages li.eva {
   background: var(--surface);
   color: var(--ink);
+  /* Her text is rendered into paragraphs and lists, with <br> for breaks. */
+  white-space: normal;
+}
+.messages li.eva > * + * {
+  margin-top: 6px;
+}
+.messages li.eva ul,
+.messages li.eva ol {
+  padding-left: 20px;
+}
+.messages li.eva ul {
+  list-style: disc;
+}
+.messages li.eva ol {
+  list-style: decimal;
+}
+.messages li.eva li + li {
+  margin-top: 2px;
+}
+.messages li.eva code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 4px;
+}
+.kpi.unread .value {
+  color: var(--muted);
 }
 .messages li.system {
   background: transparent;

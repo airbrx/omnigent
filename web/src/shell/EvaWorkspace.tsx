@@ -162,8 +162,8 @@ export function EvaWorkspace() {
         </div>
         <p className="text-[#505050] text-sm leading-relaxed dark:text-[#A0A0A0]">
           One workspace for the airbrx lead list: Eva's chat, and the outreach app's leads, pool,
-          accounts, analytics, guardrails, sync and settings as tabs, with Eva docked beside
-          whichever one is open.
+          accounts, analytics, scoreboard, LinkedIn, GTM plan, guardrails, sync and settings as
+          tabs, with Eva docked beside whichever one is open.
         </p>
         {isLoading ? (
           <p role="status" className="text-[#8A8A8A] text-sm">

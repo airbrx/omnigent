@@ -66,8 +66,10 @@ configured with.
 
 ## The tool boundary, three deep
 
-1. The bundle's `tools.outreach.tools` allow list, 15 of the 17 tools in
-   `contracts/mcp_tools.md`.
+1. The bundle's `tools.outreach.tools` allow list: 15 of the original 17 tools
+   in `contracts/mcp_tools.md`, plus the four LinkedIn and GTM plan tools
+   (`list_linkedin_posts`, `record_linkedin_metrics`, `list_plan_items`,
+   `record_plan_actual`) added on 2026-09-26.
 2. `omnigent.airbrx.eva.policy.tool_boundary`, registered as a `tool_call`
    guardrail, fail-closed.
 3. The outreach app's own tool layer, which is the authoritative one.

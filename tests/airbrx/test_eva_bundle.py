@@ -101,6 +101,36 @@ def test_instructions_carry_the_house_rules() -> None:
     assert "em dash" in text.lower()
 
 
+#: The tools behind the Scoreboard, LinkedIn and GTM plan pages (2026-09-26).
+DASHBOARD_TOOLS = (
+    "list_linkedin_posts",
+    "record_linkedin_metrics",
+    "list_plan_items",
+    "record_plan_actual",
+)
+
+
+@pytest.mark.parametrize("name", DASHBOARD_TOOLS)
+def test_a_dashboard_tool_is_allowed_and_her_instructions_say_how_to_use_it(name: str) -> None:
+    """Instructions naming a tool the boundary denies would send her into a refusal."""
+    assert name in EVA_TOOLS
+    assert (
+        tool_boundary({"type": "tool_call", "target": f"mcp__omnigent__{name}"})["result"]
+        == "ALLOW"
+    )
+    assert f"`{name}`" in (bundle_root() / "AGENTS.md").read_text()
+
+
+def test_her_instructions_answer_both_dashboard_asks() -> None:
+    """The workspace sends these two sentences; AGENTS.md must say how to answer each."""
+    text = (bundle_root() / "AGENTS.md").read_text()
+    assert "Refresh the LinkedIn post stats" in text
+    assert "Give me a read on the outreach scoreboard for" in text
+    # No browser is the usual case, and the rep must hear it rather than get made-up numbers.
+    assert "no browser tool" in text
+    assert "paste" in text
+
+
 def test_no_em_dash_in_eva_s_own_instructions() -> None:
     """The rule Eva is told to follow, applied to the file that tells her."""
     assert "—" not in (bundle_root() / "AGENTS.md").read_text()

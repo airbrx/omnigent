@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
-#: The 17 tools of ``contracts/mcp_tools.md``, minus the two Eva must not hold.
-#: Kept as one frozenset rather than "all seventeen minus a deny list" so that a
+#: The tools of ``contracts/mcp_tools.md``, minus the two Eva must not hold.
+#: Kept as one frozenset rather than "all of them minus a deny list" so that a
 #: tool added to the contract is absent here until somebody decides it belongs,
 #: rather than arriving allowed by default.
 EVA_TOOLS = frozenset(
@@ -37,6 +37,13 @@ EVA_TOOLS = frozenset(
         "list_guardrails",
         "query_analytics",
         "record_agent_run",
+        # The Scoreboard, LinkedIn and GTM plan pages (2026-09-26). Eva reads
+        # posts and plan items, and records a post's metrics snapshot or a
+        # plan item's actual, both attributed to the rep like every write.
+        "list_linkedin_posts",
+        "record_linkedin_metrics",
+        "list_plan_items",
+        "record_plan_actual",
     }
 )
 
