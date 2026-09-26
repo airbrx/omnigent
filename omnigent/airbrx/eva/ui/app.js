@@ -23,9 +23,34 @@
       applyTheme(event.data.evaHostTheme);
   });
 
+  // The workspace's tabs, in order. Edit this list to add, remove or reorder
+  // tabs. `path` is the outreach app page framed for the tab: Omnigent proxies
+  // /eva/app to the outreach app, which drops its own nav there. Chat has no
+  // path; it is Eva's own view, and her chat is docked beside every other tab.
+  const TABS = [
+    { id: "chat", label: "Chat" },
+    { id: "leads", label: "Leads", path: "/eva/app/leads" },
+    { id: "pool", label: "Pool", path: "/eva/app/leads/pool" },
+    { id: "accounts", label: "Accounts", path: "/eva/app/accounts" },
+    { id: "analytics", label: "Analytics", path: "/eva/app/analytics" },
+    { id: "guardrails", label: "Guardrails", path: "/eva/app/guardrails" },
+    { id: "sync", label: "Sync", path: "/eva/app/sync" },
+    { id: "settings", label: "Settings", path: "/eva/app/settings/token" },
+  ];
+  const VIEWS = ["pipeline", "mine", "drafts"];
+  const DOCK_KEY = "eva.dockCollapsed";
+
   const $ = (id) => document.getElementById(id);
   let state = null;
-  let view = (location.hash || "#pipeline").slice(1);
+  let view = "pipeline";
+  let tab = TABS[0];
+  let includeContext = true;
+  let dockCollapsed = false;
+  try {
+    dockCollapsed = localStorage.getItem(DOCK_KEY) === "1";
+  } catch {
+    dockCollapsed = false;
+  }
   let selectedLead = null;
   let busy = false;
   const history = [];
@@ -65,9 +90,21 @@
         payload && typeof payload.detail === "string"
           ? payload.detail
           : `HTTP ${response.status}`;
-      throw new Error(detail);
+      const error = new Error(detail);
+      error.status = response.status;
+      throw error;
     }
     return payload;
+  }
+
+  /** The adapter's state, or null while it has nothing to show (409). */
+  async function loadState() {
+    try {
+      return await api("state");
+    } catch (error) {
+      if (error.status === 409) return null;
+      throw error;
+    }
   }
 
   // ---------------------------------------------------------------- helpers
@@ -101,6 +138,18 @@
     const date =
       typeof value === "number" ? new Date(value * 1000) : new Date(value);
     return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  }
+
+  function shortWhen(value) {
+    const date = new Date(value * 1000);
+    return Number.isNaN(date.getTime())
+      ? String(value)
+      : date.toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        });
   }
 
   function notice(text, isError) {
@@ -298,8 +347,7 @@
                   {
                     class: "chip",
                     href: link,
-                    target: "_blank",
-                    rel: "noopener",
+                    onclick: (event) => openInWorkspace(event, link),
                   },
                   "Open in outreach app",
                 )
@@ -313,14 +361,8 @@
   function renderView() {
     const container = $("view");
     container.replaceChildren();
-    for (const a of document.querySelectorAll("nav a"))
-      a.classList.toggle("active", a.dataset.view === view);
-    const labels = {
-      pipeline: "Pipeline",
-      mine: "My leads",
-      drafts: "Drafts and approvals",
-    };
-    $("view-label").textContent = labels[view] || "Pipeline";
+    for (const button of document.querySelectorAll("#views button"))
+      button.classList.toggle("active", button.dataset.view === view);
     if (!state || state.empty) {
       container.append(
         el(
@@ -330,7 +372,7 @@
           el(
             "p",
             {},
-            "This workspace shows only what Eva has read in this session. Refresh from host asks her to read the pool and your leads. Nothing is shown until she has.",
+            "This workspace shows only what Eva has read in this session. Refresh pipeline asks her to read the pool and your leads. Nothing is shown until she has.",
           ),
         ),
       );
@@ -451,7 +493,11 @@
         link
           ? el(
               "a",
-              { class: "chip", href: link, target: "_blank", rel: "noopener" },
+              {
+                class: "chip",
+                href: link,
+                onclick: (event) => openInWorkspace(event, link),
+              },
               "Open in outreach app",
             )
           : null,
@@ -549,8 +595,8 @@
       $(id).textContent = String(value);
     $("freshness").textContent =
       state && state.refreshed_at
-        ? `Read ${when(state.refreshed_at)}`
-        : "Not refreshed yet";
+        ? `Eva read the pipeline ${shortWhen(state.refreshed_at)}${state.stale ? ", may be out of date" : ""}`
+        : "Eva has not read the pipeline yet";
     const link = $("outreach-link");
     if (state && state.outreach_url) link.href = state.outreach_url;
     else link.removeAttribute("href");
@@ -594,37 +640,186 @@
 
   async function ask(text) {
     if (busy || !text.trim()) return;
-    history.push({ role: "user", content: text });
+    const where =
+      tab.path && includeContext ? `${tab.label}, ${framedPath()}` : "";
+    history.push({
+      role: "user",
+      content: where
+        ? `${text}\n\n(I am looking at ${where} in the outreach app.)`
+        : text,
+    });
     while (history.length > 24) history.shift();
-    addMessage("user", text);
+    addMessage("user", where ? `${text}\n\nAbout ${where}` : text);
     setBusy(true);
     notice("");
     try {
       const reply = await api("chat", { history });
       history.push({ role: "assistant", content: reply.text });
       addMessage("eva", reply.text);
-      if (reply.state) {
-        state = reply.state;
-        render();
-      }
+      // A turn can change what Eva has read; the answer does not carry state.
+      loadState()
+        .then((next) => {
+          if (next) {
+            state = next;
+            render();
+          }
+        })
+        .catch(() => {});
     } catch (error) {
+      // Drop the unanswered question so the next turn does not resend it.
+      history.pop();
       addMessage("error", error.message);
     } finally {
       setBusy(false);
     }
   }
 
+  // ---------------------------------------------------------------- tabs
+
+  function tabFromHash() {
+    const id = (location.hash || "").slice(1);
+    if (VIEWS.includes(id)) view = id;
+    return TABS.find((t) => t.id === id) || TABS[0];
+  }
+
+  /** The framed page's current path, so navigation inside it is picked up. */
+  function framedPath() {
+    const frame = document.querySelector(
+      `#frames iframe[data-tab="${tab.id}"]`,
+    );
+    try {
+      const where =
+        frame && frame.contentWindow && frame.contentWindow.location;
+      if (where && where.pathname && where.pathname !== "blank")
+        return `${where.pathname}${where.search}`;
+    } catch {
+      // A page that left this origin cannot be read; the tab path still helps.
+    }
+    return tab.path;
+  }
+
+  function renderTabs() {
+    const nav = $("tabs");
+    if (!nav.children.length)
+      nav.append(
+        ...TABS.map((t) =>
+          el(
+            "button",
+            {
+              type: "button",
+              role: "tab",
+              "data-tab": t.id,
+              onclick: () => showTab(t),
+            },
+            t.label,
+          ),
+        ),
+      );
+    for (const button of nav.children) {
+      const selected = button.dataset.tab === tab.id;
+      button.setAttribute("aria-selected", String(selected));
+      button.classList.toggle("active", selected);
+    }
+  }
+
+  function renderDock() {
+    const docked = Boolean(tab.path);
+    const collapsed = docked && dockCollapsed;
+    document.body.dataset.tab = tab.id;
+    document.body.classList.toggle("docked", docked);
+    document.body.classList.toggle("collapsed", collapsed);
+    $("home").hidden = docked;
+    // Freshness and refresh are about the pipeline, which only the Chat tab shows.
+    $("actions").hidden = docked;
+    $("frames").hidden = !docked;
+    $("chat").hidden = collapsed;
+    $("dock-rail").hidden = !collapsed;
+    $("collapse").hidden = !docked;
+    $("context").hidden = !docked || !includeContext;
+    $("context-label").textContent = docked ? `About ${tab.label}` : "";
+    $("input").placeholder = docked
+      ? `Ask Eva about ${tab.label}. Enter sends, Shift+Enter adds a line.`
+      : "Ask Eva to find, qualify or draft. Enter sends, Shift+Enter adds a line.";
+  }
+
+  function showTab(next, fromHash) {
+    if (next.id !== tab.id) includeContext = true;
+    tab = next;
+    // Framed pages mount on first visit and stay, so each keeps its place.
+    const frames = $("frames");
+    if (tab.path && !frames.querySelector(`iframe[data-tab="${tab.id}"]`))
+      frames.append(
+        el("iframe", {
+          "data-tab": tab.id,
+          title: `Eva ${tab.label}`,
+          src: tab.path,
+        }),
+      );
+    for (const frame of frames.querySelectorAll("iframe"))
+      frame.hidden = frame.dataset.tab !== tab.id;
+    if (!fromHash) replaceHash(`#${tab.id}`);
+    renderTabs();
+    renderDock();
+  }
+
+  /** Open an outreach app link in its own tab here, with Eva docked beside it. */
+  function openInWorkspace(event, href) {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
+      return;
+    event.preventDefault();
+    const target =
+      TABS.filter((t) => t.path && href.startsWith(t.path)).sort(
+        (a, b) => b.path.length - a.path.length,
+      )[0] || TABS.find((t) => t.id === "leads");
+    showTab(target);
+    const frame = $("frames").querySelector(`iframe[data-tab="${target.id}"]`);
+    if (frame) frame.src = href;
+  }
+
+  function replaceHash(hash) {
+    try {
+      window.history.replaceState(null, "", hash);
+    } catch {
+      location.hash = hash;
+    }
+  }
+
+  function setDockCollapsed(value) {
+    dockCollapsed = value;
+    try {
+      localStorage.setItem(DOCK_KEY, value ? "1" : "0");
+    } catch {
+      // Storage can be unavailable; the dock still works for this visit.
+    }
+    renderDock();
+  }
+
   async function refresh() {
     if (busy) return;
     setBusy(true);
+    notice("");
     addMessage("system", "Refreshing: Eva is reading the pool and your leads.");
     try {
-      const reply = await api("refresh", {});
-      addMessage("eva", reply.text);
-      state = reply.state;
+      // Refresh answers with the state itself, as Iris's does.
+      state = await api("refresh", {});
+      addMessage("system", "Refreshed: Eva has read the pool and your leads.");
       render();
     } catch (error) {
-      addMessage("error", error.message);
+      if (error.status !== 409) {
+        addMessage("error", error.message);
+        return;
+      }
+      // Her turn ran but read nothing. Say so, and keep showing what she read
+      // before, labelled with when, rather than an empty or broken panel.
+      addMessage("system", error.message);
+      state = (await loadState().catch(() => null)) || state;
+      render();
+      notice(
+        state && state.refreshed_at
+          ? `That refresh read nothing new. This is what Eva read ${shortWhen(state.refreshed_at)}.`
+          : "That refresh read nothing, so there is nothing to show yet. Ask Eva in the chat what went wrong.",
+        false,
+      );
     } finally {
       setBusy(false);
     }
@@ -651,10 +846,23 @@
     () => void api("cancel", {}).catch(() => {}),
   );
   window.addEventListener("hashchange", () => {
-    view = (location.hash || "#pipeline").slice(1);
+    showTab(tabFromHash(), true);
     renderView();
     renderDetail();
   });
+  for (const button of document.querySelectorAll("#views button"))
+    button.addEventListener("click", () => {
+      view = button.dataset.view;
+      renderView();
+      renderDetail();
+    });
+  $("collapse").addEventListener("click", () => setDockCollapsed(true));
+  $("dock-rail").addEventListener("click", () => setDockCollapsed(false));
+  $("context-remove").addEventListener("click", () => {
+    includeContext = false;
+    renderDock();
+  });
+  showTab(tabFromHash(), true);
 
   (async () => {
     try {
@@ -670,7 +878,7 @@
       notice(error.message, true);
     }
     try {
-      state = await api("state");
+      state = await loadState();
     } catch (error) {
       notice(error.message, true);
     }

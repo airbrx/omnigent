@@ -122,6 +122,8 @@ function renderShell(path = "/") {
               />
               <Route path="iris" element={<LocationDisplay />} />
               <Route path="iris/:sessionId" element={<LocationDisplay />} />
+              <Route path="eva" element={<LocationDisplay />} />
+              <Route path="eva/:sessionId" element={<LocationDisplay />} />
             </Route>
           </Routes>
         </MemoryRouter>
@@ -137,6 +139,7 @@ beforeEach(() => {
       { id: "a1", name: "researcher", display_name: "Researcher", description: "" },
       { id: "a2", name: "coder", display_name: "Coder", description: "" },
       { id: "a3", name: "iris", display_name: "Iris", description: "" },
+      { id: "a4", name: "eva", display_name: "Eva", description: "" },
     ],
   } as never);
   vi.mocked(useAgentAvatars).mockReturnValue({ data: {} } as never);
@@ -190,6 +193,36 @@ describe("AppShell: the workspace and the chat are one session", () => {
     fireEvent.click(screen.getByTestId("browse-agents-button"));
     fireEvent.click(screen.getByRole("button", { name: "Open Iris workspace" }));
     expect(screen.getByTestId("location")).toHaveTextContent("/iris");
+  });
+});
+
+describe("AppShell: Open Eva workspace", () => {
+  function withActiveSession(session: unknown) {
+    vi.mocked(useSession).mockReturnValue({ session, isLoading: false, error: null } as never);
+  }
+
+  it("opens her workspace on the Eva session you are in", () => {
+    withActiveSession({ id: "conv_eva", agentName: "eva", parentSessionId: null });
+    renderShell("/c/conv_eva");
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+    fireEvent.click(screen.getByRole("button", { name: "Open Eva workspace" }));
+    expect(screen.getByTestId("location")).toHaveTextContent("/eva/conv_eva");
+  });
+
+  it("lands on her binding picker from anywhere else", () => {
+    withActiveSession(null);
+    renderShell("/");
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+    fireEvent.click(screen.getByRole("button", { name: "Open Eva workspace" }));
+    expect(screen.getByTestId("location").textContent).toBe("/eva");
+  });
+
+  it("picking her row starts a native chat through the same picker", () => {
+    withActiveSession(null);
+    renderShell("/");
+    fireEvent.click(screen.getByTestId("browse-agents-button"));
+    fireEvent.click(screen.getByTestId("agent-drawer-row-eva"));
+    expect(screen.getByTestId("location").textContent).toBe("/eva?mode=chat");
   });
 });
 
