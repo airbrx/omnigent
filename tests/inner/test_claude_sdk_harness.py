@@ -516,6 +516,61 @@ def test_iris_gets_a_strict_mcp_config_and_other_agents_do_not(monkeypatch):
     assert _is_iris_agent("") is False
 
 
+def test_eva_gets_a_strict_mcp_config_and_other_agents_do_not():
+    """Eva's contract is the outreach tools and nothing ambient, as Iris's is.
+
+    Measured on her bridge host before this: the CLI ``init`` of her runs on
+    2026-09-23 and 24 listed 12 of the operator's claude.ai connector servers
+    (Gmail, Slack, Drive, Ramp, Linear among them) and up to 422 of their
+    tools, beside the one ``omnigent`` server Omnigent passed.
+    """
+    from omnigent.inner.claude_sdk_harness import _is_eva_agent, _is_iris_agent
+
+    assert _is_eva_agent("eva") is True
+    assert _is_eva_agent("eva (fork of eva)") is True
+    assert _is_eva_agent("evaluator") is False
+    assert _is_eva_agent("iris") is False
+    assert _is_eva_agent("claude-native-ui") is False
+    assert _is_eva_agent(None) is False
+    assert _is_eva_agent("") is False
+    # Neither helper claims the other's agent.
+    assert _is_iris_agent("eva") is False
+
+
+@pytest.mark.parametrize(
+    ("agent_name", "strict"),
+    [
+        ("eva", True),
+        ("eva (fork of eva)", True),
+        ("iris", True),
+        ("hello_world", False),
+        ("cache cow", False),
+    ],
+)
+def test_the_launch_carries_strict_mcp_config_for_eva_and_iris_only(
+    monkeypatch: pytest.MonkeyPatch, agent_name: str, strict: bool
+) -> None:
+    """The executor the harness builds is what reaches the CLI flag.
+
+    ``strict_mcp_config`` becomes ``ClaudeAgentOptions.strict_mcp_config``,
+    which the SDK turns into ``--strict-mcp-config`` on the ``claude`` command
+    line: the CLI then uses only the MCP servers passed to it.
+    """
+    monkeypatch.setenv("HARNESS_CLAUDE_SDK_AGENT_NAME", agent_name)
+    captured: dict[str, Any] = {}
+
+    def _fake_init(self: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    with patch(
+        "omnigent.inner.claude_sdk_harness.ClaudeSDKExecutor.__init__",
+        _fake_init,
+    ):
+        claude_sdk_harness._build_claude_sdk_executor()
+
+    assert captured["strict_mcp_config"] is strict
+
+
 def test_iris_does_not_get_the_skill_tool_and_keeps_tool_search():
     """A policy can only refuse what it is asked about.
 
