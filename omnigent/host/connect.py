@@ -417,20 +417,51 @@ def _run_host_installer(server_url: str) -> bool:
     return result.returncode == 0
 
 
+def _reexec_argv() -> list[str]:
+    """Build the argv that relaunches this process the way it was launched.
+
+    Two launch shapes exist:
+
+    * A console script (``omnigent host ...``): ``sys.argv[0]`` is the
+      launcher itself, a real executable — exec it directly.
+    * ``python -m omnigent.host.service_entry ...`` (what the launchd /
+      systemd service runs): ``sys.argv[0]`` is the module's ``.py`` source
+      file — mode 0644, no shebang — which the kernel refuses to exec
+      (EACCES). Rebuild the ``-m`` invocation from ``__main__.__spec__``
+      instead: ``[sys.executable, "-m", <module>, *sys.argv[1:]]``.
+
+    :returns: The argv to hand to :func:`os.execv` (``argv[0]`` is the path
+        to exec).
+    """
+    main = sys.modules.get("__main__")
+    spec = getattr(main, "__spec__", None)
+    module = getattr(spec, "name", None)
+    if module:
+        return [sys.executable, "-m", module, *sys.argv[1:]]
+    return list(sys.argv)
+
+
 def _reexec_self() -> NoReturn:
     """Replace this process with a fresh exec of the same command.
 
-    After the installer swaps the on-disk binary, re-exec so the NEW code
-    runs and reconnects (the ``host_id`` is stable). ``os.execv`` needs no
-    supervisor; if it somehow fails, exit non-zero so a supervisor (systemd
-    ``Restart=on-failure``) still restarts us into the new build.
+    After the installer swaps the on-disk build, re-exec so the NEW code
+    runs and reconnects (the ``host_id`` is stable). The argv comes from
+    :func:`_reexec_argv`, which handles the ``python -m`` launch shape the
+    supervised service uses. ``os.execv`` needs no supervisor; if it still
+    fails, exit 42 so a supervisor (launchd ``KeepAlive``, systemd
+    ``Restart=on-failure``) restarts us into the new build as a last resort.
     """
+    argv = _reexec_argv()
     sys.stdout.flush()
     sys.stderr.flush()
     try:
-        os.execv(sys.argv[0], sys.argv)
-    except OSError as exc:  # pragma: no cover - exec almost never fails
-        _logger.error("re-exec failed (%s); exiting for supervisor restart", exc)
+        os.execv(argv[0], argv)
+    except OSError as exc:
+        _logger.error(
+            "re-exec failed (%s) for %s; exiting for supervisor restart",
+            exc,
+            shlex.join(argv),
+        )
         sys.exit(42)
 
 
@@ -1024,6 +1055,7 @@ def resolve_agent_secret_env(
             continue
         raise SecretRefNotAllowed(problem)
     return resolved
+
 
 # HTTP statuses on the WebSocket upgrade that are worth retrying. Everything
 # else in the 4xx range is a permanent client error (auth, authorization,

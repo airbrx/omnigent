@@ -66,8 +66,10 @@ configured with.
 
 ## The tool boundary, three deep
 
-1. The bundle's `tools.outreach.tools` allow list, 15 of the 17 tools in
-   `contracts/mcp_tools.md`.
+1. The bundle's `tools.outreach.tools` allow list: 15 of the original 17 tools
+   in `contracts/mcp_tools.md`, plus the four LinkedIn and GTM plan tools
+   (`list_linkedin_posts`, `record_linkedin_metrics`, `list_plan_items`,
+   `record_plan_actual`) added on 2026-09-26.
 2. `omnigent.airbrx.eva.policy.tool_boundary`, registered as a `tool_call`
    guardrail, fail-closed.
 3. The outreach app's own tool layer, which is the authoritative one.
@@ -83,6 +85,47 @@ permission settings:
 
 Falsified rather than asserted: neutering `tool_boundary` to always ALLOW turns
 red exactly the four denial cases and nothing else.
+
+## A browser for LinkedIn stats: approved, not wired (2026-09-26)
+
+Abram approved Eva using a browser to read LinkedIn post analytics herself.
+**Her production host has no browser tool she can reach, so none is on either
+allow list**, and "Refresh stats with Eva" still ends in the paste-in route.
+
+What was measured on the bridge host, from the Claude CLI's `init` message in
+the runner logs: Eva runs on the `claude-sdk` harness, and the latest turns
+list one MCP server, `omnigent`, carrying her outreach tools plus Omnigent's
+own `sys_*` tools, `Skill` and `ToolSearch`. No browser tool. Two candidates
+exist on the machine but neither reaches her:
+
+- **Claude in Chrome.** The extension's native messaging host is installed, but
+  the claude-sdk executor never starts the CLI with `--chrome`, so its
+  `mcp__claude-in-chrome__*` tools are not in her session. It would also drive
+  the operator's own Chrome profile, signed in as them everywhere.
+- **Playwright MCP** (`@playwright/mcp`). Node and npx are present; the package
+  is not installed.
+
+**What the fence can do.** `tool_boundary` receives the call's arguments
+(`event["data"]["args"]`), so it can hold a browser's navigate call to
+`https://www.linkedin.com/` and refuse anything else. That only holds for tools
+Omnigent dispatches, which means a browser declared as an MCP server in Eva's
+bundle. Tools the CLI loads on its own (the operator's connectors, Claude in
+Chrome) are not reliably put to the policy: a measured Iris turn ran
+`ToolSearch` with no policy evaluation.
+
+**To wire it (LOCAL ONLY, on the bridge host):**
+
+1. Install Playwright MCP at a pinned version and a Chrome channel for it, and
+   create a dedicated browser profile directory for Eva.
+2. Sign that profile in to LinkedIn once, by hand, as the account whose post
+   analytics Eva should read. Eva never signs in; the rules in her AGENTS.md
+   tell her to stop at a sign-in page.
+3. Then, in this repository: declare the server in Eva's bundle
+   (`--user-data-dir` for that profile, `--allowed-origins` for linkedin.com
+   and its asset hosts), allow only its read tools (navigate, snapshot, wait,
+   back, close; never click, type, evaluate or upload), and add the
+   linkedin.com URL check to `tool_boundary`, with tests. Without click and
+   type she cannot post, comment or react even if she tried.
 
 ## Operator configuration
 

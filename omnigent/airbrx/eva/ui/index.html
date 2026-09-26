@@ -32,25 +32,26 @@
 
     <div id="workspace" class="workspace">
       <section id="home" class="home" aria-label="Eva's read of the pipeline">
-        <section id="kpis" class="kpis" aria-label="Summary">
+        <!-- Hidden until Eva has read something, so no row of zeros flashes on load. -->
+        <section id="kpis" class="kpis" aria-label="Summary" hidden>
           <div class="kpi">
             <div class="label">In the pool</div>
-            <div class="value" id="kpi-pool">0</div>
+            <div class="value" id="kpi-pool">&ndash;</div>
             <div class="note">claimable leads</div>
           </div>
           <div class="kpi">
             <div class="label">Yours</div>
-            <div class="value" id="kpi-mine">0</div>
+            <div class="value" id="kpi-mine">&ndash;</div>
             <div class="note">owned or claimed</div>
           </div>
           <div class="kpi">
             <div class="label">Drafts</div>
-            <div class="value" id="kpi-drafts">0</div>
+            <div class="value" id="kpi-drafts">&ndash;</div>
             <div class="note">seen by Eva</div>
           </div>
           <div class="kpi">
             <div class="label">Awaiting approval</div>
-            <div class="value" id="kpi-review">0</div>
+            <div class="value" id="kpi-review">&ndash;</div>
             <div class="note">in review</div>
           </div>
         </section>
@@ -60,15 +61,16 @@
           class="views"
           role="group"
           aria-label="What Eva has read"
+          hidden
         >
           <button type="button" data-view="pipeline">
-            Pipeline <b id="nav-pool">0</b>
+            Pipeline <b id="nav-pool">&ndash;</b>
           </button>
           <button type="button" data-view="mine">
-            My leads <b id="nav-mine">0</b>
+            My leads <b id="nav-mine">&ndash;</b>
           </button>
           <button type="button" data-view="drafts">
-            Drafts and approvals <b id="nav-drafts">0</b>
+            Drafts and approvals <b id="nav-drafts">&ndash;</b>
           </button>
         </div>
 
