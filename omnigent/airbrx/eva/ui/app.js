@@ -58,6 +58,10 @@
   let selectedLead = null;
   let busy = false;
   const history = [];
+  const SESSION_ID = decodeURIComponent(
+    (/\/eva\/sessions\/([^/]+)\/ui\//.exec(location.pathname) || [])[1] || "",
+  );
+  const POLL_MS = Number(document.body.dataset.pollMs) || 1500;
 
   function el(tag, attrs, ...children) {
     const node = document.createElement(tag);
@@ -625,9 +629,6 @@
       state && state.refreshed_at
         ? `Eva read the pipeline ${shortWhen(state.refreshed_at)}${state.stale ? ", may be out of date" : ""}`
         : "Eva has not read the pipeline yet";
-    const link = $("outreach-link");
-    if (state && state.outreach_url) link.href = state.outreach_url;
-    else link.removeAttribute("href");
   }
 
   function render() {
@@ -653,7 +654,11 @@
 
   function addMessage(kind, text, retry) {
     const list = $("messages");
-    list.append(
+    if (kind === "eva" && waitingLine) {
+      waitingLine.remove();
+      waitingLine = null;
+    }
+    const line = list.appendChild(
       el(
         "li",
         { class: kind },
@@ -673,6 +678,169 @@
       ),
     );
     list.scrollTop = list.scrollHeight;
+    return line;
+  }
+
+  // ------------------------------------------------ the session's own record
+  //
+  // The adapter's chat call returns only when Eva's turn is over, which can be
+  // minutes. So while it runs, the dock reads the native session's items, the
+  // same record native chat shows, and puts her interim messages and what she
+  // is doing into the chat as they arrive. The same read rebuilds the chat on
+  // load, so a reload does not lose the conversation.
+
+  const handled = new Set();
+  const answerLines = new Map();
+  let progressLine = null;
+  let waitingLine = null;
+
+  /** What each of Eva's tools is doing, in a rep's words, never its name. */
+  const DOING = {
+    list_pool: "Reading the pool",
+    list_my_leads: "Reading your leads",
+    get_lead: "Reading a lead",
+    claim_lead: "Claiming a lead",
+    release_lead: "Releasing a lead",
+    add_lead: "Adding a lead",
+    update_lead_fields: "Updating a lead",
+    save_qualification: "Saving a qualification",
+    submit_draft: "Checking a draft against the guardrails",
+    add_comment: "Adding a comment",
+    request_approval: "Asking for approval",
+    log_touch: "Logging a touch",
+    list_guardrails: "Reading the guardrails",
+    query_analytics: "Reading the analytics",
+    record_agent_run: "Recording her work",
+    ToolSearch: "Getting her tools ready",
+  };
+
+  async function sessionItems(limit) {
+    const response = await fetch(
+      `/v1/sessions/${encodeURIComponent(SESSION_ID)}/items?order=desc&limit=${limit}`,
+      { credentials: "same-origin" },
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const page = await response.json();
+    return {
+      items: (page.data || []).slice().reverse(),
+      hasMore: Boolean(page.has_more),
+    };
+  }
+
+  function itemText(item) {
+    return (Array.isArray(item.content) ? item.content : [])
+      .filter((c) => c.type === "output_text" || c.type === "input_text")
+      .map((c) => c.text || "")
+      .join("\n");
+  }
+
+  /** A rep's own message as they wrote it: without the page note the dock adds. */
+  function repText(text) {
+    return text.replace(
+      /\n\n\(I am looking at [\s\S]* in the outreach app\.\)$/,
+      "",
+    );
+  }
+
+  function showProgress(text) {
+    if (!progressLine) {
+      progressLine = addMessage("system", text);
+      progressLine.classList.add("progress");
+      progressLine.setAttribute("role", "status");
+    } else progressLine.textContent = text;
+    $("messages").append(progressLine);
+  }
+
+  function clearProgress() {
+    if (progressLine) progressLine.remove();
+    progressLine = null;
+  }
+
+  /**
+   * Put one session item in the chat. `live` is a turn in progress: her
+   * messages and what she is doing. Otherwise it is history: both sides.
+   */
+  function applyItem(item, live, shown) {
+    if (!item || !item.id) return;
+    if (item.type === "message" && item.role === "assistant") {
+      const text = itemText(item);
+      if (!text.trim()) return;
+      const line = answerLines.get(item.id);
+      if (line) {
+        if (line.textContent !== text) line.textContent = text;
+        return;
+      }
+      if (handled.has(item.id)) return;
+      handled.add(item.id);
+      answerLines.set(item.id, addMessage("eva", text));
+      if (shown) shown.add(text.trim());
+      if (progressLine) $("messages").append(progressLine);
+      return;
+    }
+    if (handled.has(item.id)) return;
+    handled.add(item.id);
+    if (item.type === "function_call" && live) {
+      const name = String(item.name || "")
+        .split("__")
+        .pop();
+      showProgress(`${DOING[name] || "Working"}…`);
+    } else if (item.type === "message" && item.role === "user" && !live) {
+      const text = itemText(item);
+      if (text.startsWith("Workspace refresh."))
+        addMessage("system", "You had Eva read the pipeline.");
+      else if (text.trim()) addMessage("user", repText(text));
+    }
+  }
+
+  /** Mark everything already in the session as shown, before a new turn. */
+  async function markExisting() {
+    try {
+      const { items } = await sessionItems(200);
+      for (const item of items) handled.add(item.id);
+    } catch {
+      // Without the record the turn still answers; it just cannot stream.
+    }
+  }
+
+  /** Stream a running turn into the chat until the returned stop is called. */
+  function watchTurn(shown) {
+    let stopped = false;
+    let timer = null;
+    showProgress("Eva is working…");
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const { items } = await sessionItems(50);
+        if (!stopped) for (const item of items) applyItem(item, true, shown);
+      } catch {
+        // A missed poll is harmless: the next one, or the answer, catches up.
+      }
+      if (!stopped) timer = setTimeout(tick, POLL_MS);
+    };
+    timer = setTimeout(tick, POLL_MS);
+    return async () => {
+      stopped = true;
+      clearTimeout(timer);
+      try {
+        const { items } = await sessionItems(50);
+        for (const item of items) applyItem(item, true, shown);
+      } catch {
+        // The adapter's answer below still shows.
+      }
+      clearProgress();
+    };
+  }
+
+  /** Rebuild the chat from the session, so a reload keeps the conversation. */
+  async function loadHistory() {
+    try {
+      const { items, hasMore } = await sessionItems(200);
+      if (hasMore) addMessage("system", "Earlier messages are in native chat.");
+      for (const item of items) applyItem(item, false);
+      return answerLines.size > 0;
+    } catch {
+      return false;
+    }
   }
 
   /** An adapter failure in words a rep can act on. */
@@ -721,10 +889,14 @@
     addMessage("user", page ? `${text}\n\nAbout ${page.label}` : text);
     setBusy(true);
     notice("");
+    const shown = new Set();
+    await markExisting();
+    const stopWatching = watchTurn(shown);
     try {
       const reply = await api("chat", { history });
+      await stopWatching();
       history.push({ role: "assistant", content: reply.text });
-      addMessage("eva", reply.text);
+      if (!shown.has((reply.text || "").trim())) addMessage("eva", reply.text);
       // A turn can change what Eva has read; the answer does not carry state.
       loadState()
         .then((next) => {
@@ -735,6 +907,7 @@
         })
         .catch(() => {});
     } catch (error) {
+      await stopWatching();
       // Drop the unanswered question so the next turn does not resend it.
       history.pop();
       addMessage("error", plainError(error), () => void ask(text, withContext));
@@ -821,7 +994,7 @@
               type: "button",
               role: "tab",
               "data-tab": t.id,
-              onclick: () => showTab(t),
+              onclick: () => (t.id === tab.id ? restartTab(t) : showTab(t)),
             },
             t.label,
           ),
@@ -891,6 +1064,12 @@
     if (frame) frame.src = href;
   }
 
+  /** Take an open tab's page back to where the tab starts, e.g. a lead to the list. */
+  function restartTab(t) {
+    const frame = t.path && currentFrame();
+    if (frame) frame.src = t.path;
+  }
+
   function replaceHash(hash) {
     try {
       window.history.replaceState(null, "", hash);
@@ -914,12 +1093,16 @@
     setBusy(true);
     notice("");
     addMessage("system", "Refreshing: Eva is reading the pool and your leads.");
+    await markExisting();
+    const stopWatching = watchTurn(new Set());
     try {
       // Refresh answers with the state itself, as Iris's does.
       state = await api("refresh", {});
+      await stopWatching();
       addMessage("system", "Refreshed: Eva has read the pool and your leads.");
       render();
     } catch (error) {
+      await stopWatching();
       if (error.status !== 409) {
         addMessage("error", plainError(error), () => void refresh());
         return;
@@ -998,6 +1181,9 @@
     void ask(`Draft a first touch for ${name} (id ${id}).`, false);
   });
 
+  $("outreach-link").addEventListener("click", (event) =>
+    openInWorkspace(event, "/eva/app/leads"),
+  );
   $("collapse").addEventListener("click", () => setDockCollapsed(true));
   $("dock-rail").addEventListener("click", () => setDockCollapsed(false));
   $("context-remove").addEventListener("click", () => {
@@ -1008,12 +1194,16 @@
 
   (async () => {
     try {
+      const answered = await loadHistory();
       const readiness = await api("readiness");
-      if (readiness.unverified && readiness.unverified.length)
-        addMessage("system", readiness.unverified[0]);
+      if (!answered && !readiness.turn_completed_here)
+        waitingLine = addMessage(
+          "system",
+          "Eva hasn't answered in this session yet. Ask her anything to start.",
+        );
       if (readiness.last_task_failed)
         notice(
-          "The last turn in this session failed. Open native chat to see why.",
+          "Eva's last turn in this session failed. Open native chat to see what happened.",
           true,
         );
     } catch (error) {
