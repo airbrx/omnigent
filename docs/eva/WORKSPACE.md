@@ -122,8 +122,10 @@ outreach app's decision, against its `reps` table.
   the same reason as v1.1's rule, and so is Omnigent's own auth header.
   The only forwarding header the app receives is `X-Forwarded-Proto: https`.
 - Hop-by-hop headers, and any named in `Connection`, are stripped both ways.
-  Status codes, `Location` (never followed) and every `Set-Cookie` pass
-  through untouched. Responses stream.
+  Status codes and `Location` (never followed) pass through untouched.
+  `Set-Cookie` follows v1.3: `ap_*` is dropped, and every other one is scoped
+  to `Path=/eva/app` (left byte for byte when it already is; when rewritten,
+  attribute order is not guaranteed). Responses stream.
 - Request bodies are capped at 10 MiB (413). Upstream timeouts: 5s connect,
   60s read, 30s write. Unreachable is 502, a timeout 504.
 - WebSockets are not proxied.
