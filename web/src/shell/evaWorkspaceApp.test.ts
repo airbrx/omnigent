@@ -23,37 +23,45 @@ const TABS = [
   ["Settings", "/eva/app/settings/token"],
 ];
 
-/** A refresh's answer: the state itself, in the adapter's shape. */
-const STATE = {
-  pool: { total: 1, leads: [{ lead_id: "L1", name: "Pat Example", company: "Example Co" }] },
-  mine: { total: 0, leads: [] },
-  leads: {},
-  drafts: [],
-  refreshed_at: 1790000000,
-  errors: [],
-  empty: false,
-  stale: false,
-  cache_age_seconds: 5,
-  outreach_url: "/eva/app",
-};
+// What the adapter's real handlers answer, captured by
+// tests/airbrx/test_eva_workspace_fixtures.py, which fails when they drift.
+// Hand-written responses are kept only for failures the fixtures cannot hold.
+interface Captured {
+  status: number;
+  body: unknown;
+}
+const ADAPTER = JSON.parse(
+  readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "__fixtures__/evaAdapter.json"),
+    "utf8",
+  ),
+) as Record<string, Record<string, Captured>>;
+type Scenario = keyof typeof ADAPTER;
+const replay = ({ status, body }: Captured) => Response.json(body, { status });
 
-const READY = { verified: [], unverified: [], turn_completed_here: true, last_task_failed: false };
+const STATE = ADAPTER.read_session.state.body as {
+  pool: { leads: { id: string; name: string }[] };
+  drafts: unknown[];
+};
+const LEAD = STATE.pool.leads[0];
+const ANSWER = (ADAPTER.read_session.chat.body as { text: string }).text;
+
 type Route = (init?: RequestInit) => Response | Promise<Response>;
 let fetchMock: ReturnType<typeof vi.fn>;
 const listeners: [string, EventListener][] = [];
 const realAdd = window.addEventListener.bind(window);
 
-/** Answer the app's relative `api/<path>` calls; overrides win. */
-function serve(overrides: Record<string, Route> = {}) {
+/**
+ * Answer the app's relative `api/<path>` calls from one captured scenario.
+ * A route the scenario did not capture falls back to the read session's, then
+ * `overrides` win over both.
+ */
+function serve(overrides: Record<string, Route> = {}, scenario: Scenario = "fresh_session") {
   fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
     const path = String(input).replace(/^api\//, "");
     if (path in overrides) return overrides[path](init);
-    if (path === "readiness") return Response.json(READY);
-    // The adapter answers 409 until there is something to show, as Iris's does.
-    if (path === "state")
-      return Response.json({ detail: "No workspace state yet; use Refresh" }, { status: 409 });
-    if (path === "chat")
-      return Response.json({ text: "Two leads are due today.", tools: [], failed: null });
+    const captured = ADAPTER[scenario][path] ?? ADAPTER.read_session[path];
+    if (captured) return replay(captured);
     if (path === "cancel") return Response.json({});
     throw new Error(`unexpected fetch ${input}`);
   });
@@ -166,7 +174,7 @@ it("a collapsed dock stays collapsed on the next visit, and never hides the Chat
 it("sends a question through the adapter and shows Eva's answer", async () => {
   await mount();
   ask("What is due today?");
-  expect(await screen.findByText("Two leads are due today.")).toBeInTheDocument();
+  expect(await screen.findByText(ANSWER)).toBeInTheDocument();
   expect(chatBodies()[0]).toEqual({ history: [{ role: "user", content: "What is due today?" }] });
 });
 
@@ -175,7 +183,7 @@ it("docked beside a tab, the question says what the rep is looking at", async ()
   fireEvent.click(screen.getByRole("tab", { name: "Leads" }));
   expect(screen.getByText("About Leads")).toBeVisible();
   ask("Is this one qualified?");
-  await screen.findByText("Two leads are due today.");
+  await screen.findByText(ANSWER);
   const [turn] = chatBodies()[0].history;
   expect(turn.content).toContain("Is this one qualified?");
   expect(turn.content).toContain("I am looking at Leads, /eva/app/leads");
@@ -186,14 +194,14 @@ it("the context can be left out of a question", async () => {
   fireEvent.click(screen.getByRole("tab", { name: "Pool" }));
   fireEvent.click(screen.getByRole("button", { name: "Don't include this page" }));
   ask("Hello");
-  await screen.findByText("Two leads are due today.");
+  await screen.findByText(ANSWER);
   expect(chatBodies()[0].history).toEqual([{ role: "user", content: "Hello" }]);
 });
 
 it("the chat is one conversation across tabs", async () => {
   await mount();
   ask("First");
-  await screen.findByText("Two leads are due today.");
+  await screen.findByText(ANSWER);
   fireEvent.click(screen.getByRole("tab", { name: "Accounts" }));
   fireEvent.click(screen.getByRole("button", { name: "Don't include this page" }));
   ask("Second");
@@ -219,7 +227,7 @@ it("a failed turn shows the adapter's reason and is not resent", async () => {
   expect(await screen.findByText(/Eva is busy/)).toBeInTheDocument();
   serve();
   ask("Two");
-  await screen.findByText("Two leads are due today.");
+  await screen.findByText(ANSWER);
   expect(chatBodies()[0].history).toEqual([{ role: "user", content: "Two" }]);
 });
 
@@ -241,30 +249,73 @@ it("Stop interrupts the running turn", async () => {
   expect(await screen.findByText(/cancelled/)).toBeInTheDocument();
 });
 
-it("an empty session says so rather than calling it an error", async () => {
+// ------------------------------------------------ against captured answers
+
+it("a fresh session (state 409) says nothing is loaded, not that something broke", async () => {
   await mount();
   expect(screen.getByText("Nothing loaded yet")).toBeInTheDocument();
   expect(document.getElementById("freshness")).toHaveTextContent(
     "Eva has not read the pipeline yet",
   );
   expect(document.getElementById("notice")).not.toBeVisible();
+  // Readiness's own unverified line reaches the chat.
+  const unverified = (ADAPTER.fresh_session.readiness.body as { unverified: string[] })
+    .unverified[0];
+  expect(await within(document.getElementById("messages")!).findByText(unverified)).toBeVisible();
 });
 
-it("Refresh shows the state the adapter answers with", async () => {
-  serve({ refresh: () => Response.json(STATE) });
+it("a read session renders the adapter's state: pool, counts, drafts, freshness", async () => {
+  serve({}, "read_session");
+  await mount();
+  expect(await screen.findByText(LEAD.name)).toBeInTheDocument();
+  expect(document.getElementById("kpi-pool")).toHaveTextContent("1");
+  expect(document.getElementById("kpi-drafts")).toHaveTextContent(String(STATE.drafts.length));
+  expect(document.getElementById("freshness")).toHaveTextContent("Eva read the pipeline");
+  expect(document.getElementById("notice")).not.toBeVisible();
+});
+
+it("Refresh renders the state the adapter answers with", async () => {
+  serve({ refresh: () => replay(ADAPTER.read_session.refresh) });
   await mount();
   fireEvent.click(screen.getByRole("button", { name: "Refresh pipeline" }));
-  expect(await screen.findByText("Pat Example")).toBeInTheDocument();
+  expect(await screen.findByText(LEAD.name)).toBeInTheDocument();
   expect(document.getElementById("kpi-pool")).toHaveTextContent("1");
   expect(document.getElementById("freshness")).toHaveTextContent("Eva read the pipeline");
 });
 
-it("a lead's outreach link opens in the Leads tab, beside Eva", async () => {
-  serve({ state: () => Response.json(STATE) });
+it("a refresh that read nothing new (409) keeps the earlier read and says so", async () => {
+  serve({}, "refresh_read_nothing");
   await mount();
-  fireEvent.click(await screen.findByText("Pat Example"));
+  expect(await screen.findByText(LEAD.name)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh pipeline" }));
+  const notice = document.getElementById("notice")!;
+  await waitFor(() => expect(notice).toBeVisible());
+  expect(notice).toHaveTextContent("That refresh read nothing new. This is what Eva read");
+  expect(notice).not.toHaveClass("error");
+  // The earlier read is still on screen, marked as possibly out of date.
+  expect(screen.getByText(LEAD.name)).toBeInTheDocument();
+  expect(document.getElementById("freshness")).toHaveTextContent("may be out of date");
+  const detail = (ADAPTER.refresh_read_nothing.refresh.body as { detail: string }).detail;
+  expect(within(document.getElementById("messages")!).getByText(detail)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Refresh pipeline" })).toBeEnabled();
+});
+
+it("a refresh that read nothing, with nothing read before, says there is nothing yet", async () => {
+  serve({ refresh: () => replay(ADAPTER.refresh_read_nothing.refresh) });
+  await mount();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh pipeline" }));
+  const notice = document.getElementById("notice")!;
+  await waitFor(() => expect(notice).toBeVisible());
+  expect(notice).toHaveTextContent("nothing to show yet");
+  expect(screen.getByText("Nothing loaded yet")).toBeInTheDocument();
+});
+
+it("a lead's outreach link opens in the Leads tab, beside Eva", async () => {
+  serve({}, "read_session");
+  await mount();
+  fireEvent.click(await screen.findByText(LEAD.name));
   fireEvent.click(screen.getByRole("link", { name: "Open in outreach app" }));
   expect(screen.getByRole("tab", { name: "Leads" })).toHaveAttribute("aria-selected", "true");
-  expect(screen.getByTitle("Eva Leads")).toHaveAttribute("src", "/eva/app/leads/L1");
+  expect(screen.getByTitle("Eva Leads")).toHaveAttribute("src", `/eva/app/leads/${LEAD.id}`);
   expect(screen.getByRole("region", { name: "Chat with Eva" })).toBeVisible();
 });

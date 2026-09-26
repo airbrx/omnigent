@@ -797,6 +797,7 @@
   async function refresh() {
     if (busy) return;
     setBusy(true);
+    notice("");
     addMessage("system", "Refreshing: Eva is reading the pool and your leads.");
     try {
       // Refresh answers with the state itself, as Iris's does.
@@ -804,7 +805,21 @@
       addMessage("system", "Refreshed: Eva has read the pool and your leads.");
       render();
     } catch (error) {
-      addMessage("error", error.message);
+      if (error.status !== 409) {
+        addMessage("error", error.message);
+        return;
+      }
+      // Her turn ran but read nothing. Say so, and keep showing what she read
+      // before, labelled with when, rather than an empty or broken panel.
+      addMessage("system", error.message);
+      state = (await loadState().catch(() => null)) || state;
+      render();
+      notice(
+        state && state.refreshed_at
+          ? `That refresh read nothing new. This is what Eva read ${shortWhen(state.refreshed_at)}.`
+          : "That refresh read nothing, so there is nothing to show yet. Ask Eva in the chat what went wrong.",
+        false,
+      );
     } finally {
       setBusy(false);
     }
