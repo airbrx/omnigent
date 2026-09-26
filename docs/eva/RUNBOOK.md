@@ -312,9 +312,9 @@ by `POST /v1/hosts/{host_id}/runners`, and the record read back from
 `GET /v1/sessions/{id}/items`.
 
 - **The tools attach and the data is real.** Eva called `outreach__list_pool`
-  once and answered "115 leads total", first five companies High Performance
-  Technologies, Ochoco Capital, Elevation Staffing Partners, Databricks, Amazon
-  Web Services. No `@*.example` anywhere.
+  once and answered "115 leads total", naming the first five companies in the
+  pool. They were real prospects, so they are not repeated here: this
+  repository is public. No `@*.example` anywhere.
 - **The allow list removes the two tools before the model sees them.** Asked to
   call `mark_sent`, Eva searched for it twice and got "No matching deferred
   tools found". That is the first refusal doing its job; it is not a policy

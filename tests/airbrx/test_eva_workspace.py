@@ -26,7 +26,7 @@ from omnigent.airbrx.eva.workspace import (
     workspace_state,
 )
 
-LEAD = "d870d43d-380a-45a5-a566-d7744de76ddf"
+LEAD = "00000000-0000-4000-8000-00000000000a"
 DRAFT = "5b1f0c4e-8b8b-4c55-9d7e-0d4a1a2b3c4d"
 BINDING = Binding(
     users=("local",),
@@ -63,7 +63,7 @@ def answer(text: str = "115 in the pool") -> dict[str, Any]:
 
 
 POOL = {
-    "leads": [{"id": LEAD, "name": "Brad Fair", "company": "High Performance Technologies"}],
+    "leads": [{"id": LEAD, "name": "Pat Example", "company": "Example Analytics Co"}],
     "next_cursor": "50",
     "total": 115,
 }
@@ -126,7 +126,7 @@ def test_pool_and_my_leads_come_from_the_newest_result() -> None:
 
 def test_get_lead_fills_detail_and_its_drafts() -> None:
     lead = {
-        "profile": {"id": LEAD, "name": "Brad Fair", "company": "HPT"},
+        "profile": {"id": LEAD, "name": "Pat Example", "company": "EAC"},
         "qualification": None,
         "touches": [],
         "drafts": [
@@ -140,11 +140,11 @@ def test_get_lead_fills_detail_and_its_drafts() -> None:
         ],
     }
     state = workspace_state([call("outreach__get_lead", {"lead_id": LEAD}), out(lead)], BINDING)
-    assert state["leads"][LEAD]["profile"]["name"] == "Brad Fair"
+    assert state["leads"][LEAD]["profile"]["name"] == "Pat Example"
     (draft,) = state["drafts"]
     assert draft["draft_id"] == DRAFT
     assert draft["lead_id"] == LEAD
-    assert draft["company"] == "HPT"
+    assert draft["company"] == "EAC"
 
 
 def test_submit_draft_carries_its_rule_results() -> None:
