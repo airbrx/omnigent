@@ -104,7 +104,7 @@ def test_an_empty_session_says_so_and_invents_nothing() -> None:
     assert state["empty"] is True
     assert state["pool"] is None and state["mine"] is None
     assert state["leads"] == {} and state["drafts"] == []
-    assert state["outreach_url"] == "http://127.0.0.1:8000"
+    assert state["outreach_url"] == "/eva/app"
 
 
 def test_pool_and_my_leads_come_from_the_newest_result() -> None:
@@ -309,6 +309,10 @@ def _app(
         data = list(reversed(items)) if order == "desc" else items
         return {"data": data, "has_more": False}
 
+    @app.post("/v1/sessions/{session_id}/events")
+    async def post_event(session_id: str) -> dict[str, Any]:
+        return {"queued": True, "item_id": "u1"}
+
     return TestClient(app)
 
 
@@ -316,7 +320,70 @@ def test_state_is_built_from_the_sessions_record(monkeypatch, tmp_path) -> None:
     client = _app(monkeypatch, tmp_path, items=[call("outreach__list_pool"), out(POOL)])
     body = client.get("/v1/eva/sessions/s1/ui/api/state").json()
     assert body["pool"]["total"] == 115
-    assert body["outreach_url"] == "http://127.0.0.1:8000"
+    assert body["outreach_url"] == "/eva/app"
+
+
+# Iris's response keys (omnigent/airbrx/iris/routes.py). The workspace frontend
+# is built against these, so Eva's must match.
+IRIS_CHAT_KEYS = {"text", "tools", "failed", "item_id"}
+IRIS_READINESS_KEYS = {
+    "tenant_id",
+    "name",
+    "fixture",
+    "session_status",
+    "turn_completed_here",
+    "last_task_failed",
+    "verified",
+    "unverified",
+}
+USER_TURN = {"id": "u1", "type": "message", "role": "user", "created_at": 90}
+
+
+def test_chat_answers_with_iris_keys_exactly(monkeypatch, tmp_path) -> None:
+    client = _app(
+        monkeypatch, tmp_path, items=[USER_TURN, call("outreach__list_pool"), out(POOL), answer()]
+    )
+    response = client.post(
+        "/v1/eva/sessions/s1/ui/api/chat",
+        json={"history": [{"role": "user", "content": "How many in the pool?"}]},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == IRIS_CHAT_KEYS
+    assert body["failed"] is None and body["item_id"] == "u1"
+
+
+def test_readiness_carries_every_iris_key(monkeypatch, tmp_path) -> None:
+    body = _app(monkeypatch, tmp_path, items=[]).get("/v1/eva/sessions/s1/ui/api/readiness").json()
+    assert set(body) >= IRIS_READINESS_KEYS
+    assert body["tenant_id"] == "live" and body["fixture"] is False
+
+
+def test_empty_state_is_a_409_as_iris_s_is(monkeypatch, tmp_path) -> None:
+    response = _app(monkeypatch, tmp_path, items=[]).get("/v1/eva/sessions/s1/ui/api/state")
+    assert response.status_code == 409
+    assert "Refresh" in response.json()["detail"]
+
+
+def test_refresh_answers_with_the_state_itself(monkeypatch, tmp_path) -> None:
+    items = [USER_TURN, call("outreach__list_pool"), out(POOL), answer()]
+    client = _app(monkeypatch, tmp_path, items=items)
+    response = client.post("/v1/eva/sessions/s1/ui/api/refresh", json={})
+    assert response.status_code == 200
+    body = response.json()
+    assert body == client.get("/v1/eva/sessions/s1/ui/api/state").json() | {
+        "cache_age_seconds": body["cache_age_seconds"]
+    }
+    assert body["pool"]["total"] == 115 and "stale" in body
+
+
+def test_a_refresh_that_read_nothing_new_does_not_show_the_old_capture(
+    monkeypatch, tmp_path
+) -> None:
+    earlier = [call("outreach__list_pool", call_id="c0"), out(POOL, call_id="c0", at=10)]
+    client = _app(monkeypatch, tmp_path, items=[*earlier, USER_TURN, answer()])
+    response = client.post("/v1/eva/sessions/s1/ui/api/refresh", json={})
+    assert response.status_code == 409
 
 
 def test_an_unauthenticated_caller_gets_401(monkeypatch, tmp_path) -> None:
@@ -349,7 +416,7 @@ def test_readiness_names_what_is_unverified_before_a_turn(monkeypatch, tmp_path)
     body = client.get("/v1/eva/sessions/s1/ui/api/readiness").json()
     assert body["turn_completed_here"] is False
     assert body["unverified"]
-    assert body["outreach_url"] == "http://127.0.0.1:8000"
+    assert body["outreach_url"] == "/eva/app"
 
 
 def test_the_app_and_only_its_assets_are_served(monkeypatch, tmp_path) -> None:

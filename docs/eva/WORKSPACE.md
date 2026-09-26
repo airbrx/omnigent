@@ -21,7 +21,7 @@ Omnigent sign-in is the only sign-in.
 
 What this supersedes below: "Two surfaces, two jobs" and every "links to the
 outreach app at the binding's `base_url`". The workspace links to `/eva/app`
-instead, and the adapter's `outreach_url` follows with the adapter change. The
+instead, and the adapter's `outreach_url` is `/eva/app`. The
 binding's `base_url` is unchanged and still means the app as Eva's MCP client
 sees it.
 
@@ -146,9 +146,38 @@ For the frontend (`omnigent/airbrx/eva/ui/`, owned by the UI branch):
   503 the server is missing `OUTREACH_IDENTITY_SECRET`; 502 or 504 the app is
   down or slow. None of these is worth retrying automatically.
 - **Never `/eva/app/mcp`.** It is always 404.
-- **The adapter API** is `/v1/eva/sessions/{session_id}/ui/api/{chat,cancel,state,refresh,readiness}`.
-  Its alignment with Iris's shapes is a separate change; the table of
-  differences lands with it, in the section below this one.
+- **The adapter API** is `/v1/eva/sessions/{session_id}/ui/api/{chat,cancel,state,refresh,readiness}`,
+  with Iris's shapes. The differences are in the next section.
+
+## Adapter API, against Iris's
+
+The frontend is built against Iris's request and response shapes, so Eva's
+five routes return Iris's keys with Iris's meanings. Where Eva differs it is
+listed here, and nowhere else.
+
+| Route | Iris | Eva |
+|---|---|---|
+| `POST .../chat` | body `{history, deadline}`; answers `{text, tools, failed, item_id}` | identical |
+| `POST .../cancel` | the native interrupt result | identical |
+| `GET .../state` | 409 until there is something to show; otherwise Iris's report body | 409 until there is something to show; otherwise **Eva's body** (below) |
+| `POST .../refresh` | runs a turn, then answers with the same body as `state`; 409 if the turn collected nothing | identical, with "collected" meaning a successful `list_pool` or `list_my_leads` recorded by this turn |
+| `GET .../readiness` | `{tenant_id, name, fixture, session_status, turn_completed_here, last_task_failed, verified, unverified}` | all of Iris's keys, plus `label` and `outreach_url` |
+
+**Eva's state body** is necessarily her own, because Iris's is a cache report:
+`pool`, `mine`, `leads`, `drafts`, `refreshed_at`, `errors`, `empty`,
+`outreach_url` (`/eva/app`) and `binding_label`, plus Iris's two freshness
+keys, `stale` (older than 300s) and `cache_age_seconds`. The one type
+difference: `cache_age_seconds` is `null`, and `stale` is `true`, when the
+state holds leads or drafts but no pool or lead-list read to date it.
+
+**Eva has no tenant.** `tenant_id` and `name` in readiness carry the binding
+label, which is what a rep chose when there is more than one.
+
+**Changed on 2026-09-26, and the shipped `ui/app.js` must follow:** `chat` no
+longer carries a `state` key (read `state` after a chat), `refresh` answers
+with the state itself rather than `{text, tools, item_id, state}`, an empty
+session's `state` is 409 rather than a 200 with `empty: true`, and
+`outreach_url` is `/eva/app` rather than the binding's loopback `base_url`.
 
 ## Two surfaces, two jobs (superseded 2026-09-26, see above)
 
