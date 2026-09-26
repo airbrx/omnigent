@@ -38,6 +38,10 @@
     { id: "settings", label: "Settings", path: "/eva/app/settings/token" },
   ];
   const VIEWS = ["pipeline", "mine", "drafts"];
+  const UUID =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const LEAD_PATH =
+    /^\/eva\/app\/leads\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
   const DOCK_KEY = "eva.dockCollapsed";
 
   const $ = (id) => document.getElementById(id);
@@ -363,16 +367,40 @@
     container.replaceChildren();
     for (const button of document.querySelectorAll("#views button"))
       button.classList.toggle("active", button.dataset.view === view);
-    if (!state || state.empty) {
+    const unread = !state || state.empty;
+    // No row of zeros before Eva has read anything: zeros beside a Pool tab
+    // full of leads reads as broken.
+    $("kpis").hidden = unread;
+    $("views").hidden = unread;
+    if (unread) {
       container.append(
         el(
           "div",
           { class: "card" },
-          el("div", { class: "section-title" }, "Nothing loaded yet"),
+          el(
+            "div",
+            { class: "section-title" },
+            "Eva hasn't read the pipeline yet",
+          ),
           el(
             "p",
             {},
-            "This workspace shows only what Eva has read in this session. Refresh pipeline asks her to read the pool and your leads. Nothing is shown until she has.",
+            "This view shows only what Eva has read in this session. The Pool and Leads tabs show the outreach app itself and are always current.",
+          ),
+          el(
+            "div",
+            { class: "asks" },
+            el(
+              "button",
+              {
+                type: "button",
+                class: "primary",
+                "data-busy-off": true,
+                disabled: busy,
+                onclick: () => void refresh(),
+              },
+              "Have Eva read it now",
+            ),
           ),
         ),
       );
@@ -623,10 +651,49 @@
 
   // ---------------------------------------------------------------- chat
 
-  function addMessage(kind, text) {
+  function addMessage(kind, text, retry) {
     const list = $("messages");
-    list.append(el("li", { class: kind }, text));
+    list.append(
+      el(
+        "li",
+        { class: kind },
+        text,
+        retry
+          ? el(
+              "button",
+              {
+                type: "button",
+                class: "chip retry",
+                disabled: busy,
+                onclick: retry,
+              },
+              "Try again",
+            )
+          : null,
+      ),
+    );
     list.scrollTop = list.scrollHeight;
+  }
+
+  /** An adapter failure in words a rep can act on. */
+  function plainError(error) {
+    const raw = (error && error.message) || "";
+    const status = error && error.status;
+    if (
+      /native session operation failed/i.test(raw) ||
+      status === 502 ||
+      status === 503
+    )
+      return "Eva could not be reached just now. Her host may be offline or restarting.";
+    if (status === 504 || /timed out/i.test(raw))
+      return "Eva took too long, so the turn was stopped.";
+    if (status === 401)
+      return "Your Omnigent sign-in has expired. Reload the page to sign in again.";
+    if (!status)
+      return "The workspace could not reach Omnigent. Check your connection.";
+    if (status >= 500) return "Something went wrong on the Omnigent side.";
+    // The adapter's own 4xx details are written for people.
+    return raw;
   }
 
   function setBusy(value) {
@@ -634,22 +701,24 @@
     $("send").disabled = value;
     $("refresh").disabled = value;
     $("cancel").hidden = !value;
-    for (const chip of document.querySelectorAll("button.chip"))
-      chip.disabled = value;
+    for (const button of document.querySelectorAll(
+      "button.chip, button[data-busy-off]",
+    ))
+      button.disabled = value;
   }
 
-  async function ask(text) {
+  async function ask(text, withContext = true) {
     if (busy || !text.trim()) return;
-    const where =
-      tab.path && includeContext ? `${tab.label}, ${framedPath()}` : "";
+    const page =
+      tab.path && includeContext && withContext ? pageContext() : null;
     history.push({
       role: "user",
-      content: where
-        ? `${text}\n\n(I am looking at ${where} in the outreach app.)`
+      content: page
+        ? `${text}\n\n(I am looking at ${page.sentence} in the outreach app.)`
         : text,
     });
     while (history.length > 24) history.shift();
-    addMessage("user", where ? `${text}\n\nAbout ${where}` : text);
+    addMessage("user", page ? `${text}\n\nAbout ${page.label}` : text);
     setBusy(true);
     notice("");
     try {
@@ -668,7 +737,7 @@
     } catch (error) {
       // Drop the unanswered question so the next turn does not resend it.
       history.pop();
-      addMessage("error", error.message);
+      addMessage("error", plainError(error), () => void ask(text, withContext));
     } finally {
       setBusy(false);
     }
@@ -683,19 +752,62 @@
   }
 
   /** The framed page's current path, so navigation inside it is picked up. */
+  function currentFrame() {
+    return document.querySelector(`#frames iframe[data-tab="${tab.id}"]`);
+  }
+
   function framedPath() {
-    const frame = document.querySelector(
-      `#frames iframe[data-tab="${tab.id}"]`,
-    );
+    const frame = currentFrame();
     try {
       const where =
         frame && frame.contentWindow && frame.contentWindow.location;
       if (where && where.pathname && where.pathname !== "blank")
         return `${where.pathname}${where.search}`;
     } catch {
-      // A page that left this origin cannot be read; the tab path still helps.
+      // A page that left this origin cannot be read; its src still helps.
     }
-    return tab.path;
+    const src = frame && frame.getAttribute("src");
+    return src && src.startsWith("/") ? src : tab.path;
+  }
+
+  /** CRM text headed for Eva's prompt: one line, bounded, never markup. */
+  function cleanName(raw) {
+    if (typeof raw !== "string") return "";
+    return raw
+      .replace(/[\u0000-\u001f\u007f]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+  }
+
+  /**
+   * What the rep is looking at in the open tab. On a lead page that is the
+   * lead: its id from the path, its name from the page's `data-eva-lead-name`
+   * or, failing that, the page title.
+   */
+  function pageContext() {
+    const path = framedPath();
+    const match = LEAD_PATH.exec(path.split("?")[0]);
+    if (!match) return { label: tab.label, sentence: `${tab.label}, ${path}` };
+    const id = match[1].toLowerCase();
+    let name = "";
+    try {
+      const doc = currentFrame().contentDocument;
+      const marked = doc && doc.querySelector(`[data-eva-lead-id="${id}"]`);
+      name = cleanName(marked && marked.getAttribute("data-eva-lead-name"));
+      if (!name && doc) {
+        const title = cleanName(doc.title.split(" | ")[0]);
+        if (title && title !== "Airbrx Outreach") name = title;
+      }
+    } catch {
+      // Unreadable page: the id alone still tells Eva which lead.
+    }
+    return {
+      label: name || "this lead",
+      sentence: name
+        ? `the lead ${name} (id ${id}) at ${path}`
+        : `the lead with id ${id} at ${path}`,
+    };
   }
 
   function renderTabs() {
@@ -736,9 +848,10 @@
     $("dock-rail").hidden = !collapsed;
     $("collapse").hidden = !docked;
     $("context").hidden = !docked || !includeContext;
-    $("context-label").textContent = docked ? `About ${tab.label}` : "";
+    const about = docked ? pageContext().label : "";
+    $("context-label").textContent = docked ? `About ${about}` : "";
     $("input").placeholder = docked
-      ? `Ask Eva about ${tab.label}. Enter sends, Shift+Enter adds a line.`
+      ? `Ask Eva about ${about}. Enter sends, Shift+Enter adds a line.`
       : "Ask Eva to find, qualify or draft. Enter sends, Shift+Enter adds a line.";
   }
 
@@ -753,6 +866,8 @@
           "data-tab": tab.id,
           title: `Eva ${tab.label}`,
           src: tab.path,
+          // Navigation inside the page changes what the dock is "About".
+          onload: () => renderDock(),
         }),
       );
     for (const frame of frames.querySelectorAll("iframe"))
@@ -806,7 +921,7 @@
       render();
     } catch (error) {
       if (error.status !== 409) {
-        addMessage("error", error.message);
+        addMessage("error", plainError(error), () => void refresh());
         return;
       }
       // Her turn ran but read nothing. Say so, and keep showing what she read
@@ -856,6 +971,33 @@
       renderView();
       renderDetail();
     });
+  // A management page asks Eva for something, e.g. its "Draft with Eva" button:
+  //   window.parent.postMessage({type: "eva.ask", intent: "draft", lead_id,
+  //     lead_name}, location.origin)
+  // A message listener is an injection surface, so this accepts a message only
+  // from this origin AND from one of this workspace's own management frames,
+  // and only a draft intent with a well-formed lead id.
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || data.type !== "eva.ask") return;
+    if (event.origin !== location.origin || !event.source) return;
+    const frames = [...document.querySelectorAll("#frames iframe")];
+    if (!frames.some((frame) => frame.contentWindow === event.source)) return;
+    if (data.intent !== "draft") return;
+    if (typeof data.lead_id !== "string" || !UUID.test(data.lead_id)) return;
+    const id = data.lead_id.toLowerCase();
+    const name = cleanName(data.lead_name) || "this lead";
+    setDockCollapsed(false);
+    if (busy) {
+      addMessage(
+        "system",
+        `Eva is busy with another turn. Ask her to draft for ${name} when she finishes.`,
+      );
+      return;
+    }
+    void ask(`Draft a first touch for ${name} (id ${id}).`, false);
+  });
+
   $("collapse").addEventListener("click", () => setDockCollapsed(true));
   $("dock-rail").addEventListener("click", () => setDockCollapsed(false));
   $("context-remove").addEventListener("click", () => {
