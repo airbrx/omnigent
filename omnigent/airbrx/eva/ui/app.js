@@ -90,9 +90,21 @@
         payload && typeof payload.detail === "string"
           ? payload.detail
           : `HTTP ${response.status}`;
-      throw new Error(detail);
+      const error = new Error(detail);
+      error.status = response.status;
+      throw error;
     }
     return payload;
+  }
+
+  /** The adapter's state, or null while it has nothing to show (409). */
+  async function loadState() {
+    try {
+      return await api("state");
+    } catch (error) {
+      if (error.status === 409) return null;
+      throw error;
+    }
   }
 
   // ---------------------------------------------------------------- helpers
@@ -323,8 +335,7 @@
                   {
                     class: "chip",
                     href: link,
-                    target: "_blank",
-                    rel: "noopener",
+                    onclick: (event) => openInWorkspace(event, link),
                   },
                   "Open in outreach app",
                 )
@@ -470,7 +481,11 @@
         link
           ? el(
               "a",
-              { class: "chip", href: link, target: "_blank", rel: "noopener" },
+              {
+                class: "chip",
+                href: link,
+                onclick: (event) => openInWorkspace(event, link),
+              },
               "Open in outreach app",
             )
           : null,
@@ -568,7 +583,7 @@
       $(id).textContent = String(value);
     $("freshness").textContent =
       state && state.refreshed_at
-        ? `Read ${when(state.refreshed_at)}`
+        ? `Read ${when(state.refreshed_at)}${state.stale ? ", may be out of date" : ""}`
         : "Not refreshed yet";
     const link = $("outreach-link");
     if (state && state.outreach_url) link.href = state.outreach_url;
@@ -629,10 +644,15 @@
       const reply = await api("chat", { history });
       history.push({ role: "assistant", content: reply.text });
       addMessage("eva", reply.text);
-      if (reply.state) {
-        state = reply.state;
-        render();
-      }
+      // A turn can change what Eva has read; the answer does not carry state.
+      loadState()
+        .then((next) => {
+          if (next) {
+            state = next;
+            render();
+          }
+        })
+        .catch(() => {});
     } catch (error) {
       // Drop the unanswered question so the next turn does not resend it.
       history.pop();
@@ -728,6 +748,20 @@
     renderDock();
   }
 
+  /** Open an outreach app link in its own tab here, with Eva docked beside it. */
+  function openInWorkspace(event, href) {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
+      return;
+    event.preventDefault();
+    const target =
+      TABS.filter((t) => t.path && href.startsWith(t.path)).sort(
+        (a, b) => b.path.length - a.path.length,
+      )[0] || TABS.find((t) => t.id === "leads");
+    showTab(target);
+    const frame = $("frames").querySelector(`iframe[data-tab="${target.id}"]`);
+    if (frame) frame.src = href;
+  }
+
   function replaceHash(hash) {
     try {
       window.history.replaceState(null, "", hash);
@@ -751,9 +785,9 @@
     setBusy(true);
     addMessage("system", "Refreshing: Eva is reading the pool and your leads.");
     try {
-      const reply = await api("refresh", {});
-      addMessage("eva", reply.text);
-      state = reply.state;
+      // Refresh answers with the state itself, as Iris's does.
+      state = await api("refresh", {});
+      addMessage("system", "Refreshed: Eva has read the pool and your leads.");
       render();
     } catch (error) {
       addMessage("error", error.message);
@@ -815,7 +849,7 @@
       notice(error.message, true);
     }
     try {
-      state = await api("state");
+      state = await loadState();
     } catch (error) {
       notice(error.message, true);
     }

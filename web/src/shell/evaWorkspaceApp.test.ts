@@ -23,6 +23,20 @@ const TABS = [
   ["Settings", "/eva/app/settings/token"],
 ];
 
+/** A refresh's answer: the state itself, in the adapter's shape. */
+const STATE = {
+  pool: { total: 1, leads: [{ lead_id: "L1", name: "Pat Example", company: "Example Co" }] },
+  mine: { total: 0, leads: [] },
+  leads: {},
+  drafts: [],
+  refreshed_at: 1790000000,
+  errors: [],
+  empty: false,
+  stale: false,
+  cache_age_seconds: 5,
+  outreach_url: "/eva/app",
+};
+
 const READY = { verified: [], unverified: [], turn_completed_here: true, last_task_failed: false };
 type Route = (init?: RequestInit) => Response | Promise<Response>;
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -35,7 +49,9 @@ function serve(overrides: Record<string, Route> = {}) {
     const path = String(input).replace(/^api\//, "");
     if (path in overrides) return overrides[path](init);
     if (path === "readiness") return Response.json(READY);
-    if (path === "state") return Response.json({ empty: true });
+    // The adapter answers 409 until there is something to show, as Iris's does.
+    if (path === "state")
+      return Response.json({ detail: "No workspace state yet; use Refresh" }, { status: 409 });
     if (path === "chat")
       return Response.json({ text: "Two leads are due today.", tools: [], failed: null });
     if (path === "cancel") return Response.json({});
@@ -221,4 +237,28 @@ it("Stop interrupts the running turn", async () => {
   );
   answer(Response.json({ detail: "Eva's turn was cancelled" }, { status: 409 }));
   expect(await screen.findByText(/cancelled/)).toBeInTheDocument();
+});
+
+it("an empty session says so rather than calling it an error", async () => {
+  await mount();
+  expect(screen.getByText("Nothing loaded yet")).toBeInTheDocument();
+  expect(document.getElementById("notice")).not.toBeVisible();
+});
+
+it("Refresh shows the state the adapter answers with", async () => {
+  serve({ refresh: () => Response.json(STATE) });
+  await mount();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh from host" }));
+  expect(await screen.findByText("Pat Example")).toBeInTheDocument();
+  expect(document.getElementById("kpi-pool")).toHaveTextContent("1");
+});
+
+it("a lead's outreach link opens in the Leads tab, beside Eva", async () => {
+  serve({ state: () => Response.json(STATE) });
+  await mount();
+  fireEvent.click(await screen.findByText("Pat Example"));
+  fireEvent.click(screen.getByRole("link", { name: "Open in outreach app" }));
+  expect(screen.getByRole("tab", { name: "Leads" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByTitle("Eva Leads")).toHaveAttribute("src", "/eva/app/leads/L1");
+  expect(screen.getByRole("region", { name: "Chat with Eva" })).toBeVisible();
 });
