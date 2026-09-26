@@ -79,8 +79,9 @@ a {
 /* Top bar: brand, the tabs, refresh */
 .topbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 20px;
+  gap: 8px 20px;
   padding: 10px 20px;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
@@ -124,9 +125,10 @@ a {
   flex-wrap: wrap;
   gap: 4px;
 }
+/* Tabs wrap rather than scroll: a tab behind an invisible sideways scroll is
+   a tab nobody finds. On a narrow frame the actions drop to their own line. */
 #tabs {
-  flex-wrap: nowrap;
-  overflow-x: auto;
+  flex-wrap: wrap;
   min-width: 0;
 }
 #tabs button,
@@ -609,11 +611,17 @@ textarea:focus {
     overflow: visible;
   }
   .topbar {
-    flex-wrap: wrap;
     gap: 10px;
     padding: 10px 16px;
   }
+  /* Room for Omnigent's sidebar toggle, which floats over the top left. */
+  .brand {
+    margin-left: 44px;
+    min-height: 40px;
+  }
   .actions {
+    flex-wrap: wrap;
+    white-space: normal;
     margin-left: 0;
   }
   .workspace,
@@ -634,5 +642,25 @@ textarea:focus {
   }
   .kpis {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.messages li.progress {
+  font-style: italic;
+}
+.messages li.progress::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+  animation: eva-pulse 1.2s ease-in-out infinite;
+}
+@keyframes eva-pulse {
+  50% {
+    opacity: 0.3;
   }
 }
