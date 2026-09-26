@@ -134,6 +134,11 @@ def _target(request: Request) -> str:
     return f"{rest}?{query}" if query else rest
 
 
+def _is_omnigent_cookie(name: str) -> bool:
+    """Omnigent's own cookies: ``ap_session``, ``__Host-ap_auth_state`` and kin."""
+    return name.strip().removeprefix("__Host-").removeprefix("__Secure-").startswith("ap_")
+
+
 def _without_omnigent_cookies(value: str) -> str:
     """Drop Omnigent's own session and sign-in cookies from a Cookie header.
 
@@ -142,11 +147,7 @@ def _without_omnigent_cookies(value: str) -> str:
     none of Omnigent's passes byte for byte (contract v1.2, CSRF).
     """
     pairs = value.split(";")
-    kept = [
-        p
-        for p in pairs
-        if not p.split("=", 1)[0].strip().removeprefix("__Host-").startswith("ap_")
-    ]
+    kept = [p for p in pairs if not _is_omnigent_cookie(p.split("=", 1)[0])]
     if len(kept) == len(pairs):
         return value
     return "; ".join(p.strip() for p in kept if p.strip())
@@ -181,15 +182,43 @@ def _request_headers(request: Request) -> list[tuple[str, str]]:
     return out
 
 
+def _scoped_set_cookie(value: str) -> str | None:
+    """A ``Set-Cookie`` value as the browser may receive it, or None to drop it.
+
+    Contract v1.3: a cookie named like Omnigent's own is dropped, so the app
+    can never overwrite Omnigent's sign-in. Every other cookie is scoped to
+    ``/eva/app``, and left byte for byte when its ``Path`` already is.
+    """
+    first, *attributes = value.split(";")
+    if _is_omnigent_cookie(first.split("=", 1)[0]):
+        return None
+    path = None
+    for attribute in attributes:
+        key, _, val = attribute.partition("=")
+        if key.strip().lower() == "path":
+            path = val.strip()
+    if path is not None and (path == PREFIX or path.startswith(PREFIX + "/")):
+        return value
+    kept = [a for a in attributes if a.partition("=")[0].strip().lower() != "path"]
+    return ";".join([first, *kept, f" Path={PREFIX}"])
+
+
 def _response_headers(response: httpx.Response) -> list[tuple[bytes, bytes]]:
     connection = {
         t.strip().lower() for t in response.headers.get("connection", "").split(",") if t.strip()
     }
-    return [
-        (name, value)
-        for name, value in response.headers.raw
-        if name.decode("latin-1").lower() not in _HOP_BY_HOP | connection
-    ]
+    out: list[tuple[bytes, bytes]] = []
+    for name, value in response.headers.raw:
+        lower = name.decode("latin-1").lower()
+        if lower in _HOP_BY_HOP | connection:
+            continue
+        if lower == "set-cookie":
+            scoped = _scoped_set_cookie(value.decode("latin-1"))
+            if scoped is None:
+                continue
+            value = scoped.encode("latin-1")
+        out.append((name, value))
+    return out
 
 
 async def _body(request: Request) -> bytes:

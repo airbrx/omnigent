@@ -185,6 +185,49 @@ def test_contract_v1_2_csrf_headers_and_cookies_pass_unchanged(monkeypatch) -> N
     ]
 
 
+def test_contract_v1_3_omnigent_cookies_never_go_upstream(monkeypatch) -> None:
+    """v1.3 (1): ap_* stripped from Cookie, every other cookie byte for byte."""
+    client, seen = _client(monkeypatch)
+    client.get(
+        "/eva/app/leads",
+        headers={
+            "Cookie": "a=1;__Host-ap_session=jwt; csrftoken=x%3By;ap_auth_state=s;__Secure-ap_x=1"
+        },
+    )
+    assert seen[0].headers.get_list("cookie") == ["a=1; csrftoken=x%3By"]
+    client.get("/eva/app/leads", headers={"Cookie": "__Host-ap_session=jwt"})
+    assert "cookie" not in seen[1].headers
+
+
+def test_contract_v1_3_upstream_cannot_set_omnigent_cookies(monkeypatch) -> None:
+    """v1.3 (2): an ap_* Set-Cookie is dropped; others are scoped to /eva/app."""
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        return _resp(
+            200,
+            headers=[
+                ("Set-Cookie", "__Host-ap_session=forged; Path=/; Secure; HttpOnly"),
+                ("Set-Cookie", "ap_session=forged; Path=/"),
+                ("Set-Cookie", "__Secure-ap_auth_state=x; Path=/; Secure"),
+                ("Set-Cookie", "csrftoken=ok; Path=/eva/app; SameSite=Strict"),
+                ("Set-Cookie", "deep=1; Path=/eva/app/leads"),
+                ("Set-Cookie", "rooted=1; path=/; HttpOnly"),
+                ("Set-Cookie", "bare=1; HttpOnly"),
+                ("Set-Cookie", "sneaky=1; Path=/eva/apple"),
+            ],
+        )
+
+    client, _ = _client(monkeypatch, upstream)
+    response = client.get("/eva/app/leads")
+    assert response.headers.get_list("set-cookie") == [
+        "csrftoken=ok; Path=/eva/app; SameSite=Strict",
+        "deep=1; Path=/eva/app/leads",
+        "rooted=1; HttpOnly; Path=/eva/app",
+        "bare=1; HttpOnly; Path=/eva/app",
+        "sneaky=1; Path=/eva/app",
+    ]
+
+
 # --------------------------------------------------------------------------
 # Identity comes from Omnigent, never from the client
 # --------------------------------------------------------------------------

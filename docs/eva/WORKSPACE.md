@@ -25,11 +25,11 @@ instead, and the adapter's `outreach_url` follows with the adapter change. The
 binding's `base_url` is unchanged and still means the app as Eva's MCP client
 sees it.
 
-## Identity contract v1.2: Omnigent to outreach
+## Identity contract v1.3: Omnigent to outreach
 
 This text is shared, identically, with the outreach app and the frontend.
-Neither side reinterprets it. v1.1 and v1.2 (both 2026-09-26) amend only the
-forwarding rules; everything else is v1.
+Neither side reinterprets it. v1.1, v1.2 and v1.3 (all 2026-09-26) amend only
+the forwarding rules; everything else is v1.
 
 - Omnigent reverse-proxies `https://omnigent.airbrx.ai/eva/app/<path>` to
   `http://127.0.0.1:8000/<path>`, STRIPPING the `/eva/app` prefix.
@@ -53,7 +53,14 @@ forwarding rules; everything else is v1.
   bytes forwarded upstream, before any percent-decoding or normalisation
   (`/leads?q=O%27Connor` is signed as those bytes).
 - (v1.2) `Cookie`, `Set-Cookie` and `X-CSRF-Token` pass through unchanged;
-  CSRF on every form POST depends on it.
+  CSRF on every form POST depends on it. v1.3 narrows the cookie rules:
+- (v1.3) Omnigent's own session cookies (`ap_*`, including `__Host-ap_*`)
+  are stripped from the forwarded `Cookie`; every other cookie passes byte
+  for byte. An upstream that never receives them cannot leak them.
+- (v1.3) Any upstream `Set-Cookie` whose name starts with `ap_` is DROPPED,
+  so the app can never overwrite Omnigent's login cookie. Every other
+  `Set-Cookie` passes, carrying `Path=/eva/app`: left byte for byte when its
+  path is already `/eva/app` or under it, otherwise given that path.
 - No signed-in Omnigent user: Omnigent answers 401 itself and never forwards.
 - Outreach, in `OUTREACH_AUTH_MODE=omnigent`, runs with root path `/eva/app`.
   It accepts identity only from a loopback peer, with a constant-time
@@ -105,13 +112,12 @@ outreach app's decision, against its `reps` table.
 - The secret is read from the environment per request. Unset, or under 32
   bytes, and `/eva/app` answers **503** and forwards nothing; the server does
   not refuse to start, because a coordinator crash loop takes Iris down too.
-- **The one place this side departs from v1.2's "Cookie unchanged":**
-  Omnigent's own cookies (`__Host-ap_session`, `ap_auth_state` and the rest of
-  the `ap_` family) are removed from `Cookie`, because the session cookie is a
-  credential for the whole of Omnigent and the app has no use for it. A
-  `Cookie` header carrying none of them is forwarded byte for byte, so the
-  app's own CSRF and session cookies are untouched either way. `Authorization`
-  is dropped for the same reason.
+- `Authorization` is dropped, for v1.3's reason: it carries an Omnigent
+  credential the app has no use for.
+- A `Set-Cookie` given `Path=/eva/app` loses any other `Path`; a `__Host-`
+  cookie, which must have `Path=/`, is therefore rejected by the browser.
+  That is the safe failure, and the app, living under a root path, has no
+  reason to set one.
 - `Forwarded` and `X-Real-IP` are dropped along with `X-Forwarded-*`, for
   the same reason as v1.1's rule, and so is Omnigent's own auth header.
   The only forwarding header the app receives is `X-Forwarded-Proto: https`.
