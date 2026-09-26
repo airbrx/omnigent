@@ -234,6 +234,25 @@ def _is_iris_agent(agent_name: str | None) -> bool:
     return is_iris(SimpleNamespace(name=agent_name))
 
 
+def _is_eva_agent(agent_name: str | None) -> bool:
+    """Is this harness running Eva (or a fork of her)?
+
+    Same shape and the same reasons as :func:`_is_iris_agent`: defers to
+    ``airbrx.eva.package.is_eva`` so the name test lives in one place, imports
+    lazily, and fails open to ``False`` so the harness still starts for every
+    other agent when the airbrx package is absent.
+    """
+    if not agent_name:
+        return False
+    try:
+        from types import SimpleNamespace
+
+        from omnigent.airbrx.eva.package import is_eva
+    except ImportError:
+        return False
+    return is_eva(SimpleNamespace(name=agent_name))
+
+
 def _resolve_skills_filter() -> str | list[str]:
     """
     Resolve the inner-executor ``skills_filter`` from env config.
@@ -326,7 +345,13 @@ def _build_claude_sdk_executor() -> Executor:
         # Scoped to Iris deliberately. Every other agent keeps today's
         # behaviour, because an agent the operator built around their own
         # connectors has a legitimate claim to them and Iris does not.
-        strict_mcp_config=_is_iris_agent(agent_name),
+        #
+        # Eva has the same contract (only the outreach tools, "no tool this
+        # app does not expose") and the same hole. Measured on her bridge
+        # host's runner logs: runs on 2026-09-23 and 24 listed 12 of the
+        # operator's claude.ai connector servers (Gmail, Slack, Drive, Ramp,
+        # Linear among them) and up to 422 of their tools beside her own.
+        strict_mcp_config=_is_iris_agent(agent_name) or _is_eva_agent(agent_name),
         # Iris declares `skills: none`, and her three bundled skills reach her
         # as INSTRUCTIONS, not as something to invoke: `bundle_root()` folds
         # every SKILL.md body into AGENTS.md (1728 -> 5780 characters). Her own
