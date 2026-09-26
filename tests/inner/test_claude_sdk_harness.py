@@ -607,3 +607,40 @@ def test_iris_does_not_get_the_skill_tool_and_keeps_tool_search():
     assert "ToolSearch" not in (disallowed_for("iris") or [])
     assert disallowed_for("claude-native-ui") is None
     assert disallowed_for("cache cow") is None
+
+
+@pytest.mark.parametrize(
+    ("agent_name", "disallowed"),
+    [
+        ("iris", ["Skill"]),
+        ("eva", ["Skill"]),
+        ("eva (fork of eva)", ["Skill"]),
+        ("claude-native-ui", None),
+        ("cache cow", None),
+        ("evangeline", None),
+    ],
+)
+def test_the_launch_drops_the_skill_tool_for_eva_and_iris_only(
+    monkeypatch: pytest.MonkeyPatch, agent_name: str, disallowed: list[str] | None
+) -> None:
+    """``disallowed_tools`` on the executor the harness builds, not a re-derivation.
+
+    Eva gets it for Iris's reason: a measured Iris turn ran ``ToolSearch`` with
+    no policy evaluation, so her ``tool_boundary`` denying ``Skill`` is not
+    enough on its own. Safe for her: ``skills: none`` and no bundled skills.
+    ``ToolSearch`` is never in the list.
+    """
+    monkeypatch.setenv("HARNESS_CLAUDE_SDK_AGENT_NAME", agent_name)
+    captured: dict[str, Any] = {}
+
+    def _fake_init(self: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    with patch(
+        "omnigent.inner.claude_sdk_harness.ClaudeSDKExecutor.__init__",
+        _fake_init,
+    ):
+        claude_sdk_harness._build_claude_sdk_executor()
+
+    assert captured["disallowed_tools"] == disallowed
+    assert "ToolSearch" not in (captured["disallowed_tools"] or [])

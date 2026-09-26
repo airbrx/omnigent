@@ -383,7 +383,15 @@ def _build_claude_sdk_executor() -> Executor:
         # `ToolSearch` is deliberately left: she uses it to find her own tools,
         # it returns references and executes nothing. Skill loading is
         # execution surface, which is the whole difference.
-        disallowed_tools=["Skill"] if _is_iris_agent(agent_name) else None,
+        #
+        # Eva gets the same. She declares `skills: none`, her bundle ships no
+        # skills at all (config.yaml and AGENTS.md only), and her
+        # tool_boundary already denies `Skill` and allows `ToolSearch` as
+        # discovery. So this takes away nothing she uses and closes the same
+        # possibly-ungated path.
+        disallowed_tools=(
+            ["Skill"] if _is_iris_agent(agent_name) or _is_eva_agent(agent_name) else None
+        ),
         api_key_helper=os.environ.get(_ENV_API_KEY_HELPER) or None,
     )
 
