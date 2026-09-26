@@ -2841,6 +2841,9 @@ def create_app(
     # The co-located outreach app at /eva/app, with a signed identity. Answers
     # 503 until OUTREACH_IDENTITY_SECRET is set. See docs/eva/WORKSPACE.md.
     app.include_router(create_eva_app_router(auth_provider=auth_provider), tags=["eva"])
+    from omnigent.airbrx.gateway.proxy import create_gateway_app_router
+
+    app.include_router(create_gateway_app_router(auth_provider=auth_provider), tags=["gateway"])
     # Read-only built-in agent discovery (designs/BUILTIN_AGENTS.md).
     # Successor to the removed GET /api/agents list; lists only
     # built-in (session_id IS NULL) agents for the new-session picker.
