@@ -27,6 +27,7 @@ from omnigent.host.connect import (
     HostRetryableConnectionError,
     _augment_user_path,
     _build_runner_env,
+    _reexec_self,
     _RunnerHandle,
     _should_auto_upgrade,
     run_host_process,
@@ -4279,6 +4280,121 @@ def test_should_not_retry_same_failed_target() -> None:
         current="0.3.0 (aaaaaaaa)",
         last_attempt="0.3.0 (bbbbbbbb)",
     )
+
+
+# ── auto-upgrade re-exec (_reexec_self) ─────────────────────
+
+
+def _kernel_like_execv(calls: list[list[str]]):
+    """A fake ``os.execv`` with the kernel's rule: a target without the
+    exec bit is refused with EACCES — exactly what execv does when handed
+    a plain ``.py`` source file."""
+
+    def fake_execv(path: str, argv: list[str]) -> None:
+        if not os.access(path, os.X_OK):
+            raise PermissionError(errno.EACCES, "Permission denied", path)
+        calls.append(list(argv))
+
+    return fake_execv
+
+
+def test_reexec_self_under_python_m_execs_the_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the launchd/systemd service runs ``python -m
+    omnigent.host.service_entry``, so ``sys.argv[0]`` is the module's ``.py``
+    source (mode 0644, no shebang). Exec'ing that raised EACCES on every
+    auto-upgrade and the host fell back to exit 42. The re-exec must instead
+    relaunch the interpreter with ``-m <module>`` and the original args."""
+    module_file = tmp_path / "service_entry.py"
+    module_file.write_text("")
+    module_file.chmod(0o644)
+    monkeypatch.setattr(
+        sys, "argv", [str(module_file), "--server", "https://x.example", "--auto-upgrade"]
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "__main__",
+        SimpleNamespace(__spec__=SimpleNamespace(name="omnigent.host.service_entry")),
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(os, "execv", _kernel_like_execv(calls))
+
+    _reexec_self()
+
+    assert calls == [
+        [
+            sys.executable,
+            "-m",
+            "omnigent.host.service_entry",
+            "--server",
+            "https://x.example",
+            "--auto-upgrade",
+        ]
+    ]
+
+
+def test_reexec_self_console_script_execs_argv0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hand-run ``omnigent host`` (console script, no ``-m``) keeps
+    re-exec'ing ``argv[0]`` itself — it is a real executable."""
+    script = tmp_path / "omnigent"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(sys, "argv", [str(script), "host", "--auto-upgrade"])
+    monkeypatch.setitem(sys.modules, "__main__", SimpleNamespace(__spec__=None))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(os, "execv", _kernel_like_execv(calls))
+
+    _reexec_self()
+
+    assert calls == [[str(script), "host", "--auto-upgrade"]]
+
+
+def test_reexec_self_exits_42_when_exec_really_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The supervisor fallback stays as the last resort: if exec itself
+    fails, exit 42 so launchd/systemd restarts us into the new build."""
+    monkeypatch.setattr(sys, "argv", [str(tmp_path / "gone"), "host"])
+    monkeypatch.setitem(sys.modules, "__main__", SimpleNamespace(__spec__=None))
+
+    def failing_execv(path: str, argv: list[str]) -> None:
+        raise FileNotFoundError(errno.ENOENT, "No such file", path)
+
+    monkeypatch.setattr(os, "execv", failing_execv)
+    with pytest.raises(SystemExit) as info:
+        _reexec_self()
+    assert info.value.code == 42
+
+
+def test_reexec_self_really_reexecs_under_python_m(tmp_path: Path) -> None:
+    """End-to-end: a real ``python -m <module>`` process that calls
+    ``_reexec_self`` must come back as a second run of the same module (a
+    real ``execv``, no fakes), not die with EACCES + exit 42."""
+    (tmp_path / "reexec_probe.py").write_text(
+        "import os, sys\n"
+        "from omnigent.host.connect import _reexec_self\n"
+        "if os.environ.get('REEXEC_PROBE_DONE'):\n"
+        "    print('REEXEC_OK', sys.argv[1:])\n"
+        "    sys.exit(0)\n"
+        "os.environ['REEXEC_PROBE_DONE'] = '1'\n"
+        "_reexec_self()\n"
+    )
+    env = dict(os.environ)
+    env.pop("REEXEC_PROBE_DONE", None)
+    env["PYTHONPATH"] = os.pathsep.join([str(tmp_path), *filter(None, [env.get("PYTHONPATH")])])
+    result = subprocess.run(
+        [sys.executable, "-m", "reexec_probe", "--server", "https://x.example"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr[-800:]
+    assert "REEXEC_OK ['--server', 'https://x.example']" in result.stdout
 
 
 def test_terminate_live_runners_sleeps_sessions_and_counts(tmp_path: Path) -> None:
