@@ -138,16 +138,18 @@ def _without_omnigent_cookies(value: str) -> str:
     """Drop Omnigent's own session and sign-in cookies from a Cookie header.
 
     The outreach app has no use for them, and a session JWT is a credential
-    for the whole of Omnigent.
+    for the whole of Omnigent. Every other cookie passes; a header carrying
+    none of Omnigent's passes byte for byte (contract v1.2, CSRF).
     """
-    kept = []
-    for pair in value.split(";"):
-        name = pair.split("=", 1)[0].strip()
-        if name.removeprefix("__Host-").startswith("ap_"):
-            continue
-        if pair.strip():
-            kept.append(pair.strip())
-    return "; ".join(kept)
+    pairs = value.split(";")
+    kept = [
+        p
+        for p in pairs
+        if not p.split("=", 1)[0].strip().removeprefix("__Host-").startswith("ap_")
+    ]
+    if len(kept) == len(pairs):
+        return value
+    return "; ".join(p.strip() for p in kept if p.strip())
 
 
 def _request_headers(request: Request) -> list[tuple[str, str]]:

@@ -25,11 +25,11 @@ instead, and the adapter's `outreach_url` follows with the adapter change. The
 binding's `base_url` is unchanged and still means the app as Eva's MCP client
 sees it.
 
-## Identity contract v1.1: Omnigent to outreach
+## Identity contract v1.2: Omnigent to outreach
 
 This text is shared, identically, with the outreach app and the frontend.
-Neither side reinterprets it. v1.1 (2026-09-26) amends only the forwarding
-rules for `Host` and `X-Forwarded-*`; everything else is v1.
+Neither side reinterprets it. v1.1 and v1.2 (both 2026-09-26) amend only the
+forwarding rules; everything else is v1.
 
 - Omnigent reverse-proxies `https://omnigent.airbrx.ai/eva/app/<path>` to
   `http://127.0.0.1:8000/<path>`, STRIPPING the `/eva/app` prefix.
@@ -47,7 +47,13 @@ rules for `Host` and `X-Forwarded-*`; everything else is v1.
   `X-Forwarded-For`. Why: the app runs on `127.0.0.1:8000` with
   `uvicorn --proxy-headers --forwarded-allow-ips 127.0.0.1`, so a forwarded
   client `X-Forwarded-For` would become the app's peer address and its
-  loopback check could be spoofed with one header.
+  loopback check could be spoofed with one header. The app refuses a
+  request carrying `X-Forwarded-For` outright.
+- (v1.2) The signature covers the RAW request target plus query, exactly the
+  bytes forwarded upstream, before any percent-decoding or normalisation
+  (`/leads?q=O%27Connor` is signed as those bytes).
+- (v1.2) `Cookie`, `Set-Cookie` and `X-CSRF-Token` pass through unchanged;
+  CSRF on every form POST depends on it.
 - No signed-in Omnigent user: Omnigent answers 401 itself and never forwards.
 - Outreach, in `OUTREACH_AUTH_MODE=omnigent`, runs with root path `/eva/app`.
   It accepts identity only from a loopback peer, with a constant-time
@@ -99,9 +105,13 @@ outreach app's decision, against its `reps` table.
 - The secret is read from the environment per request. Unset, or under 32
   bytes, and `/eva/app` answers **503** and forwards nothing; the server does
   not refuse to start, because a coordinator crash loop takes Iris down too.
-- Omnigent's own credentials are not forwarded: `Authorization` is dropped,
-  and Omnigent's cookies (`__Host-ap_session`, `ap_auth_state` and the rest of
-  the `ap_` family) are removed from `Cookie`. Every other cookie passes.
+- **The one place this side departs from v1.2's "Cookie unchanged":**
+  Omnigent's own cookies (`__Host-ap_session`, `ap_auth_state` and the rest of
+  the `ap_` family) are removed from `Cookie`, because the session cookie is a
+  credential for the whole of Omnigent and the app has no use for it. A
+  `Cookie` header carrying none of them is forwarded byte for byte, so the
+  app's own CSRF and session cookies are untouched either way. `Authorization`
+  is dropped for the same reason.
 - `Forwarded` and `X-Real-IP` are dropped along with `X-Forwarded-*`, for
   the same reason as v1.1's rule, and so is Omnigent's own auth header.
   The only forwarding header the app receives is `X-Forwarded-Proto: https`.

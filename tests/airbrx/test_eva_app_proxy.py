@@ -125,6 +125,66 @@ def test_the_signed_path_is_the_raw_path_that_is_sent(monkeypatch) -> None:
     assert sent.headers["x-omnigent-signature"] == expected
 
 
+def _outreach_verifies(request: httpx.Request) -> bool:
+    """What the outreach app computes: HMAC over the raw target it receives."""
+    h = request.headers
+    target = request.url.raw_path.decode("latin-1")
+    expected = signature(
+        SECRET.encode(),
+        h["x-omnigent-user-email"],
+        int(h["x-omnigent-timestamp"]),
+        request.method,
+        target,
+    )
+    return h["x-omnigent-signature"] == expected
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/leads?q=O%27Connor",
+        "/leads?q=O%27Connor&sort=-created",
+        "/leads/caf%C3%A9?q=a+b&r=%2F",
+        "/accounts/a%2Fb",
+    ],
+)
+def test_contract_v1_2_the_signature_covers_the_bytes_received(monkeypatch, target) -> None:
+    """v1.2 (a): sign the raw target as forwarded, before any decoding."""
+    client, seen = _client(monkeypatch)
+    client.get("/eva/app" + target)
+    [sent] = seen
+    assert sent.url.raw_path.decode("latin-1") == target
+    assert _outreach_verifies(sent)
+
+
+def test_contract_v1_2_csrf_headers_and_cookies_pass_unchanged(monkeypatch) -> None:
+    """v1.2 (c): Cookie, Set-Cookie and X-CSRF-Token are untouched."""
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        return _resp(
+            200, headers=[("Set-Cookie", "csrftoken=n3w; Path=/eva/app; SameSite=Strict")]
+        )
+
+    client, seen = _client(monkeypatch, upstream)
+    cookie = "csrftoken=abc123;outreach_session=s%3D1"
+    response = client.post(
+        "/eva/app/leads/42/claim",
+        content=b"csrf_token=abc123",
+        headers={
+            "Cookie": cookie,
+            "X-CSRF-Token": "abc123",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    [sent] = seen
+    assert sent.headers.get_list("cookie") == [cookie]
+    assert sent.headers.get_list("x-csrf-token") == ["abc123"]
+    assert _outreach_verifies(sent)
+    assert response.headers.get_list("set-cookie") == [
+        "csrftoken=n3w; Path=/eva/app; SameSite=Strict"
+    ]
+
+
 # --------------------------------------------------------------------------
 # Identity comes from Omnigent, never from the client
 # --------------------------------------------------------------------------
