@@ -45,7 +45,8 @@ their own model subscription. Server-side LLM spend is **$0**.
   127.0.0.1 --port 6767` from a uv-tool venv (`~/.local/.../omnigent`), env from
   `/etc/omnigent/server.env`. A systemd drop-in
   (`omnigent-server.service.d/override.conf`) appends `--database-uri
-  ${DATABASE_URL}` (the CLI has no env binding for the DB).
+  ${DATABASE_URL}`. That puts the password on the command line, readable by
+  any user through `ps`; see gotcha 3 for the env binding that replaces it.
 - **TLS:** native **Caddy** (`/etc/caddy/Caddyfile`) reverse-proxies
   `omnigent.airbrx.ai → 127.0.0.1:6767`. DNS is a **direct A-record** to the
   instance public IP (no ALB).
@@ -66,8 +67,22 @@ their own model subscription. Server-side LLM spend is **$0**.
    the URL, so `DATABASE_URL` MUST be the explicit `postgresql+psycopg://…` form
    (plain `postgresql://` selects the absent psycopg2 dialect and crash-loops).
    *(The Docker entrypoint normalizes automatically — this is native-only.)*
-3. **DB flag wiring:** `omnigent server` has no env var for the DB; the systemd
-   drop-in passes `--database-uri ${DATABASE_URL}` from `server.env`.
+3. **DB flag wiring:** until the env binding below, `omnigent server` had no
+   env var for the DB (a unit comment claiming it read `DATABASE_URL`
+   env-first was wrong), so the drop-in passes `--database-uri
+   ${DATABASE_URL}` from `server.env`, and the password shows in `ps`.
+   `--database-uri` now also reads **`OMNIGENT_DATABASE_URI`**, with the flag
+   winning when both are set. To keep the password off the command line, set
+   `OMNIGENT_DATABASE_URI=<the same postgresql+psycopg:// URL>` in
+   `server.env` and drop the flag from `ExecStart`. `DATABASE_URL` itself is
+   still not read by `omnigent server`; only the Docker entrypoint reads it.
+   **A missing database setting silently becomes SQLite.** With neither the
+   flag nor `OMNIGENT_DATABASE_URI`, the server falls back to
+   `<data dir>/chat.db`. On this box that file exists (the pre-Aurora
+   database, retained since June), so the server would come up healthy on
+   months-old data and write new work into it, with nothing failing. Guard the
+   unit with an `ExecStartPre` that refuses to start when the setting is
+   empty or not `postgresql+psycopg://`.
 4. **Admin roster path:** `resolve_admin_list_path()` uses `~/.omnigent/admins`
    and **ignores `OMNIGENT_DATA_DIR`**. Set `OMNIGENT_ADMIN_LIST_PATH=/var/lib/omnigent/admins`
    in `server.env` (requires restart) so the roster is actually consulted.
