@@ -82,6 +82,43 @@ it("starts a session on the bound host and workspace, then opens the workspace",
   });
 });
 
+function withRecent(sessions: unknown[]) {
+  vi.mocked(authenticatedFetch).mockImplementation(async (url, init) => {
+    if (url === "/v1/eva")
+      return new Response(JSON.stringify({ agent_id: "agent-eva", bindings: [BINDING] }));
+    if (String(url).startsWith("/v1/sessions?"))
+      return new Response(JSON.stringify({ data: sessions }));
+    if (url === "/v1/sessions" && init?.method === "POST")
+      return new Response(JSON.stringify({ id: "new-session" }), { status: 201 });
+    return new Response("{}", { status: 404 });
+  });
+}
+
+it("offers to resume Eva's most recent session on the binding's host, with New beside it", async () => {
+  withRecent([
+    { id: "other-host", host_id: "f".repeat(32), updated_at: 1790000100 },
+    { id: "recent", host_id: BINDING.host_id, updated_at: 1790000000 },
+  ]);
+  show();
+  fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
+  expect(routing.navigate).toHaveBeenCalledWith("/eva/recent");
+  const list = vi
+    .mocked(authenticatedFetch)
+    .mock.calls.find(([url]) => String(url).startsWith("/v1/sessions?"));
+  const params = new URLSearchParams(String(list?.[0]).split("?")[1]);
+  expect(params.get("agent_id")).toBe("agent-eva");
+  expect(params.get("sort_by")).toBe("updated_at");
+  expect(screen.getByText(/Last used/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+});
+
+it("New still starts a fresh session when there is one to resume", async () => {
+  withRecent([{ id: "recent", host_id: BINDING.host_id, updated_at: 1790000000 }]);
+  show();
+  fireEvent.click(await screen.findByRole("button", { name: "New" }));
+  await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/eva/new-session"));
+});
+
 it("chat mode lands in the native chat instead", async () => {
   routing.search = new URLSearchParams("mode=chat");
   catalog();

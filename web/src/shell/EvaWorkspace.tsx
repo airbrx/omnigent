@@ -16,6 +16,12 @@ export interface EvaBinding {
   fixture: boolean;
   workspace: string | null;
 }
+/** The fields of GET /v1/sessions this page reads. */
+interface EvaSession {
+  id: string;
+  host_id?: string | null;
+  updated_at?: number;
+}
 interface EvaCatalog {
   agent_id: string | null;
   bindings: EvaBinding[];
@@ -52,6 +58,27 @@ export function EvaWorkspace() {
       return response.json();
     },
   });
+
+  // Eva's recent sessions, newest first, so Start does not always mean "new":
+  // otherwise every visit adds a "New session" row to the sidebar.
+  const recent = useQuery({
+    queryKey: ["eva-recent-sessions", data?.agent_id],
+    enabled: Boolean(!sessionId && data?.agent_id),
+    queryFn: async (): Promise<EvaSession[]> => {
+      const params = new URLSearchParams({
+        agent_id: data?.agent_id ?? "",
+        limit: "20",
+        sort_by: "updated_at",
+        visibility: "mine",
+      });
+      const response = await authenticatedFetch(`/v1/sessions?${params}`);
+      if (!response.ok) return [];
+      return ((await response.json()) as { data?: EvaSession[] }).data ?? [];
+    },
+  });
+  const lastSession = (binding: EvaBinding) =>
+    recent.data?.find((s) => !binding.host_id || s.host_id === binding.host_id);
+  const open = (id: string) => navigate(`/${chatMode ? "c" : "eva"}/${encodeURIComponent(id)}`);
 
   async function create(binding: EvaBinding) {
     if (!data?.agent_id) return;
@@ -119,7 +146,7 @@ export function EvaWorkspace() {
       className="flex min-h-0 w-full flex-1 overflow-y-auto bg-[#F0EFED] text-[#1A1A1A] antialiased dark:bg-[#121212] dark:text-[#E0E0E0]"
       style={{ fontFamily: "Inter, system-ui, -apple-system, sans-serif" }}
     >
-      <main className="mx-auto flex w-full max-w-xl flex-col gap-5 px-4 py-12">
+      <main className="mx-auto flex w-full max-w-xl flex-col gap-5 px-4 pt-20 pb-12 md:pt-12">
         <div className="flex items-center gap-3">
           <img
             src="/v1/eva/portrait"
@@ -157,17 +184,46 @@ export function EvaWorkspace() {
                 <span className="min-w-0">
                   <span className="block font-semibold text-sm">{displayName(binding)}</span>
                   <span className="block text-[#8A8A8A] text-xs">
-                    {binding.fixture ? "Sample data for trying Eva out" : "Your leads and pool"}
+                    {lastUsed(lastSession(binding)) ??
+                      (binding.fixture ? "Sample data for trying Eva out" : "Your leads and pool")}
                   </span>
                 </span>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void create(binding)}
-                  className="shrink-0 rounded-xl bg-[#FD6C1D] px-5 py-2 font-semibold text-sm text-white transition-colors hover:bg-[#E65A0D] disabled:opacity-50"
-                >
-                  {chatMode ? "Start chat" : "Start"}
-                </button>
+                <span className="flex shrink-0 gap-2">
+                  {(() => {
+                    const last = lastSession(binding);
+                    if (!last)
+                      return (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void create(binding)}
+                          className={PRIMARY}
+                        >
+                          {chatMode ? "Start chat" : "Start"}
+                        </button>
+                      );
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void create(binding)}
+                          className={SECONDARY}
+                        >
+                          New
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => open(last.id)}
+                          className={PRIMARY}
+                        >
+                          Resume
+                        </button>
+                      </>
+                    );
+                  })()}
+                </span>
               </li>
             ))}
           </ul>
@@ -180,6 +236,23 @@ export function EvaWorkspace() {
       </main>
     </div>
   );
+}
+
+const PRIMARY =
+  "rounded-xl bg-[#FD6C1D] px-5 py-2 font-semibold text-sm text-white transition-colors hover:bg-[#E65A0D] disabled:opacity-50";
+const SECONDARY =
+  "rounded-xl border-[1.5px] border-[#D4D4D4] bg-white px-4 py-2 font-medium text-[#1A1A1A] text-sm transition-colors hover:bg-[#F5F5F5] disabled:opacity-50 dark:border-[#444444] dark:bg-[#1A1A1A] dark:text-[#E0E0E0] dark:hover:bg-[#242424]";
+
+/** "Last used Sep 26, 10:14 AM" for a session, or nothing when there is none. */
+function lastUsed(session: EvaSession | undefined): string | undefined {
+  if (!session?.updated_at) return session ? "Your last session is ready to resume" : undefined;
+  const when = new Date(session.updated_at * 1000).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `Last used ${when}`;
 }
 
 /** A binding as a rep reads it: its label, never the loopback URL behind it. */
