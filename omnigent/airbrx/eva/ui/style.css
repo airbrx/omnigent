@@ -124,6 +124,15 @@ a {
   flex-wrap: wrap;
   gap: 4px;
 }
+#tabs {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  min-width: 0;
+}
+#tabs button,
+.actions {
+  white-space: nowrap;
+}
 #tabs button,
 .views button {
   background: transparent;

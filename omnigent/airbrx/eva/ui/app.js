@@ -140,6 +140,18 @@
     return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
   }
 
+  function shortWhen(value) {
+    const date = new Date(value * 1000);
+    return Number.isNaN(date.getTime())
+      ? String(value)
+      : date.toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        });
+  }
+
   function notice(text, isError) {
     const box = $("notice");
     box.hidden = !text;
@@ -583,7 +595,7 @@
       $(id).textContent = String(value);
     $("freshness").textContent =
       state && state.refreshed_at
-        ? `Eva read the pipeline ${when(state.refreshed_at)}${state.stale ? ", so it may be out of date" : ""}`
+        ? `Eva read the pipeline ${shortWhen(state.refreshed_at)}${state.stale ? ", may be out of date" : ""}`
         : "Eva has not read the pipeline yet";
     const link = $("outreach-link");
     if (state && state.outreach_url) link.href = state.outreach_url;
