@@ -630,7 +630,7 @@
         "tenant_id": "fixture-iris",
         "turn_completed_here": false,
         "unverified": [
-          "no model turn has completed in this session, so whether the execution host can reach the model is unknown. A populated workspace does not settle it on its own: an imported report fills this view without the host running anything. Refreshing from the host and asking her a question both run a model turn, and this line will say so once one has."
+          "no model turn has completed in this session yet, so whether the execution host can reach the model is unknown. The first time this workspace opens, it collects a fresh overview from the host automatically, and that runs a model turn. Asking Iris a question runs one too. This line goes away once a turn has completed."
         ],
         "verified": [
           "you are authenticated to this Omnigent host",

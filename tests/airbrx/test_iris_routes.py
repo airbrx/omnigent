@@ -598,3 +598,25 @@ def test_an_unreadable_overview_still_fails_the_read(monkeypatch, tmp_path):
     session.files = _Unreadable({k: v for k, v in FILES.items() if k != OVERVIEW_ID})
     client = make_client(monkeypatch, tmp_path, session)
     assert client.get(f"{API}/state").status_code >= 400
+
+
+def test_readiness_names_the_automatic_first_collect_not_an_import(monkeypatch, tmp_path):
+    """The workspace shows this line verbatim; Iris collects, she does not import (iris #29)."""
+    response = make_client(monkeypatch, tmp_path, IrisSession()).get(f"{API}/readiness")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["turn_completed_here"] is False
+    assert body["unverified"] == [
+        "no model turn has completed in this session yet, so whether the execution host "
+        "can reach the model is unknown. The first time this workspace opens, it collects "
+        "a fresh overview from the host automatically, and that runs a model turn. Asking "
+        "Iris a question runs one too. This line goes away once a turn has completed."
+    ]
+    assert "import" not in " ".join(body["unverified"]).lower()
+
+
+def test_readiness_has_no_unverified_line_once_a_turn_completed(monkeypatch, tmp_path):
+    body = make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES)).get(
+        f"{API}/readiness"
+    )
+    assert body.json()["unverified"] == []

@@ -534,16 +534,17 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                         # straight afterwards. Refresh goes through `turn`, which asks
                         # the model to call the tools.
                         #
-                        # The warning is still worth making — a populated workspace
-                        # really can sit beside an unproven model path — but the way
-                        # that happens is an IMPORTED report, which fills this view
-                        # with the host running nothing at all.
-                        "no model turn has completed in this session, so whether the "
-                        "execution host can reach the model is unknown. A populated "
-                        "workspace does not settle it on its own: an imported report "
-                        "fills this view without the host running anything. Refreshing "
-                        "from the host and asking her a question both run a model turn, "
-                        "and this line will say so once one has."
+                        # It also said an imported report fills this view without the
+                        # host running anything. Iris now collects rather than imports
+                        # (iris #29) and the v2 workspace has no import path, so the
+                        # line says what does happen: the first open collects an
+                        # overview, which is a model turn. The workspace shows this
+                        # text verbatim.
+                        "no model turn has completed in this session yet, so whether the "
+                        "execution host can reach the model is unknown. The first time "
+                        "this workspace opens, it collects a fresh overview from the host "
+                        "automatically, and that runs a model turn. Asking Iris a question "
+                        "runs one too. This line goes away once a turn has completed."
                     ]
                 ),
             }
