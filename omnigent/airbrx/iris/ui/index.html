@@ -24,10 +24,16 @@
         >
       </div>
       <nav id="tabs" role="tablist" aria-label="Workspace"></nav>
+      <!-- Nothing here is usable until api/host has said what this host can do. -->
       <div id="actions" class="actions">
+        <span id="identity" class="badge" hidden></span>
         <span id="synthetic" class="badge warn" hidden>Synthetic fixture</span>
         <span id="freshness" class="muted small"></span>
-        <button id="refresh" class="primary" type="button">
+        <select id="week" aria-label="Week" hidden></select>
+        <span id="agent-state" class="badge agent-state" hidden
+          >Agent not connected</span
+        >
+        <button id="refresh" class="primary" type="button" disabled>
           Collect a fresh overview
         </button>
       </div>
@@ -54,7 +60,7 @@
       <section id="chat" class="chat card" aria-label="Chat with Iris">
         <div class="chat-head">
           <div class="section-title">Ask Iris</div>
-          <a id="native-chat" class="link small" href="#" target="_top"
+          <a id="native-chat" class="link small" href="#" target="_top" hidden
             >Open native chat</a
           >
           <button
@@ -85,7 +91,9 @@
             <button id="cancel" type="button" class="secondary" hidden>
               Stop
             </button>
-            <button id="send" type="submit" class="primary">Send</button>
+            <button id="send" type="submit" class="primary" disabled>
+              Send
+            </button>
           </div>
           <p class="small muted">Iris proposes; she never applies a rule.</p>
         </form>

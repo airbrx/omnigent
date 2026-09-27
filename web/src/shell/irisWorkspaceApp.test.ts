@@ -132,6 +132,17 @@ let sessionStatus = "idle";
 const listeners: [string, EventListener][] = [];
 const realAdd = window.addEventListener.bind(window);
 let apiOptions: unknown[] = [];
+let errorOptions: unknown[] = [];
+let resumed = 0;
+
+// What Omnigent answers at api/host for session s1 (section 2.1), captured
+// from SV1's real handler by test_iris_workspace_fixtures.py.
+interface HostBody {
+  links: Record<string, string | null>;
+  data: Record<string, unknown>;
+  [key: string]: unknown;
+}
+const FRAMED_HOST = ADAPTER.host_200.host.body as HostBody;
 
 function pathOf(input: unknown) {
   const raw = input instanceof Request ? input.url : String(input);
@@ -159,6 +170,8 @@ function serve(
       ADAPTER[scenario][path] ?? ADAPTER.investigated_and_proposed[path] ?? ADAPTER.captured[path];
     if (recorded) return replay(recorded);
     switch (path) {
+      case "host":
+        return json(FRAMED_HOST);
       case "/v1/sessions/s1":
         return json({
           id: "s1",
@@ -177,7 +190,7 @@ function serve(
           bindings: [
             { tenant_id: TENANT, name: "Iris fixture tenant", fixture: true, host_online: true },
             {
-              tenant_id: "f65d9135-0000-4000-8000-000000000000",
+              tenant_id: "00000000-0000-4000-8000-000000000001",
               name: "Production",
               fixture: false,
               host_online: true,
@@ -190,7 +203,7 @@ function serve(
           tenants: 2,
           ranked: [
             {
-              tenant_id: "f65d9135-0000-4000-8000-000000000000",
+              tenant_id: "00000000-0000-4000-8000-000000000001",
               name: "Production",
               hit_rate: 0.5,
               hit_rate_denominator: 2000,
@@ -221,11 +234,14 @@ function requested(pattern: RegExp) {
 }
 
 /** Run the kernel and the app as index.html would, on a fresh body. */
-function start(hash = "", onStale = DEFAULT_ON_STALE) {
-  window.history.replaceState(null, "", `/v1/iris/sessions/s1/ui/${hash}`);
+function start(hash = "", onStale = DEFAULT_ON_STALE, page = "/v1/iris/sessions/s1/ui/") {
+  window.history.replaceState(null, "", `${page}${hash}`);
   document.body.innerHTML = BODY;
   document.body.className = "";
   document.body.dataset.pollMs = "10";
+  // api/host's retry backoff and deadline, shortened as pollMs is.
+  document.body.dataset.hostRetryMs = "5";
+  document.body.dataset.hostTimeoutMs = "300";
   if (onStale) document.body.dataset.onStale = onStale;
   else delete document.body.dataset.onStale;
   for (const source of kernelSources) (0, eval)(source);
@@ -234,6 +250,21 @@ function start(hash = "", onStale = DEFAULT_ON_STALE) {
   AW.createApi = (options: unknown) => {
     apiOptions.push(options);
     return createApi(options);
+  };
+  const plainError = AW.plainError as (error: unknown, options: unknown) => string;
+  AW.plainError = (error: unknown, options: unknown) => {
+    errorOptions.push(options);
+    return plainError(error, options);
+  };
+  const createStream = AW.createStream as (options: unknown) => Record<string, unknown>;
+  AW.createStream = (options: unknown) => {
+    const stream = createStream(options);
+    const resumeTurn = stream.resumeTurn as (...args: unknown[]) => unknown;
+    stream.resumeTurn = (...args: unknown[]) => {
+      resumed += 1;
+      return resumeTurn(...args);
+    };
+    return stream;
   };
   (0, eval)(script);
 }
@@ -275,6 +306,8 @@ beforeEach(() => {
   items = [];
   sessionStatus = "idle";
   apiOptions = [];
+  errorOptions = [];
+  resumed = 0;
   window.addEventListener = ((type: string, listener: EventListener, options?: unknown) => {
     listeners.push([type, listener]);
     realAdd(type, listener, options as never);
@@ -487,7 +520,7 @@ it("Accounts lists the tenants read-only; this session's tenant has no button", 
   const here = table.querySelector(`[data-tenant-id="${TENANT}"]`) as HTMLElement;
   expect(here.textContent).toContain("This session");
   expect(within(here).queryByRole("button")).toBeNull();
-  const other = table.querySelector('[data-tenant-id^="f65d9135"]') as HTMLElement;
+  const other = table.querySelector('[data-tenant-id^="00000000"]') as HTMLElement;
   expect(other.textContent).toContain("50.0%");
   expect(other.textContent).toContain("of 2,000 requests");
 });
@@ -496,7 +529,7 @@ it("Accounts opens another tenant through the shell, never by creating or switch
   const posted = vi.spyOn(window.parent, "postMessage");
   await mount("#accounts");
   const table = await screen.findByRole("table", { name: "Tenants in this account" });
-  const other = table.querySelector('[data-tenant-id^="f65d9135"]') as HTMLElement;
+  const other = table.querySelector('[data-tenant-id^="00000000"]') as HTMLElement;
   // Since #113 the shell goes back to the tenant's last session when there is
   // one, so neither the button nor the heading promises a new session.
   expect(screen.getByRole("heading", { name: "Accounts" }).parentElement?.textContent).not.toMatch(
@@ -505,7 +538,7 @@ it("Accounts opens another tenant through the shell, never by creating or switch
   expect(within(other).queryByRole("button", { name: /new session/i })).toBeNull();
   fireEvent.click(within(other).getByRole("button", { name: "Open" }));
   expect(posted).toHaveBeenCalledWith(
-    { type: "iris.openTenant", tenant_id: "f65d9135-0000-4000-8000-000000000000" },
+    { type: "iris.openTenant", tenant_id: "00000000-0000-4000-8000-000000000001" },
     window.location.origin,
   );
   expect(
@@ -1798,4 +1831,756 @@ it("Enter while a background refresh runs sends nothing and keeps the question i
   fireEvent.keyDown(input, { key: "Enter" });
   await waitFor(() => expect(calls("chat")).toHaveLength(1));
   expect(chatBodies()[0].history.at(-1).content).toBe("How is the cache?");
+});
+
+// ------------------------------------------------ the host seam (SV4) --
+//
+// docs/iris/STANDALONE_VIEWER.md sections 2 and 5. The app learns its host
+// from one read of api/host and branches on what it says, never on a name.
+
+it("host: the app reads api/host before anything else", async () => {
+  await mount();
+  const first = pathOf(fetchMock.mock.calls[0][0]);
+  expect(first).toBe("api/host");
+});
+
+it("host: with api/host missing (404, before SV1), the app behaves as today", async () => {
+  serve({ host: () => detail("Not Found", 404) });
+  await mount();
+  expect(calls("host")).toHaveLength(1);
+  expect(screen.getByRole("link", { name: "Open native chat" })).toHaveAttribute("href", "/c/s1");
+  expect(document.getElementById("agent-state")).not.toBeVisible();
+  expect(document.getElementById("week")).not.toBeVisible();
+  ask("How is the cache?");
+  await waitFor(() => expect(messages().querySelector("li.agent")).not.toBeNull());
+  expect(chatBodies()).toHaveLength(1);
+  expect(requested(/^\/v1\/sessions\/s1\/items\?/)).toBe(true);
+  await waitFor(() => expect(document.getElementById("refresh")).not.toBeDisabled());
+  fireEvent.click(screen.getByRole("button", { name: "Collect a fresh overview" }));
+  await waitFor(() => expect(calls("refresh")).toHaveLength(1));
+  tab("Evidence");
+  fireEvent.click(screen.getByRole("button", { name: "List session downloads" }));
+  await waitFor(() => expect(view().textContent).toContain("No files in this session yet."));
+  expect(requested(/^\/v1\/sessions\/s1\/resources\/files\?limit=100$/)).toBe(true);
+});
+
+it("host: with api/host missing, a fresh session still collects exactly once", async () => {
+  serve(
+    {
+      host: () => detail("Not Found", 404),
+      refresh: captured("first_collect_produced_nothing", "refresh"),
+    },
+    "fresh_session",
+  );
+  start();
+  await waitFor(() =>
+    expect(view().textContent).toContain("Iris has not collected an overview here yet"),
+  );
+  expect(calls("refresh")).toHaveLength(1);
+});
+
+it.each([
+  ["a 500", () => detail("Traceback: SENTINEL-host-9d", 500)],
+  ["a 401", () => detail("Not signed in", 401)],
+  ["a 403", () => detail("You may not open this session", 403)],
+  ["an unreadable body", () => new Response("<html>not json</html>", { status: 200 })],
+  ["a descriptor of another schema", () => json({ ...FRAMED_HOST, schema: 2 })],
+  [
+    "a descriptor that does not say whether the agent is connected",
+    () => json({ ...FRAMED_HOST, agent: {} }),
+  ],
+])("host: %s from api/host is not guessed past; the app says so and stops", async (_, route) => {
+  serve({ host: route as Route });
+  start();
+  await waitFor(() =>
+    expect(view().textContent).toContain(
+      "The workspace could not tell which host it is running in.",
+    ),
+  );
+  expect(document.body.textContent).not.toContain("SENTINEL-host-9d");
+  await new Promise((r) => {
+    setTimeout(r, 40);
+  });
+  // Asked once: none of these is a blip that asking again could clear.
+  expect(fetchMock.mock.calls.map(([input]) => pathOf(input))).toEqual(["api/host"]);
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  expect(document.getElementById("refresh")).toBeDisabled();
+  expect(document.getElementById("send")).toBeDisabled();
+  expect(view().querySelector(".kpi")).toBeNull();
+});
+
+// ------------------------------------------ B2: one blip is not a verdict --
+
+const hostCalls = () => fetchMock.mock.calls.filter(([input]) => pathOf(input) === "api/host");
+
+it.each([
+  ["a 502", () => detail("Bad Gateway", 502)],
+  ["a 503", () => detail("Service Unavailable", 503)],
+  ["a 504", () => detail("Gateway Timeout", 504)],
+  [
+    "a network error",
+    () => {
+      throw new TypeError("Failed to fetch");
+    },
+  ],
+])("B2: api/host answering %s once is asked again, and the page works", async (_, blip) => {
+  let asked = 0;
+  serve({ host: (init) => ((asked += 1) === 1 ? (blip as Route)(init) : json(FRAMED_HOST)) });
+  await mount();
+  expect(hostCalls()).toHaveLength(2);
+  expect(view().textContent).toContain("80.0%");
+  expect(view().textContent).not.toContain("could not tell which host");
+});
+
+it("B2: a hung api/host read is abandoned on its own short deadline and asked again", async () => {
+  let asked = 0;
+  serve({
+    host: (init) =>
+      (asked += 1) === 1
+        ? new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("aborted", "AbortError")),
+            );
+          })
+        : json(FRAMED_HOST),
+  });
+  await mount();
+  expect(hostCalls()).toHaveLength(2);
+});
+
+it("B2: when the blips do not clear, the page stops with Try again, which asks again", async () => {
+  let down = true;
+  serve({ host: () => (down ? detail("Service Unavailable", 503) : json(FRAMED_HOST)) });
+  start();
+  const again = await screen.findByRole("button", { name: "Try again" });
+  expect(view().textContent).toContain("The workspace could not tell which host it is running in.");
+  // The first read and three more, then no more until asked.
+  expect(hostCalls()).toHaveLength(4);
+  expect(fetchMock.mock.calls.map(([input]) => pathOf(input))).toEqual(Array(4).fill("api/host"));
+  expect(document.getElementById("send")).toBeDisabled();
+  down = false;
+  fireEvent.click(again);
+  await waitFor(() => expect(view().textContent).toContain("80.0%"));
+  await waitFor(() => expect(document.getElementById("refresh")).not.toBeDisabled());
+  expect(hostCalls()).toHaveLength(5);
+});
+
+// ------------------------------------ B1: every link stays on this origin --
+
+/** Every URL the app fetched, exactly as it asked for it. */
+const rawCalls = () =>
+  fetchMock.mock.calls.map(([input]) => (input instanceof Request ? input.url : String(input)));
+
+const withLinks = (links: Record<string, string | null>) => ({
+  ...FRAMED_HOST,
+  links: { ...FRAMED_HOST.links, ...links },
+});
+
+it.each([
+  ["native_chat", "javascript:alert(document.domain)"],
+  ["native_chat", "https://evil.example/c/s1"],
+  ["catalog", "https://evil.example/v1/iris"],
+  ["catalog", "//evil.example/v1/iris"],
+  ["files", "https://evil.example/files"],
+  ["files", "//evil.example/files"],
+  ["files", "/\\evil.example/files"],
+  ["account", "http:/evil.example/account"],
+  ["items", "data:application/json,{}"],
+  ["session", " //evil.example/s1"],
+  ["tenant_home", "//evil.example/{tenant_id}/"],
+  ["week_page", "https://evil.example/{tenant_id}/{week}/"],
+])("B1: a descriptor whose %s is %s is refused, and nothing leaves", async (name, link) => {
+  serve({ host: () => json(withLinks({ [name]: link })) });
+  start("#accounts");
+  await waitFor(() =>
+    expect(view().textContent).toContain(
+      "The workspace could not tell which host it is running in.",
+    ),
+  );
+  await new Promise((r) => {
+    setTimeout(r, 40);
+  });
+  expect(rawCalls()).toEqual(["api/host"]);
+  const native = document.getElementById("native-chat")!;
+  expect(native).not.toBeVisible();
+  expect(native.getAttribute("href")).not.toMatch(/evil|javascript/);
+  expect(document.getElementById("send")).toBeDisabled();
+});
+
+it("B1: an open redirect through week_page is refused before the page draws a picker", async () => {
+  const host = viewerHost("2026-W38");
+  host.links.week_page = "//evil.example/{tenant_id}/{week}/ui/";
+  serveViewer("2026-W38", {}, host);
+  const nav = captureNavigation();
+  startViewer("2026-W38");
+  await waitFor(() =>
+    expect(view().textContent).toContain(
+      "The workspace could not tell which host it is running in.",
+    ),
+  );
+  expect(document.getElementById("week")).not.toBeVisible();
+  nav.stop();
+  expect(nav.went).toEqual([]);
+  expect(rawCalls()).toEqual(["api/host"]);
+});
+
+it("B1: same-origin relative and rooted links are accepted", async () => {
+  serveViewer("2026-W38");
+  await mountViewer("2026-W38");
+  expect(view().textContent).toContain("80.0%");
+});
+
+it("B1: a week whose name would leave the page is never navigated to", async () => {
+  const host = viewerHost("2026-W38");
+  host.data.weeks = [
+    ...host.data.weeks,
+    {
+      week: "//evil.example",
+      captured_at: 1,
+      start_date: "2026-01-01",
+      end_date: "2026-01-08",
+      period_complete: true,
+      readable: true,
+    },
+  ];
+  // A template whose only placeholder is the week, so the week is the path.
+  host.links.week_page = "/{week}";
+  serveViewer("2026-W38", {}, host);
+  await mountViewer("2026-W38", "#rules");
+  const nav = captureNavigation();
+  fireEvent.change(screen.getByRole("combobox", { name: "Week" }), {
+    target: { value: "//evil.example" },
+  });
+  nav.stop();
+  // Encoded, the week stays a path segment on this origin.
+  expect(nav.went).toEqual(["/%2F%2Fevil.example#rules"]);
+  expect(new URL(nav.went[0], window.location.href).origin).toBe(window.location.origin);
+});
+
+// ------------------------------------------------------- review nits --
+
+it("N1: a 404 from api/host outside an Omnigent session path stops, and is not Omnigent", async () => {
+  serveViewer("2026-W38", { "api/host": () => detail("Not Found", 404) });
+  startViewer("2026-W38");
+  await waitFor(() =>
+    expect(view().textContent).toContain(
+      "The workspace could not tell which host it is running in.",
+    ),
+  );
+  await new Promise((r) => {
+    setTimeout(r, 40);
+  });
+  expect(rawCalls()).toEqual(["api/host"]);
+  expect(document.getElementById("send")).toBeDisabled();
+});
+
+it("N2: agent off, the Revise the proposal chip is drawn disabled and writes nothing", async () => {
+  serveViewer();
+  await mountViewer("2026-W38", "#proposals");
+  const revise = within(view()).getByRole("button", { name: "Revise the proposal" });
+  expect(revise).toBeDisabled();
+  expect(revise).toHaveAttribute("title", "Agent not connected");
+  expect(revise).toHaveAttribute("data-agent-off");
+  fireEvent.click(revise);
+  expect((document.getElementById("input") as HTMLTextAreaElement).value).toBe("");
+});
+
+it("host: the error wording names the host the descriptor names", async () => {
+  serve({ chat: () => detail("native session operation failed", 502) });
+  await mount();
+  ask("Hello");
+  await waitFor(() => expect(errorOptions.length).toBeGreaterThan(0));
+  expect(errorOptions.every((o) => (o as { host: string }).host === "Omnigent")).toBe(true);
+});
+
+it("host: framed in Omnigent, no week picker, no agent badge, no identity chip", async () => {
+  await mount();
+  expect(document.getElementById("week")).not.toBeVisible();
+  expect(document.getElementById("agent-state")).not.toBeVisible();
+  expect(document.getElementById("identity")).not.toBeVisible();
+  expect(document.getElementById("refresh")).not.toHaveAttribute("aria-describedby");
+});
+
+// ------------------------------------ the standalone viewer, agent off --
+
+const VIEWER_TENANT = TENANT;
+const VIEWER_PAGE = (week: string) => `/t/${VIEWER_TENANT}/${week}/ui/`;
+
+/** A saved run's state: the full capture, a week old, so always stale. */
+function savedState(changes: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) {
+  const state = makeState({ cache_age_seconds: 604800, stale: true, ...extra });
+  Object.assign(state.overview.metrics, changes);
+  return state;
+}
+
+const RUNS: Record<string, () => State> = {
+  // Q19 refusal: hits and misses do not add up to the denominator.
+  "2026-W36": () => savedState({ cache_misses: 100 }),
+  "2026-W38": () => savedState(),
+  // Q19 partial week: 3 of 7 days, never refused for being partial.
+  "2026-W39": () => savedState(PARTIAL),
+};
+
+function viewerHost(week: string, overrides: Record<string, unknown> = {}) {
+  return {
+    schema: 1,
+    host_label: "Iris viewer",
+    identity: { kind: "dev", email: "dev@localhost", sign_in: null },
+    agent: { connected: false, why: "viewer" },
+    data: {
+      source: "runs",
+      scope_id: `${VIEWER_TENANT}/${week}`,
+      tenant_id: VIEWER_TENANT,
+      week,
+      weeks: [
+        {
+          week: "2026-W36",
+          captured_at: 1788654060,
+          start_date: "2026-08-30",
+          end_date: "2026-09-06",
+          period_complete: true,
+          readable: true,
+        },
+        {
+          week: "2026-W39",
+          captured_at: 1790468460,
+          start_date: "2026-09-20",
+          end_date: "2026-09-23",
+          period_complete: false,
+          covered_days: 3,
+          requested_days: 7,
+          readable: true,
+        },
+        {
+          week: "2026-W35",
+          captured_at: 1788049260,
+          start_date: null,
+          end_date: null,
+          period_complete: null,
+          readable: false,
+        },
+        {
+          week: "2026-W38",
+          captured_at: 1789863660,
+          start_date: "2026-09-13",
+          end_date: "2026-09-20",
+          period_complete: true,
+          readable: true,
+        },
+      ],
+    },
+    links: {
+      native_chat: null,
+      items: "api/items",
+      session: "api/session",
+      files: "api/files",
+      catalog: "/api/tenants",
+      account: "/api/account",
+      tenant_home: "/t/{tenant_id}/",
+      week_page: "/t/{tenant_id}/{week}/ui/",
+    },
+    open_tenant: "navigate",
+    ...overrides,
+  };
+}
+
+const VIEWER_READINESS = {
+  tenant_id: VIEWER_TENANT,
+  name: "Iris fixture tenant",
+  fixture: true,
+  session_status: "saved",
+  turn_completed_here: false,
+  last_task_failed: false,
+  verified: ["this run was exported from a synthetic fixture on 2026-09-27"],
+  unverified: ["Iris is not connected to this viewer, so nothing can be asked or collected here"],
+};
+
+// The run's saved chat: only message items, the refresh sentence byte for byte.
+const SAVED_ITEMS = [
+  collectTurn("u0", CAPTURED - 60),
+  assistantItem("a0", "Collected. Hit rate is **80.0%**."),
+];
+
+/** Answer every request the way the standalone viewer does (section 4.2). */
+function serveViewer(
+  week = "2026-W38",
+  overrides: Record<string, Route> = {},
+  host: unknown = viewerHost(week),
+) {
+  fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+    const raw = pathOf(input);
+    const path = raw.replace(/\?.*$/, "");
+    if (path in overrides) return overrides[path](init);
+    switch (path) {
+      case "api/host":
+        return json(host);
+      case "api/state":
+        return json(RUNS[week]());
+      case "api/readiness":
+        return json(VIEWER_READINESS);
+      case "api/items":
+        return json({ data: SAVED_ITEMS.slice().reverse(), has_more: false });
+      case "api/session":
+        return json({ status: "idle" });
+      case "api/files":
+        return json({ data: [{ id: "report.json", filename: "report.json", bytes: 10 }] });
+      case "api/chat":
+      case "api/refresh":
+      case "api/cancel":
+        return detail("Iris is not connected to this viewer; nothing was run.", 409);
+      case "/api/tenants":
+        return json({
+          agent_id: null,
+          revision: "4f05f9b",
+          bindings: [
+            {
+              tenant_id: VIEWER_TENANT,
+              name: "Iris fixture tenant",
+              fixture: true,
+              host_id: null,
+              workspace: null,
+              host_online: null,
+            },
+            {
+              tenant_id: "fixture-iris-b",
+              name: "Iris fixture tenant B",
+              fixture: true,
+              host_id: null,
+              workspace: null,
+              host_online: null,
+            },
+          ],
+        });
+      case "/api/account":
+        return json({
+          generated_at: CAPTURED + 60,
+          tenants: 2,
+          ranked: [
+            {
+              tenant_id: "fixture-iris-b",
+              name: "Iris fixture tenant B",
+              hit_rate: 0.5,
+              hit_rate_denominator: 2000,
+              requests: 2000,
+              cache_misses: 1000,
+              covered_days: 7,
+              requested_days: 7,
+              captured_at: CAPTURED,
+              age_seconds: 120,
+            },
+          ],
+          quarantined: [],
+        });
+    }
+    throw new Error(`unexpected fetch ${String(input)}`);
+  });
+  window.fetch = fetchMock as never;
+}
+
+function startViewer(week = "2026-W38", hash = "") {
+  start(hash, DEFAULT_ON_STALE, VIEWER_PAGE(week));
+}
+
+/** Start the viewer and wait until the saved run is drawn or refused. */
+async function mountViewer(week = "2026-W38", hash = "") {
+  startViewer(week, hash);
+  await waitFor(() =>
+    expect(document.getElementById("host-status")?.dataset.state).toBe("offline"),
+  );
+  await waitFor(() => expect(view().textContent).not.toContain("Reading this session"));
+  await waitFor(() =>
+    expect(messages().textContent).toContain(
+      "Iris is not connected here, so this chat is read-only.",
+    ),
+  );
+}
+
+/** Requests that would run or touch an agent turn, or reach Omnigent's API. */
+function agentRequests() {
+  return fetchMock.mock.calls
+    .map(([input]) => pathOf(input))
+    .filter((path) => /^api\/(chat|refresh|cancel)(\?|$)|^\/v1\//.test(path));
+}
+
+/** Where the app sent the page (a link click it made), without navigating. */
+function captureNavigation() {
+  const went: string[] = [];
+  const listener = (event: Event) => {
+    const link = (event.target as Element | null)?.closest?.("a");
+    if (!link || link.hasAttribute("download")) return;
+    event.preventDefault();
+    went.push(link.getAttribute("href") ?? "");
+  };
+  document.addEventListener("click", listener, true);
+  return { went, stop: () => document.removeEventListener("click", listener, true) };
+}
+
+it("V1: with no agent, a load, every tab, every ask chip, refresh, Enter and a week change send no turn", async () => {
+  serveViewer("2026-W38");
+  const nav = captureNavigation();
+  await mountViewer("2026-W38");
+  // One tab after another: each is drawn before its chips are pressed.
+  await TABS.reduce(async (before, [label]) => {
+    await before;
+    tab(label);
+    await waitFor(() => expect(view().textContent).toContain(label));
+    if (label === "Accounts")
+      await waitFor(() => expect(view().textContent).not.toContain("Reading the account."));
+    for (const chip of view().querySelectorAll("button[data-agent-off]")) fireEvent.click(chip);
+  }, Promise.resolve());
+  fireEvent.click(document.getElementById("refresh")!);
+  const box = screen.getByRole("textbox", { name: "Message Iris" }) as HTMLTextAreaElement;
+  fireEvent.change(box, { target: { value: "How is the cache?" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+  fireEvent.submit(document.getElementById("composer")!);
+  fireEvent.change(screen.getByRole("combobox", { name: "Week" }), {
+    target: { value: "2026-W39" },
+  });
+  await new Promise((r) => {
+    setTimeout(r, 60);
+  });
+  nav.stop();
+  expect(agentRequests()).toEqual([]);
+  expect(resumed).toBe(0);
+  expect(fetchMock.mock.calls.filter(([input]) => pathOf(input) === "api/session")).toEqual([]);
+});
+
+it("agent off: chat is visibly disabled, and Enter or Send sends nothing and keeps the text", async () => {
+  serveViewer();
+  await mountViewer();
+  const input = screen.getByRole("textbox", { name: "Message Iris" }) as HTMLTextAreaElement;
+  expect(input).toBeDisabled();
+  expect(input).toHaveAttribute("placeholder", "Agent not connected");
+  expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  expect(document.getElementById("cancel")).not.toBeVisible();
+  fireEvent.change(input, { target: { value: "Anything?" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  fireEvent.submit(document.getElementById("composer")!);
+  await new Promise((r) => {
+    setTimeout(r, 30);
+  });
+  expect(input.value).toBe("Anything?");
+  expect(calls("chat")).toHaveLength(0);
+  expect(messages().querySelector("li.user:last-child")?.textContent).not.toBe("Anything?");
+  // Every ask chip is drawn with its words, disabled, and sends nothing.
+  tab("Findings");
+  const chips = [...view().querySelectorAll<HTMLButtonElement>("button[data-agent-off]")];
+  expect(chips.map((c) => c.textContent)).toContain("Investigate this finding");
+  for (const chip of chips) {
+    expect(chip).toBeDisabled();
+    expect(chip).toHaveAttribute("title", "Agent not connected");
+    fireEvent.click(chip);
+  }
+  await new Promise((r) => {
+    setTimeout(r, 30);
+  });
+  expect(calls("chat")).toHaveLength(0);
+});
+
+it("agent off: refresh is visibly disabled, keeps its label, points at the badge, and sends nothing", async () => {
+  serveViewer();
+  await mountViewer();
+  const badge = document.getElementById("agent-state")!;
+  expect(badge).toBeVisible();
+  expect(badge.textContent).toBe("Agent not connected");
+  expect(badge.className).not.toMatch(/\b(error|urgent|warn)\b/);
+  const refresh = screen.getByRole("button", { name: "Collect a fresh overview" });
+  expect(refresh).toBeVisible();
+  expect(refresh).toBeDisabled();
+  expect(refresh).toHaveAttribute("aria-describedby", "agent-state");
+  fireEvent.click(refresh);
+  await new Promise((r) => {
+    setTimeout(r, 30);
+  });
+  expect(calls("refresh")).toHaveLength(0);
+  expect(refresh).toBeDisabled();
+});
+
+it("agent off: a stale saved run is shown labelled and is never collected, on load or later", async () => {
+  serveViewer();
+  await mountViewer();
+  expect(view().textContent).toContain("80.0%");
+  expect(document.getElementById("freshness")?.textContent).toMatch(
+    /^Iris read this tenant .+, may be out of date$/,
+  );
+  expect(document.getElementById("collecting")).not.toBeVisible();
+  await new Promise((r) => {
+    setTimeout(r, 40);
+  });
+  expect(calls("refresh")).toHaveLength(0);
+  expect(sessionStorage.length).toBe(0);
+});
+
+it("agent off: collect mode still draws the saved run, and never collects", async () => {
+  serveViewer();
+  start("", "collect", VIEWER_PAGE("2026-W38"));
+  await waitFor(() => expect(view().textContent).toContain("80.0%"));
+  expect(calls("refresh")).toHaveLength(0);
+});
+
+it("agent off: a run with no overview offers no collection", async () => {
+  serveViewer("2026-W38", { "api/state": () => detail("No session overview yet", 409) });
+  startViewer();
+  await waitFor(() => expect(view().textContent).toContain("No overview in this saved run"));
+  expect(within(view()).queryAllByRole("button")).toEqual([]);
+  await new Promise((r) => {
+    setTimeout(r, 30);
+  });
+  expect(calls("refresh")).toHaveLength(0);
+});
+
+it("agent off: the host line says what this is, and the chat shows the saved history, read-only", async () => {
+  serveViewer();
+  await mountViewer();
+  const status = document.getElementById("host-status")!;
+  expect(status.textContent).toMatch(
+    /^Iris is not connected here\. This is a saved run of Iris fixture tenant, captured .+\. Asking her something or collecting a fresh overview needs Omnigent\.$/,
+  );
+  expect(document.getElementById("host-details")).not.toBeVisible();
+  const lines = [...messages().querySelectorAll("li")].map((li) => li.textContent);
+  expect(lines).toEqual([
+    "Iris collected a fresh overview.",
+    expect.stringContaining("Hit rate is 80.0%."),
+    "Iris is not connected here, so this chat is read-only.",
+  ]);
+  expect(requested(/^api\/items\?order=desc&limit=\d+$/)).toBe(true);
+  expect(screen.queryByRole("link", { name: "Open native chat" })).toBeNull();
+  expect(document.getElementById("identity")?.textContent).toBe("Dev sign-in: dev@localhost");
+});
+
+it("agent off: the error wording names the viewer", async () => {
+  serveViewer("2026-W38", { "api/files": () => detail("boom", 500) });
+  await mountViewer("2026-W38", "#evidence");
+  fireEvent.click(screen.getByRole("button", { name: "List session downloads" }));
+  await waitFor(() => expect(view().textContent).toContain("Downloads unavailable"));
+  expect(errorOptions).toContainEqual(expect.objectContaining({ host: "Iris viewer" }));
+});
+
+it("agent off: downloads come from the descriptor's files link", async () => {
+  serveViewer();
+  await mountViewer("2026-W38", "#evidence");
+  fireEvent.click(screen.getByRole("button", { name: "List session downloads" }));
+  const link = await screen.findByRole("link", { name: "report.json" });
+  expect(link).toHaveAttribute("href", "api/files/report.json/content");
+  expect(requested(/^api\/files\?limit=100$/)).toBe(true);
+});
+
+it("agent off: Accounts reads the viewer's lists and Open goes to the tenant's page", async () => {
+  const posted = vi.spyOn(window.parent, "postMessage");
+  serveViewer();
+  await mountViewer("2026-W38", "#accounts");
+  const table = await screen.findByRole("table", { name: "Tenants in this account" });
+  expect(table.querySelector(`[data-tenant-id="${VIEWER_TENANT}"]`)?.textContent).toContain(
+    "This session",
+  );
+  const other = table.querySelector('[data-tenant-id="fixture-iris-b"]') as HTMLElement;
+  expect(other.textContent).toContain("50.0%");
+  const nav = captureNavigation();
+  fireEvent.click(within(other).getByRole("button", { name: "Open" }));
+  nav.stop();
+  expect(nav.went).toEqual(["/t/fixture-iris-b/"]);
+  expect(posted).not.toHaveBeenCalled();
+  expect(requested(/^\/v1\//)).toBe(false);
+  posted.mockRestore();
+});
+
+it("Q19 standalone: the inconsistent week (W36) is refused on every tab, naming the mismatch", async () => {
+  serveViewer("2026-W36");
+  await mountViewer("2026-W36");
+  for (const label of ["Overview", "Findings", "Rules", "Proposals", "Evidence", "Results"]) {
+    tab(label);
+    expect(view().textContent).toContain("This capture is not shown");
+    expect(view().textContent).toContain(
+      "The overview: hits and misses do not add up to the hit rate's denominator.",
+    );
+    expect(view().querySelector(".kpi")).toBeNull();
+    expect(within(view()).queryAllByRole("button")).toEqual([]);
+  }
+  expect(document.getElementById("host-status")?.textContent).toContain(", captured ");
+  expect(agentRequests()).toEqual([]);
+});
+
+it("Q19 standalone: the partial week (W39) renders with its coverage, not refused", async () => {
+  serveViewer("2026-W39");
+  await mountViewer("2026-W39");
+  expect(view().textContent).not.toContain("not shown");
+  expect(view().textContent).toContain("80.0%");
+  expect(view().textContent).toContain("3 / 7 days");
+  expect(view().textContent).toContain("Partial capture.");
+  expect(agentRequests()).toEqual([]);
+});
+
+it("rule 10 standalone: a saved state naming another tenant is refused by the app", async () => {
+  serveViewer("2026-W38", {
+    "api/state": () =>
+      json(savedState({}, { overview: { ...makeState().overview, tenant_id: "fixture-other" } })),
+  });
+  await mountViewer();
+  expect(view().textContent).toContain("different tenant");
+  expect(view().querySelector(".kpi")).toBeNull();
+});
+
+it.each(Object.keys(RUNS).flatMap((week) => TABS.map(([label, id]) => [week, label, id] as const)))(
+  "standalone %s: the %s tab shows no stray 'null' or 'undefined'",
+  async (week, label, id) => {
+    serveViewer(week);
+    await mountViewer(week, id === "overview" ? "#accounts" : "");
+    tab(label);
+    await waitFor(() => expect(window.location.hash).toBe(`#${id}`));
+    // A refused week (W36) draws its refusal on every tab but Accounts.
+    if (week !== "2026-W36" || id === "accounts" || id === "proposals")
+      await waitFor(() => expect(view().textContent).toContain(label));
+    if (id === "accounts")
+      await waitFor(() => expect(view().textContent).not.toContain("Reading the account."));
+    expect(nullishText(document.body)).toEqual([]);
+  },
+);
+
+// ----------------------------------------------------------- week picker --
+
+it("week picker: newest first, each labelled with its period, partial and unreadable said", async () => {
+  serveViewer("2026-W38");
+  await mountViewer("2026-W38");
+  const picker = screen.getByRole("combobox", { name: "Week" }) as HTMLSelectElement;
+  expect(picker).toBeVisible();
+  expect(picker.id).toBe("week");
+  expect(document.getElementById("actions")?.contains(picker)).toBe(true);
+  const options = [...picker.options];
+  expect(options.map((o) => o.textContent)).toEqual([
+    "2026-W39: 2026-09-20 to 2026-09-23, partial (3 of 7 days)",
+    "2026-W38: 2026-09-13 to 2026-09-20",
+    "2026-W36: 2026-08-30 to 2026-09-06",
+    "2026-W35, unreadable",
+  ]);
+  expect(options.map((o) => o.disabled)).toEqual([false, false, false, true]);
+  expect(picker.value).toBe("2026-W38");
+});
+
+it("week picker: a partial week without day counts is still said to be partial", async () => {
+  const host = viewerHost("2026-W38");
+  host.data.weeks = host.data.weeks.map(({ covered_days: _c, requested_days: _r, ...w }) => w);
+  serveViewer("2026-W38", {}, host);
+  await mountViewer("2026-W38");
+  const picker = screen.getByRole("combobox", { name: "Week" }) as HTMLSelectElement;
+  expect(picker.options[0].textContent).toBe("2026-W39: 2026-09-20 to 2026-09-23, partial");
+});
+
+it("week picker: changing the week goes to that week's page on the same tab", async () => {
+  serveViewer("2026-W38");
+  await mountViewer("2026-W38", "#rules");
+  const nav = captureNavigation();
+  fireEvent.change(screen.getByRole("combobox", { name: "Week" }), {
+    target: { value: "2026-W36" },
+  });
+  nav.stop();
+  expect(nav.went).toEqual(["/t/fixture-iris/2026-W36/ui/#rules"]);
+});
+
+it("week picker: not shown for fewer than two weeks, nor framed (weeks null)", async () => {
+  const host = viewerHost("2026-W38");
+  host.data.weeks = host.data.weeks.filter((w) => w.week === "2026-W38");
+  serveViewer("2026-W38", {}, host);
+  await mountViewer("2026-W38");
+  expect(document.getElementById("week")).not.toBeVisible();
+  expect(screen.queryByRole("combobox", { name: "Week" })).toBeNull();
 });

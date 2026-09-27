@@ -171,7 +171,7 @@ class TenantDisplayNames(unittest.TestCase):
 
     def binding(self, **kw):
         row = {
-            "tenant_id": "f65d9135-0ba3-4c58-8768-c48a1334041d",
+            "tenant_id": "00000000-0000-4000-8000-000000000001",
             "host_id": "h1",
             "workspace": "/w",
             "users": ["a@b.com"],
@@ -202,8 +202,8 @@ class TenantDisplayNames(unittest.TestCase):
             os.unlink(path)
 
     def test_a_name_is_carried_through(self):
-        (b,) = self.parse([self.binding(name="Airbrx Databricks Production")])
-        self.assertEqual(b.name, "Airbrx Databricks Production")
+        (b,) = self.parse([self.binding(name="Example Warehouse Tenant")])
+        self.assertEqual(b.name, "Example Warehouse Tenant")
 
     def test_a_binding_without_a_name_still_parses(self):
         # The field is optional on purpose: an operator who has not named a

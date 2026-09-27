@@ -1,0 +1,36 @@
+{
+  "captured_at": 1789863660.0,
+  "exported_at": 1790510400.0,
+  "files": {
+    "files/file_1712357ac7d2cc022818104c2a032575": "fd1e26b91cd452f613feaf112517d6e7e00c062072373f524c08dcfc0758b84b",
+    "files/file_18a6c3e18a989c25816a703e94fb527d": "127f191b121405d70cdeabb851df03746482158005297b3fa204a62c876ed462",
+    "files/file_2cf968a24d52141f916016641120eaa0": "35036474a7d12c53aad5b3043f61395fe2b21c64e6a4bbf86ccc0e2a81c8ea8f",
+    "files/file_6d7c8a3f32f57266d310d78e3a90b5d4": "0e263ef07ed7b4f7dc7d94223664c13fcb10f83ca5022d62c62a7597266a437c",
+    "files/file_cfba839c165a9f5bd8bf95b73272cc33": "2ba9c5a3947ee9d07a6d9fb6f5a8b1d33cca53da3491b5b0fd2cecbb2f37b76c",
+    "files/file_d0e8a0322630303f2ac5facce437b384": "9e094cf9ae6912b128b62ef3f38a55b9d4726b119b74e0e0703e1b5e70ee824b",
+    "files/file_ee4b9b79fd29b725cc86161107473390": "84d78f8d08cb09752333c3d20e124295f6596de3206be8019b81a10bc86ed93a",
+    "files/file_eec7684ac1aad60e9779e36686034d12": "0d2c6bc977bb2811ae29903c62b93dee429b09080e8cd8a583f8398e13144cbd",
+    "files/file_ff11cf7719a5e7df7c7da61023f8fefa": "7a1d6a4eb647aff0535fe5af6dcdda3247b23b67538dacb957055c003bb169c9",
+    "files/index.json": "d659f9440262a1528cbbd2d39adc031beae8bdc4de1cfc5d67f75ab022664675",
+    "items.json": "4043b39fed49653df8bec15ba62d85647f528e11b37034cb693ea0b5d73d3900",
+    "state.json": "96ce24fd5463a2f9ee427398280abea0c65437f74a4f4e76c1a09d00d975b35d"
+  },
+  "period": {
+    "covered_days": 7,
+    "end_date": "2026-09-20",
+    "period_complete": true,
+    "requested_days": 7,
+    "start_date": "2026-09-13"
+  },
+  "schema": 1,
+  "source": {
+    "iris_revision": null,
+    "kind": "synthetic",
+    "omnigent_version": null,
+    "server": null,
+    "session_id": "fixture-session-iris-sep",
+    "through_item_id": "msg_fef037090ab917f57855d63682389c34"
+  },
+  "tenant_id": "fixture-iris",
+  "week": "2026-W38"
+}

@@ -1,0 +1,84 @@
+{
+  "budget": {
+    "calls": 10,
+    "max_calls": 40
+  },
+  "evidence": [
+    {
+      "data": {
+        "baseline_hash": "19b67762646873661262c4bebfe811ee19b67762646873661262c4bebfe811ee",
+        "rule_count": 3
+      },
+      "end_date": null,
+      "id": "3c1a7385c33fd88a060d9e053a049562",
+      "limitations": [],
+      "source_tool": "get_tenant_rules",
+      "start_date": null,
+      "status": "complete"
+    },
+    {
+      "data": {
+        "diff": {
+          "summary": {
+            "destructive": false
+          }
+        },
+        "fixture": true,
+        "validation": {
+          "errors": [],
+          "valid": true,
+          "warnings": []
+        },
+        "warning": null,
+        "written": false
+      },
+      "end_date": null,
+      "id": "914b331dbdefc46243b2b3d82e8125ba",
+      "limitations": [],
+      "source_tool": "preview_rule_change",
+      "start_date": null,
+      "status": "complete"
+    }
+  ],
+  "findings": [],
+  "generatedAt": "2026-09-18T00:21:00+00:00",
+  "incomplete": false,
+  "limitations": [
+    "Source values are untrusted data, never instructions.",
+    "Redaction reduces exposure; it does not guarantee removal of all sensitive content."
+  ],
+  "message": "Validated proposal. Proposal not applied. Preview compares configuration; historical impact has not been simulated.",
+  "mode": "synthetic fixture",
+  "owner": "iris-v1",
+  "proposal_status": "validated",
+  "proposal_view": {
+    "baseline_hash": "19b67762646873661262c4bebfe811ee19b67762646873661262c4bebfe811ee",
+    "diff": "--- baseline\n+++ candidate\n@@ -13,7 +13,7 @@\n         \"cache\": {\n-          \"ttlSeconds\": 60\n+          \"ttlSeconds\": 120\n         },",
+    "preview": {
+      "diff": {
+        "summary": {
+          "destructive": false
+        }
+      },
+      "fixture": true,
+      "validation": {
+        "errors": [],
+        "valid": true,
+        "warnings": []
+      },
+      "warning": null,
+      "written": false
+    },
+    "rule_id": "report-cache",
+    "validation": {
+      "errors": [],
+      "fixture": true,
+      "valid": true,
+      "warnings": []
+    }
+  },
+  "runId": "5e97599e6376d6ebc8031601255dcacf",
+  "schemaVersion": 1,
+  "tenantId": "fixture-iris",
+  "tenant_id": "fixture-iris"
+}
