@@ -129,16 +129,23 @@ jobs:
             echo "::warning::Could not look up the PR for ${SHA}; the run-integration label was not checked."
           fi
 
-          shards='[
-            {"name": "airbrx-and-routes", "paths": "tests/airbrx tests/server/routes tests/server/scheduled"},
-            {"name": "server-root",       "paths": "tests/server/*.py"},
-            {"name": "runtime-host-spec", "paths": "tests/runtime tests/host tests/spec"}
-          ]'
-          integration='{"name": "integration", "paths": "tests/server/integration"}'
+          # Each group is hash-split with pytest-shard (already in the dev group)
+          # into parallel jobs, so the slowest job, not the group, sets the wait.
+          # Sizes are from run 36331401459: integration 2293 s -> 8 jobs, the
+          # others 486-653 s -> 2 jobs each. Every test lands in exactly one job
+          # (collect-only checked: 2233, 2047, 2755 and 1470 tests).
+          split='def split($name; $paths; $n):
+            [range(0; $n) | {name: "\($name) \(. + 1)/\($n)", paths: $paths,
+                             args: "--num-shards=\($n) --shard-id=\(.)"}];'
+          shards=$(jq -nc "${split}"'
+            split("airbrx-and-routes"; "tests/airbrx tests/server/routes tests/server/scheduled"; 2)
+            + split("server-root"; "tests/server/*.py"; 2)
+            + split("runtime-host-spec"; "tests/runtime tests/host tests/spec"; 2)')
+          integration=$(jq -nc "${split}"'split("integration"; "tests/server/integration"; 8)')
 
           if [ "${#reasons[@]}" -gt 0 ]; then
             run=true
-            shards=$(jq -c --argjson i "${integration}" '. + [$i]' <<<"${shards}")
+            shards=$(jq -c --argjson i "${integration}" '. + $i' <<<"${shards}")
           else
             run=false
             shards=$(jq -c . <<<"${shards}")
@@ -204,7 +211,7 @@ jobs:
         run: uv sync --frozen --extra iris --extra databricks --extra tracing --group dev
 
       - name: ${{ matrix.shard.name }}
-        run: uv run pytest ${{ matrix.shard.paths }} -q -p no:randomly --timeout=300
+        run: uv run pytest ${{ matrix.shard.paths }} ${{ matrix.shard.args }} -q -p no:randomly --timeout=300
 
   deploy:
     # Both must succeed. `plan` failing fails closed (no deploy). When the
