@@ -1,0 +1,199 @@
+/* Iris's workspace: only what is hers. The airbrx tokens, the topbar, tabs,
+   dock, rail, chat and card styles come from kernel/brand.css (D3). No token
+   is overridden here, so the theme follows the host. */
+
+.host-line {
+  padding: 8px 24px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.host-line p {
+  margin: 0;
+}
+.host-line #host-status {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--body);
+}
+.host-line #host-status::before {
+  content: "\25CF";
+  font-size: 10px;
+  color: var(--muted);
+}
+.host-line #host-status[data-state="ok"]::before {
+  color: var(--ok);
+}
+.host-line #host-status[data-state="refused"]::before {
+  color: var(--urgent);
+}
+.host-line .collecting {
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+.host-line ul {
+  padding-left: 18px;
+}
+
+.page-head {
+  margin-bottom: 16px;
+}
+.page-head h1 {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.as-of {
+  margin-top: 2px;
+}
+
+.card + .card,
+.kpis + .card {
+  margin-top: 16px;
+}
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.empty-state p {
+  margin: 8px 0;
+}
+
+.coverage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.coverage .day {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--accent-tint2);
+  color: var(--ink);
+}
+.coverage .day.missing {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--surface),
+    var(--surface) 4px,
+    var(--border) 4px,
+    var(--border) 8px
+  );
+  color: var(--muted);
+}
+
+.finding,
+.evidence {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.finding:first-of-type,
+.evidence:first-of-type {
+  border-top: 0;
+}
+.finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.finding p,
+.evidence p {
+  margin-top: 4px;
+}
+.evidence.highlight {
+  background: var(--accent-tint);
+  border-radius: var(--radius-sm);
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.evidence-links button.link {
+  margin-right: 6px;
+}
+.review textarea {
+  margin-top: 8px;
+}
+.review summary,
+details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--body);
+  margin-top: 8px;
+}
+
+.rule-block {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.rule-block h3 {
+  font-size: 13px;
+}
+
+.not-applied {
+  font-weight: 600;
+}
+.proposal dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin-bottom: 12px;
+}
+.proposal dt {
+  color: var(--muted);
+}
+.problems {
+  padding-left: 18px;
+  margin: 8px 0;
+}
+.problems.error {
+  color: var(--urgent);
+}
+pre.diff,
+pre.json {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  overflow-x: auto;
+  white-space: pre;
+  margin-top: 8px;
+}
+
+.refused {
+  color: var(--warn);
+}
+.comparison td:first-child {
+  color: var(--muted);
+}
+.downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.table-wrap {
+  overflow-x: auto;
+}
+.note {
+  margin-top: 16px;
+  color: var(--body);
+}
+.chat-head #native-chat {
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+@media (max-width: 760px) {
+  .host-line {
+    padding: 8px 16px 0;
+  }
+}

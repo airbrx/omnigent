@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Tally · Control plane workspace</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="assets/airbrx-logo.png" alt="airbrx" />
+        <span class="agent"
+          ><img src="assets/tally-portrait.png" alt="" /> Tally</span
+        >
+      </div>
+      <nav id="tabs" role="tablist" aria-label="Workspace"></nav>
+      <div id="actions" class="actions">
+        <span id="freshness" class="muted small"></span>
+        <button id="refresh" class="primary" type="button">
+          Refresh from portal
+        </button>
+      </div>
+    </header>
+
+    <div id="notice" class="notice" role="status" hidden></div>
+
+    <div id="workspace" class="workspace">
+      <section
+        id="home"
+        class="home"
+        aria-label="Tally's read of the control plane"
+      >
+        <!-- Hidden until Tally has read something, so no row of dashes flashes on load. -->
+        <section id="kpis" class="kpis" aria-label="Summary" hidden>
+          <div class="kpi">
+            <div class="label">Decisions waiting</div>
+            <div class="value" id="kpi-decisions">&ndash;</div>
+            <div class="note">on the sprint board</div>
+          </div>
+          <div class="kpi">
+            <div class="label">Blockers</div>
+            <div class="value" id="kpi-blockers">&ndash;</div>
+            <div class="note">open on the board</div>
+          </div>
+          <div class="kpi">
+            <div class="label">Agents tracked</div>
+            <div class="value" id="kpi-agents">&ndash;</div>
+            <div class="note">in analytics</div>
+          </div>
+          <div class="kpi">
+            <div class="label">Data freshness</div>
+            <div class="value" id="kpi-freshness">&ndash;</div>
+            <div class="note">analytics updated_at</div>
+          </div>
+          <div class="kpi">
+            <div class="label">API-equivalent spend</div>
+            <div class="value" id="kpi-spend">&ndash;</div>
+            <div class="note">estimated at published rates, not a charge</div>
+          </div>
+        </section>
+
+        <div
+          id="views"
+          class="views"
+          role="group"
+          aria-label="What Tally has read"
+          hidden
+        >
+          <button type="button" data-view="overview">Overview</button>
+          <button type="button" data-view="policies">
+            Agent policies <b id="nav-agents">&ndash;</b>
+          </button>
+          <button type="button" data-view="decisions">
+            Decisions and blockers <b id="nav-board">&ndash;</b>
+          </button>
+          <button type="button" data-view="health">Health</button>
+        </div>
+
+        <section class="content" aria-live="polite">
+          <div id="view"></div>
+        </section>
+
+        <p class="footnote">
+          <span class="dot"></span> Tally is read-only. She reads the portal and
+          changes nothing; policy, routes, dashboards and gateway rules are
+          changed by a person in the portal. A value she has not read, or the
+          portal did not report, shows as a dash, never as zero.
+          <a id="portal-link" class="outlink" href="/gateway/app/#overview"
+            >Open the portal</a
+          >
+        </p>
+      </section>
+
+      <section id="frames" class="frames" hidden></section>
+
+      <button id="dock-rail" class="dock-rail" type="button" hidden>
+        <img src="assets/tally-portrait.png" alt="" />
+        <span>Ask Tally</span>
+      </button>
+
+      <section id="chat" class="chat card" aria-label="Chat with Tally">
+        <div class="chat-head">
+          <div class="section-title">Ask Tally</div>
+          <button
+            id="collapse"
+            type="button"
+            class="chip"
+            aria-label="Collapse chat"
+            hidden
+          >
+            Hide
+          </button>
+        </div>
+        <ol id="messages" class="messages"></ol>
+        <form id="composer">
+          <div id="context" class="context" hidden>
+            <span id="context-label" class="badge accent"></span>
+            <button id="context-remove" type="button" class="link">
+              Don't include this page
+            </button>
+          </div>
+          <textarea
+            id="input"
+            rows="3"
+            aria-label="Message Tally"
+            placeholder="Ask Tally about agents, costs, coverage, decisions or blockers. Enter sends, Shift+Enter adds a line."
+          ></textarea>
+          <div class="composer-row">
+            <button id="cancel" type="button" class="secondary" hidden>
+              Stop
+            </button>
+            <button id="send" type="submit" class="primary">Send</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

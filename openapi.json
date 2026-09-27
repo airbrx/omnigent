@@ -15771,6 +15771,310 @@
         ]
       }
     },
+    "/v1/tally": {
+      "get": {
+        "operationId": "catalog_v1_tally_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Catalog V1 Tally Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Catalog",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/readiness": {
+      "get": {
+        "description": "Is the portal's MCP endpoint behind this binding actually there?\n\n`reachable`   the portal responded at all.\n`mcp_mounted` `GET /mcp` answered 405, the portal's own signal.\n`token_accepted` always `null` here: this route holds no token.\n\nAnything this cannot establish is `null` and never `true`.",
+        "operationId": "readiness_v1_tally_readiness_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Label"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Readiness V1 Tally Readiness Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/sessions/{session_id}/ui/api/cancel": {
+      "post": {
+        "operationId": "cancel_v1_tally_sessions__session_id__ui_api_cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Cancel V1 Tally Sessions  Session Id  Ui Api Cancel Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/sessions/{session_id}/ui/api/chat": {
+      "post": {
+        "operationId": "chat_v1_tally_sessions__session_id__ui_api_chat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Chat V1 Tally Sessions  Session Id  Ui Api Chat Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/sessions/{session_id}/ui/api/readiness": {
+      "get": {
+        "description": "What has actually been checked about this session. Not a prediction.",
+        "operationId": "readiness_v1_tally_sessions__session_id__ui_api_readiness_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Readiness V1 Tally Sessions  Session Id  Ui Api Readiness Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/sessions/{session_id}/ui/api/refresh": {
+      "post": {
+        "operationId": "refresh_v1_tally_sessions__session_id__ui_api_refresh_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Refresh V1 Tally Sessions  Session Id  Ui Api Refresh Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/sessions/{session_id}/ui/api/state": {
+      "get": {
+        "operationId": "state_v1_tally_sessions__session_id__ui_api_state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response State V1 Tally Sessions  Session Id  Ui Api State Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "State",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
     "/v1/usage": {
       "get": {
         "description": "Aggregate the calling user's LLM spend across their sessions.\n\nrequire_user, not get_user_id: the aggregation scopes to the caller,\nso a request slipping through as `None` in multi-user mode would\nread another scope. Fail closed with 401 instead (`user_id` is\n`None` only when auth is disabled \u2014 the single-user / local case).",

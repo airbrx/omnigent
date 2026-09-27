@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getOmnigentHostConfig } from "@/lib/host";
 import { authenticatedFetch } from "@/lib/identity";
-import { IrisWorkspace, shortId } from "./IrisWorkspace";
+import { IrisWorkspace, resumableSession, shortId } from "./IrisWorkspace";
 
 const routing = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -24,6 +24,7 @@ vi.mock("@/components/theme/useResolvedThemeMode", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.sessionStorage.clear();
   routing.params = {};
   routing.search = new URLSearchParams();
   theme.mode = "dark";
@@ -44,8 +45,20 @@ const CATALOG = {
   bindings: [
     // One host the server can see and one it cannot: `true` and `null` are
     // both openable, so every existing drill-in test exercises that contract.
-    { tenant_id: "fixture", host_id: "approved-host", workspace: "/approved", fixture: true, host_online: true },
-    { tenant_id: "live-tenant", host_id: "quiet-host", workspace: "/live", fixture: false, host_online: null },
+    {
+      tenant_id: "fixture",
+      host_id: "approved-host",
+      workspace: "/approved",
+      fixture: true,
+      host_online: true,
+    },
+    {
+      tenant_id: "live-tenant",
+      host_id: "quiet-host",
+      workspace: "/live",
+      fixture: false,
+      host_online: null,
+    },
   ],
 };
 const ACCOUNT = {
@@ -53,8 +66,16 @@ const ACCOUNT = {
   tenants: 2,
   ranked: [
     {
-      tenant_id: "live-tenant", name: null, hit_rate: 0.5, hit_rate_denominator: 10, requests: 10,
-      cache_misses: 5, covered_days: 7, requested_days: 7, captured_at: 0, age_seconds: 120,
+      tenant_id: "live-tenant",
+      name: null,
+      hit_rate: 0.5,
+      hit_rate_denominator: 10,
+      requests: 10,
+      cache_misses: 5,
+      covered_days: 7,
+      requested_days: 7,
+      captured_at: 0,
+      age_seconds: 120,
     },
   ],
   quarantined: [{ tenant_id: "fixture", name: null, reason: "never_collected", detail: null }],
@@ -69,6 +90,7 @@ function serve(overrides: Record<string, () => Response> = {}) {
     if (url === "/v1/iris/account") return new Response(JSON.stringify(ACCOUNT));
     if (url === "/v1/sessions" && init?.method === "POST")
       return new Response(JSON.stringify({ id: "native-session" }), { status: 201 });
+    if (url.startsWith("/v1/sessions?")) return new Response(JSON.stringify({ data: [] }));
     throw new Error(`unexpected fetch ${url}`);
   });
 }
@@ -84,13 +106,17 @@ it("drills into a tenant through native session creation with that tenant's bind
   show();
   await screen.findByText("Never collected");
   // Ranked before quarantined, as the server ordered them.
-  expect(screen.getAllByRole("row").slice(1).map((r) => r.getAttribute("data-tenant"))).toEqual([
-    "live-tenant",
-    "fixture",
-  ]);
+  expect(
+    screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.getAttribute("data-tenant")),
+  ).toEqual(["live-tenant", "fixture"]);
   fireEvent.click(within(rowFor("fixture")).getByRole("button", { name: /^Open workspace/ }));
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
-  const create = vi.mocked(authenticatedFetch).mock.calls.find(([, init]) => init?.method === "POST");
+  const create = vi
+    .mocked(authenticatedFetch)
+    .mock.calls.find(([, init]) => init?.method === "POST");
   expect(create?.[0]).toBe("/v1/sessions");
   expect(JSON.parse(create?.[1]?.body as string)).toEqual({
     agent_id: "registered-iris",
@@ -98,7 +124,9 @@ it("drills into a tenant through native session creation with that tenant's bind
     workspace: "/approved",
   });
   // No model ran to build the list: the only POST is the drill-in.
-  expect(vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  expect(
+    vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST"),
+  ).toHaveLength(1);
 });
 
 it("opens native chat through the same tenant-bound create", async () => {
@@ -113,9 +141,14 @@ it("opens native chat through the same tenant-bound create", async () => {
 it("keeps drill-in available when the account request fails, and says why", async () => {
   serve({
     "/v1/iris/account": () =>
-      new Response(JSON.stringify({ detail: "The session list could not be read, so the account cannot be shown" }), {
-        status: 502,
-      }),
+      new Response(
+        JSON.stringify({
+          detail: "The session list could not be read, so the account cannot be shown",
+        }),
+        {
+          status: 502,
+        },
+      ),
   });
   show();
   expect(await screen.findByRole("alert")).toHaveTextContent("session list could not be read");
@@ -159,10 +192,14 @@ it("will not offer a tenant whose host the catalog reports offline, and never PO
   const button = within(down).getByRole("button", { name: /^Open workspace/ });
   expect(button).toBeDisabled();
   fireEvent.click(button);
-  expect(vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  expect(
+    vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST"),
+  ).toHaveLength(0);
   expect(routing.navigate).not.toHaveBeenCalled();
   // The other binding is unaffected: one sleeping host is not an outage.
-  expect(within(rowFor("live-tenant")).getByRole("button", { name: /^Open workspace/ })).not.toBeDisabled();
+  expect(
+    within(rowFor("live-tenant")).getByRole("button", { name: /^Open workspace/ }),
+  ).not.toBeDisabled();
 });
 
 it("offers a tenant whose host is online, with the same create request as before", async () => {
@@ -173,7 +210,9 @@ it("offers a tenant whose host is online, with the same create request as before
   expect(up).not.toHaveTextContent(/offline/);
   fireEvent.click(within(up).getByRole("button", { name: /^Open workspace/ }));
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
-  const create = vi.mocked(authenticatedFetch).mock.calls.find(([, init]) => init?.method === "POST");
+  const create = vi
+    .mocked(authenticatedFetch)
+    .mock.calls.find(([, init]) => init?.method === "POST");
   // host_online is a catalog fact, not a session parameter: the body is unchanged.
   expect(JSON.parse(create?.[1]?.body as string)).toEqual({
     agent_id: "registered-iris",
@@ -193,7 +232,9 @@ it("treats unknown host liveness as openable and says nothing about it", async (
   expect(unknown).not.toHaveTextContent(/unknown/);
   fireEvent.click(within(unknown).getByRole("button", { name: /^Open workspace/ }));
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
-  const create = vi.mocked(authenticatedFetch).mock.calls.find(([, init]) => init?.method === "POST");
+  const create = vi
+    .mocked(authenticatedFetch)
+    .mock.calls.find(([, init]) => init?.method === "POST");
   expect(JSON.parse(create?.[1]?.body as string)).toEqual({
     agent_id: "registered-iris",
     host_id: "quiet-host",
@@ -282,4 +323,661 @@ it("keeps enough of a UUID to tell two tenants apart", () => {
   expect(shortId("f65d9135-0ba3-4c58-8768-c48a1334041d")).not.toBe(
     shortId("f65d9136-0ba3-4c58-8768-c48a1334041d"),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Workspace v2 (docs/iris/WORKSPACE_V2.md): branded landing, Resume per
+// tenant, and the open-tenant handoff from the framed app.
+// ---------------------------------------------------------------------------
+
+function posts() {
+  return vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST");
+}
+
+it("brands the landing as Iris's, with her packaged portrait and the triage table as the picker", async () => {
+  serve();
+  show();
+  await screen.findByText("Never collected");
+  // Her portrait comes from the pinned archive through the existing route:
+  // no image is committed into the web bundle.
+  const portrait = document.querySelector("img");
+  expect(portrait).toHaveAttribute("src", "/v1/iris/portrait");
+  expect(screen.getByText("airbrx cache intelligence")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Iris workspace" })).toBeInTheDocument();
+  expect(document.querySelector('link[href*="family=Inter"]')).not.toBeNull();
+  // Multi-tenant: the account table is still how a tenant is chosen.
+  expect(screen.getByRole("table", { name: "Tenants in this account" })).toBeInTheDocument();
+  expect(screen.getByText(/Monitoring is unavailable/)).toBeInTheDocument();
+});
+
+// Both production tenants share one execution host. A match on the host alone
+// resumes whichever tenant was used last, which is the wrong tenant half the time.
+const SHARED = {
+  agent_id: "registered-iris",
+  bindings: [
+    {
+      tenant_id: "tenant-a",
+      host_id: "shared-host",
+      workspace: "/a",
+      fixture: false,
+      host_online: true,
+    },
+    {
+      tenant_id: "tenant-b",
+      host_id: "shared-host",
+      workspace: "/b",
+      fixture: true,
+      host_online: true,
+    },
+    {
+      tenant_id: "tenant-c",
+      host_id: "shared-host",
+      workspace: "/c",
+      fixture: false,
+      host_online: true,
+    },
+  ],
+};
+const RECENT = [
+  // Newest first, as the query asks for them.
+  { id: "session-b", host_id: "shared-host", workspace: "/b", updated_at: 1_790_000_300 },
+  { id: "session-elsewhere", host_id: "other-host", workspace: "/a", updated_at: 1_790_000_200 },
+  { id: "session-a", host_id: "shared-host", workspace: "/a", updated_at: 1_790_000_100 },
+];
+
+function serveShared() {
+  serve({
+    "/v1/iris": () => new Response(JSON.stringify(SHARED)),
+    "/v1/iris/account": () =>
+      new Response(JSON.stringify({ generated_at: 1, tenants: 3, ranked: [], quarantined: [] })),
+  });
+  const base = vi.mocked(authenticatedFetch).getMockImplementation();
+  vi.mocked(authenticatedFetch).mockImplementation(async (input, init) => {
+    if (String(input).startsWith("/v1/sessions?"))
+      return new Response(JSON.stringify({ data: RECENT }));
+    return base!(input, init);
+  });
+}
+
+it("matches a session to a tenant on host AND workspace, never the host alone", () => {
+  expect(resumableSession(SHARED.bindings[0], RECENT)?.id).toBe("session-a");
+  expect(resumableSession(SHARED.bindings[1], RECENT)?.id).toBe("session-b");
+  expect(resumableSession(SHARED.bindings[2], RECENT)).toBeUndefined();
+});
+
+it("resumes each tenant's own last session by navigating, with no POST", async () => {
+  serveShared();
+  show();
+  const resumeA = await screen.findByRole("button", { name: "Resume: tenant-a" });
+  // The recent-sessions read is the caller's own Iris sessions, newest first.
+  const read = vi
+    .mocked(authenticatedFetch)
+    .mock.calls.find(([url]) => String(url).startsWith("/v1/sessions?"));
+  const params = new URLSearchParams(String(read?.[0]).split("?")[1]);
+  expect(params.get("agent_id")).toBe("registered-iris");
+  expect(params.get("sort_by")).toBe("updated_at");
+  expect(params.get("visibility")).toBe("mine");
+  fireEvent.click(resumeA);
+  expect(routing.navigate).toHaveBeenCalledWith("/iris/session-a");
+  expect(posts()).toHaveLength(0);
+  // tenant-c shares the host but has no session in its workspace: New only.
+  const rowC = rowFor("tenant-c");
+  expect(within(rowC).queryByRole("button", { name: /^Resume/ })).not.toBeInTheDocument();
+  expect(within(rowC).getByRole("button", { name: "Open workspace: tenant-c" })).toBeEnabled();
+  // New beside Resume is still the tenant-bound create().
+  fireEvent.click(within(rowFor("tenant-b")).getByRole("button", { name: "New: tenant-b" }));
+  await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
+  expect(posts()).toHaveLength(1);
+  expect(JSON.parse(posts()[0][1]?.body as string)).toEqual({
+    agent_id: "registered-iris",
+    host_id: "shared-host",
+    workspace: "/b",
+  });
+});
+
+it("does not offer Resume or New for a tenant whose host is offline", async () => {
+  serveShared();
+  const base = vi.mocked(authenticatedFetch).getMockImplementation();
+  vi.mocked(authenticatedFetch).mockImplementation(async (input, init) => {
+    if (String(input) === "/v1/iris")
+      return new Response(
+        JSON.stringify({
+          ...SHARED,
+          bindings: SHARED.bindings.map((b) =>
+            b.tenant_id === "tenant-a" ? { ...b, host_online: false } : b,
+          ),
+        }),
+      );
+    return base!(input, init);
+  });
+  show();
+  const resumeA = await screen.findByRole("button", { name: "Resume: tenant-a" });
+  expect(resumeA).toBeDisabled();
+  expect(within(rowFor("tenant-a")).getByRole("button", { name: "New: tenant-a" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Resume: tenant-b" })).toBeEnabled();
+});
+
+describe("the iris.openTenant handoff from the framed workspace", () => {
+  async function mounted(
+    overrides: Record<string, () => Response> = {},
+    recent?: { id: string; host_id: string; workspace: string }[],
+  ) {
+    routing.params = { sessionId: "owned-session" };
+    serve(overrides);
+    if (recent) {
+      const base = vi.mocked(authenticatedFetch).getMockImplementation();
+      vi.mocked(authenticatedFetch).mockImplementation(async (input, init) => {
+        if (String(input).startsWith("/v1/sessions?"))
+          return new Response(JSON.stringify({ data: recent }));
+        return base!(input, init);
+      });
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <IrisWorkspace />
+      </QueryClientProvider>,
+    );
+    // The listener checks the tenant against the catalog, so wait for it.
+    await waitFor(() => expect(client.getQueryData(["iris-workspace"])).toBeDefined());
+    return screen.getByTitle("Iris workspace") as HTMLIFrameElement;
+  }
+  function post(data: unknown, init: { origin?: string; source?: MessageEventSource | null } = {}) {
+    const frame = screen.getByTitle("Iris workspace") as HTMLIFrameElement;
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data,
+          origin: init.origin ?? window.location.origin,
+          source: init.source === undefined ? frame.contentWindow : init.source,
+        }),
+      );
+    });
+  }
+  const open = (tenant_id: unknown) => ({ type: "iris.openTenant", tenant_id });
+
+  it("opens a NEW session for a bound tenant through the existing create()", async () => {
+    const frame = await mounted();
+    expect(frame.contentWindow).not.toBeNull();
+    post(open("live-tenant"));
+    await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0][0]).toBe("/v1/sessions");
+    expect(JSON.parse(posts()[0][1]?.body as string)).toEqual({
+      agent_id: "registered-iris",
+      host_id: "quiet-host",
+      workspace: "/live",
+    });
+  });
+
+  it("resumes the tenant's last session instead of creating another one (QA B5)", async () => {
+    // QA 2026-09-26, B5: three opens of one tenant made three sessions, each
+    // running its own live collection. The landing's Resume match decides.
+    await mounted({}, [
+      // Newest first. Same host, other workspace: a host-only match would pick it.
+      { id: "other-tenant-session", host_id: "quiet-host", workspace: "/elsewhere" },
+      { id: "live-session", host_id: "quiet-host", workspace: "/live" },
+      { id: "older-live-session", host_id: "quiet-host", workspace: "/live" },
+    ]);
+    post(open("live-tenant"));
+    await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/live-session"));
+    expect(routing.navigate).toHaveBeenCalledTimes(1);
+    expect(posts()).toHaveLength(0);
+    // The read is the landing's own query: the caller's Iris sessions, newest first.
+    const read = vi
+      .mocked(authenticatedFetch)
+      .mock.calls.find(([url]) => String(url).startsWith("/v1/sessions?"));
+    const params = new URLSearchParams(String(read?.[0]).split("?")[1]);
+    expect(params.get("agent_id")).toBe("registered-iris");
+    expect(params.get("sort_by")).toBe("updated_at");
+    expect(params.get("visibility")).toBe("mine");
+  });
+
+  it("creates a session only when the tenant has nothing to resume (QA B5)", async () => {
+    await mounted({}, [
+      { id: "fixture-session", host_id: "approved-host", workspace: "/approved" },
+    ]);
+    post(open("live-tenant"));
+    await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
+    expect(posts()).toHaveLength(1);
+    expect(JSON.parse(posts()[0][1]?.body as string).workspace).toBe("/live");
+  });
+
+  it("stays put when the tenant's newest session is this one (QA B5)", async () => {
+    await mounted({}, [{ id: "owned-session", host_id: "quiet-host", workspace: "/live" }]);
+    post(open("live-tenant"));
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(authenticatedFetch)
+          .mock.calls.some(([url]) => String(url).startsWith("/v1/sessions?")),
+      ).toBe(true),
+    );
+    await act(async () => {});
+    expect(routing.navigate).not.toHaveBeenCalled();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it("resumes once for a burst of messages (QA B5)", async () => {
+    await mounted({}, [{ id: "live-session", host_id: "quiet-host", workspace: "/live" }]);
+    for (let i = 0; i < 5; i++) post(open("live-tenant"));
+    await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/live-session"));
+    await act(async () => {});
+    expect(routing.navigate).toHaveBeenCalledTimes(1);
+    expect(posts()).toHaveLength(0);
+  });
+
+  it("ignores a message from a foreign origin", async () => {
+    await mounted();
+    post(open("live-tenant"), { origin: "https://evil.example" });
+    await act(async () => {});
+    expect(posts()).toHaveLength(0);
+    // The listener was live: the same message from the right origin opens.
+    post(open("live-tenant"));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+  });
+
+  it("ignores a same-origin message that did not come from the workspace frame", async () => {
+    await mounted();
+    post(open("live-tenant"), { source: window });
+    await act(async () => {});
+    expect(posts()).toHaveLength(0);
+    post(open("live-tenant"));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+  });
+
+  it("ignores a tenant the caller is not bound to, and anything that is not a tenant id", async () => {
+    await mounted();
+    post(open("someone-elses-tenant"));
+    post(open(42));
+    post(open(null));
+    post({ type: "iris.somethingElse", tenant_id: "live-tenant" });
+    post("iris.openTenant");
+    await act(async () => {});
+    expect(posts()).toHaveLength(0);
+    expect(routing.navigate).not.toHaveBeenCalled();
+    post(open("fixture"));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(JSON.parse(posts()[0][1]?.body as string).workspace).toBe("/approved");
+  });
+
+  it("opens one session for a burst of messages, and takes the next one after it settles", async () => {
+    // Review of #108: five quick messages created five sessions.
+    let finish: (response: Response) => void = () => {};
+    await mounted({
+      "/v1/sessions": () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }) as unknown as Response,
+    });
+    for (let i = 0; i < 5; i++) post(open("live-tenant"));
+    post(open("fixture"));
+    await act(async () => {});
+    expect(posts()).toHaveLength(1);
+    await act(async () => {
+      finish(new Response(JSON.stringify({ id: "native-session" }), { status: 201 }));
+    });
+    await waitFor(() => expect(routing.navigate).toHaveBeenCalledTimes(1));
+    expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session");
+    // The guard is released once create() settles, so it is not a one-shot.
+    post(open("fixture"));
+    await waitFor(() => expect(posts()).toHaveLength(2));
+  });
+
+  it("says so on the session page when opening the tenant fails, without reloading the workspace", async () => {
+    // Review of #108: create() set the error, but only the landing rendered it.
+    const frame = await mounted({
+      "/v1/sessions": () =>
+        new Response(JSON.stringify({ detail: "host said no" }), { status: 500 }),
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    post(open("live-tenant"));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Iris could not open that tenant in a new session. Could not start Iris. Check that the selected host is online.",
+    );
+    // Host error text is never shown.
+    expect(alert).not.toHaveTextContent("host said no");
+    expect(routing.navigate).not.toHaveBeenCalled();
+    // Same iframe element: showing the error did not remount (and reload) it.
+    expect(screen.getByTitle("Iris workspace")).toBe(frame);
+    fireEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByTitle("Iris workspace")).toBe(frame);
+    // A failed open releases the guard too.
+    post(open("live-tenant"));
+    await waitFor(() => expect(posts()).toHaveLength(2));
+  });
+
+  /** Answer the recent-sessions read with `answer`; everything else as served. */
+  function readsAs(answer: (init?: RequestInit) => Response | Promise<Response>) {
+    const base = vi.mocked(authenticatedFetch).getMockImplementation();
+    vi.mocked(authenticatedFetch).mockImplementation(async (input, init) =>
+      String(input).startsWith("/v1/sessions?") ? answer(init) : base!(input, init),
+    );
+  }
+  const reads = () =>
+    vi
+      .mocked(authenticatedFetch)
+      .mock.calls.filter(([url]) => String(url).startsWith("/v1/sessions?"));
+
+  it.each([
+    ["a 500", () => new Response(JSON.stringify({ detail: "down" }), { status: 500 })],
+    [
+      "a network error",
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ],
+  ])(
+    "falls back to create() when the recent-sessions read fails with %s, and releases the guard",
+    async (_, fail) => {
+      // Review of #113, nit 4: a failed read means nothing to resume, so the
+      // handoff opens a session rather than doing nothing.
+      await mounted();
+      readsAs(fail);
+      post(open("live-tenant"));
+      await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
+      expect(reads()).toHaveLength(1);
+      expect(posts()).toHaveLength(1);
+      expect(JSON.parse(posts()[0][1]?.body as string).workspace).toBe("/live");
+      // The guard was released: the next open is taken.
+      post(open("fixture"));
+      await waitFor(() => expect(posts()).toHaveLength(2));
+      expect(JSON.parse(posts()[1][1]?.body as string).workspace).toBe("/approved");
+    },
+  );
+
+  it("gives up on a recent-sessions read that never settles after about 10 s, then creates and releases the guard", async () => {
+    // Review of #113, nit 5: with no timeout, a read that never answered held
+    // the one-open-at-a-time guard for good, and every later open was ignored.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await mounted();
+      // Never answers on its own; like fetch, it gives up when its signal aborts.
+      readsAs(
+        (init) =>
+          new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+          }),
+      );
+      post(open("live-tenant"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(9_000);
+      });
+      expect(posts()).toHaveLength(0);
+      expect(routing.navigate).not.toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
+      await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
+      expect(posts()).toHaveLength(1);
+      // The abandoned read was cancelled, not left running.
+      expect(reads()[0][1]?.signal?.aborted).toBe(true);
+      // And the guard is free again.
+      readsAs(() => new Response(JSON.stringify({ data: [] })));
+      post(open("fixture"));
+      await waitFor(() => expect(posts()).toHaveLength(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Local QA of workspace v2, 2026-09-26 (qa-v2-local-2026-09-26.md).
+// ---------------------------------------------------------------------------
+
+it("keeps the frame below the shell header, so the header cannot take the tab bar's clicks (QA B1)", () => {
+  // AppShell lays ChatHeader over <main> (absolute, top-0, z-30, h-14 / md:h-12,
+  // transparent). The v2 tab bar sits at the top of the frame, so without this
+  // clearance every click on a tab landed on the header.
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  const { container } = show();
+  const frame = screen.getByTitle("Iris workspace");
+  const clearance = container.querySelector("[data-iris-header-clearance]");
+  expect(clearance).not.toBeNull();
+  expect(clearance).toHaveAttribute("aria-hidden", "true");
+  // Same heights as ChatHeader's bar (pinned in ChatHeader.test.tsx).
+  expect(clearance).toHaveClass("h-14", "md:h-12", "shrink-0");
+  expect(clearance!.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+/** Stand in for the same-origin frame document: its current hash, and postMessage. */
+function frameAt(hash: string) {
+  const frame = screen.getByTitle("Iris workspace") as HTMLIFrameElement;
+  Object.defineProperty(frame, "contentWindow", {
+    value: { location: { hash }, postMessage: () => {} },
+    configurable: true,
+  });
+  return frame;
+}
+
+it("reopens the frame on the tab it showed when the page is reloaded (QA B3)", () => {
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  const first = show();
+  frameAt("#proposals");
+  // A reload: the page hides, and the shell mounts the frame again.
+  act(() => {
+    window.dispatchEvent(new Event("pagehide"));
+  });
+  first.unmount();
+  show();
+  expect(screen.getByTitle("Iris workspace")).toHaveAttribute(
+    "src",
+    "/v1/iris/sessions/owned-session/ui/?theme=dark#proposals",
+  );
+});
+
+it("remembers the tab per session, and only a known tab name (QA B3)", () => {
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  let view = show();
+  for (const hash of ["#javascript:alert(1)", "#proposals?x=1", "#Findings", "#", ""]) {
+    frameAt(hash);
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    view.unmount();
+    view = show();
+    expect(screen.getByTitle("Iris workspace")).toHaveAttribute(
+      "src",
+      "/v1/iris/sessions/owned-session/ui/?theme=dark",
+    );
+  }
+  // (The read-time check has its own test below: seeding storage here, after
+  // a mount, was undone by the unmount's own save before the remount read it.)
+  // Another session does not inherit this one's tab.
+  frameAt("#rules");
+  act(() => {
+    window.dispatchEvent(new Event("pagehide"));
+  });
+  view.unmount();
+  routing.params = { sessionId: "other-session" };
+  show();
+  expect(screen.getByTitle("Iris workspace")).toHaveAttribute(
+    "src",
+    "/v1/iris/sessions/other-session/ui/?theme=dark",
+  );
+});
+
+it("moving to another session in place mounts that session's own tab (QA B3)", () => {
+  window.sessionStorage.setItem("iris.tab:other-session", "evidence");
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const tree = () => (
+    <QueryClientProvider client={client}>
+      <IrisWorkspace />
+    </QueryClientProvider>
+  );
+  const { rerender } = render(tree());
+  frameAt("#findings");
+  routing.params = { sessionId: "other-session" };
+  rerender(tree());
+  expect(screen.getByTitle("Iris workspace")).toHaveAttribute(
+    "src",
+    "/v1/iris/sessions/other-session/ui/?theme=dark#evidence",
+  );
+  // Leaving the first session in place noted its tab for its next mount.
+  expect(window.sessionStorage.getItem("iris.tab:owned-session")).toBe("findings");
+});
+
+const OWNED_SRC = "/v1/iris/sessions/owned-session/ui/?theme=dark";
+const UNKNOWN_TABS = [
+  "#javascript:alert(1)",
+  "#proposals?x=1",
+  "#Findings",
+  '#"><script>',
+  "#../../v1/sessions",
+  "#",
+  "",
+];
+
+it("stores only a known tab name when the frame is left (QA B3, save-time check)", () => {
+  // Review of #113, nit 2. Storage is read directly: through the src, the
+  // read-time check would hide a bad write.
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  const view = show();
+  for (const hash of UNKNOWN_TABS) {
+    window.sessionStorage.setItem("iris.tab:owned-session", "rules");
+    frameAt(hash);
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(window.sessionStorage.getItem("iris.tab:owned-session"), hash).toBeNull();
+  }
+  frameAt("#proposals");
+  act(() => {
+    window.dispatchEvent(new Event("pagehide"));
+  });
+  expect(window.sessionStorage.getItem("iris.tab:owned-session")).toBe("proposals");
+  view.unmount();
+});
+
+it("mounts only a known tab name, whatever storage holds (QA B3, read-time check)", () => {
+  // Review of #113, nit 2. Storage is shared with the same-origin frame, so
+  // the shell checks what it reads back. Each value is seeded before that
+  // mount: an earlier mount's cleanup would otherwise rewrite it first.
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  for (const value of [...UNKNOWN_TABS, "evil", "javascript:alert(1)", '"><script>']) {
+    window.sessionStorage.setItem("iris.tab:owned-session", value);
+    const view = show();
+    expect(screen.getByTitle("Iris workspace").getAttribute("src"), value).toBe(OWNED_SRC);
+    view.unmount();
+  }
+  // A known name is honoured, so the check is not just "never restore".
+  window.sessionStorage.setItem("iris.tab:owned-session", "rules");
+  show();
+  expect(screen.getByTitle("Iris workspace")).toHaveAttribute("src", `${OWNED_SRC}#rules`);
+});
+
+it("never rebuilds the frame's src mid-session when storage changes (QA B3)", () => {
+  // Review of #113, nit 3. Rewriting src reloads the frame and loses the
+  // conversation in it, so the tab is read once per mount.
+  window.sessionStorage.setItem("iris.tab:owned-session", "rules");
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const tree = () => (
+    <QueryClientProvider client={client}>
+      <IrisWorkspace />
+    </QueryClientProvider>
+  );
+  const { rerender } = render(tree());
+  const frame = screen.getByTitle("Iris workspace");
+  expect(frame).toHaveAttribute("src", `${OWNED_SRC}#rules`);
+  window.sessionStorage.setItem("iris.tab:owned-session", "evidence");
+  rerender(tree());
+  rerender(tree());
+  expect(screen.getByTitle("Iris workspace")).toBe(frame);
+  expect(frame).toHaveAttribute("src", `${OWNED_SRC}#rules`);
+});
+
+it("gives each session its own frame, so Back after a handoff shows that session's page", () => {
+  // Review of #113, observation 6: the iframe element was reused when the
+  // route moved to another session in place, so Back after a handoff walked
+  // the frame's own history and showed A's page under B's URL.
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const tree = () => (
+    <QueryClientProvider client={client}>
+      <IrisWorkspace />
+    </QueryClientProvider>
+  );
+  const { rerender } = render(tree());
+  const a = frameAt("#findings");
+  // The handoff navigates to B.
+  routing.params = { sessionId: "other-session" };
+  rerender(tree());
+  const b = screen.getByTitle("Iris workspace");
+  expect(b).not.toBe(a);
+  expect(a.isConnected).toBe(false);
+  expect(b).toHaveAttribute("src", "/v1/iris/sessions/other-session/ui/?theme=dark");
+  // Browser Back: the route returns to A, and so does the frame.
+  routing.params = { sessionId: "owned-session" };
+  rerender(tree());
+  const back = screen.getByTitle("Iris workspace");
+  expect(back).not.toBe(b);
+  expect(b.isConnected).toBe(false);
+  expect(screen.getAllByTitle("Iris workspace")).toHaveLength(1);
+  // A comes back on the tab it was left on, read fresh for this mount.
+  expect(back).toHaveAttribute("src", `${OWNED_SRC}#findings`);
+});
+
+it("with the v2 switch off, frames the pinned UI exactly as before and its messages open nothing", async () => {
+  // The switch is read per request by the asset route (D1), so the shell frames
+  // the same URL either way; what the pinned UI posts must not open anything.
+  routing.params = { sessionId: "owned-session" };
+  serve();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <IrisWorkspace />
+    </QueryClientProvider>,
+  );
+  await waitFor(() => expect(client.getQueryData(["iris-workspace"])).toBeDefined());
+  const frame = screen.getByTitle("Iris workspace") as HTMLIFrameElement;
+  expect(frame).toHaveAttribute("src", "/v1/iris/sessions/owned-session/ui/?theme=dark");
+  for (const token of [
+    "allow-scripts",
+    "allow-same-origin",
+    "allow-forms",
+    "allow-downloads",
+    "allow-top-navigation-by-user-activation",
+  ])
+    expect(frame.getAttribute("sandbox")?.split(" ")).toContain(token);
+  act(() => {
+    for (const data of [{ irisHostTheme: "light" }, { tenant_id: "live-tenant" }, "refresh"])
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data,
+          origin: window.location.origin,
+          source: frame.contentWindow,
+        }),
+      );
+  });
+  await act(async () => {});
+  expect(posts()).toHaveLength(0);
+  expect(routing.navigate).not.toHaveBeenCalled();
+  // No recent-sessions read inside a session: that is the landing's alone.
+  expect(
+    vi
+      .mocked(authenticatedFetch)
+      .mock.calls.some(([url]) => String(url).startsWith("/v1/sessions?")),
+  ).toBe(false);
+});
+
+it("with nothing to resume, the landing offers the one Open button per tenant, as before", async () => {
+  serve();
+  show();
+  await screen.findByText("Never collected");
+  expect(screen.getAllByRole("button", { name: /^Open workspace/ })).toHaveLength(2);
+  expect(screen.queryByRole("button", { name: /^Resume/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /^New/ })).not.toBeInTheDocument();
 });

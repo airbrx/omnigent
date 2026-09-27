@@ -1,5 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ResolvedThemeMode } from "@/components/theme/themeMode";
 import { useResolvedThemeMode } from "@/components/theme/useResolvedThemeMode";
 import { Button } from "@/components/ui/button";
 import { getOmnigentHostConfig } from "@/lib/host";
@@ -25,21 +26,103 @@ interface IrisCatalog {
   agent_id: string | null;
   bindings: IrisBinding[];
 }
+/** The fields of GET /v1/sessions this page reads. */
+interface IrisSession {
+  id: string;
+  host_id?: string | null;
+  workspace?: string | null;
+  updated_at?: number;
+}
+
+/** What the v2 workspace frame posts to open another tenant (WORKSPACE_V2.md, 4). */
+export const OPEN_TENANT = "iris.openTenant";
+
+/**
+ * How long the openTenant handoff waits for the recent-sessions read.
+ *
+ * Only one open runs at a time, so a read that never answered would hold that
+ * guard for good and every later open would be ignored. Past this the read is
+ * cancelled and treated like a failed one: nothing to resume, so create().
+ */
+export const HANDOFF_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * The newest of the caller's sessions on this tenant, or nothing.
+ *
+ * Matched on host AND workspace: both production tenants share one execution
+ * host, so a match on the host alone resumes the wrong tenant. `sessions` is
+ * newest first, as the recent-sessions query asks for it.
+ */
+export function resumableSession(
+  binding: Pick<IrisBinding, "host_id" | "workspace">,
+  sessions: IrisSession[] | undefined,
+): IrisSession | undefined {
+  return sessions?.find((s) => s.host_id === binding.host_id && s.workspace === binding.workspace);
+}
 
 export { shortId } from "./IrisAccountView";
+
+/** The v2 workspace's tab ids, the only values its URL hash may carry (app.js TABS). */
+export const IRIS_TABS = [
+  "overview",
+  "findings",
+  "rules",
+  "proposals",
+  "evidence",
+  "results",
+  "accounts",
+] as const;
+type IrisTab = (typeof IRIS_TABS)[number];
+const tabKey = (sessionId: string) => `iris.tab:${sessionId}`;
+
+/** `#proposals` or `proposals` to the tab id, or nothing for anything else. */
+function knownTab(value: string | null | undefined): IrisTab | undefined {
+  const id = (value ?? "").replace(/^#/, "");
+  return (IRIS_TABS as readonly string[]).includes(id) ? (id as IrisTab) : undefined;
+}
+
+/** The tab this browser tab last showed for the session, checked on the way out. */
+function rememberedTab(sessionId: string): IrisTab | undefined {
+  try {
+    return knownTab(window.sessionStorage.getItem(tabKey(sessionId)));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Note which tab the frame shows, so a reload of the page reopens it.
+ *
+ * The frame keeps its tab in its own hash (tabs.js, via replaceState, so there
+ * is no event to follow); the shell mounts the frame from a URL it builds, so
+ * a page reload used to land on Overview. Only a known tab id is stored.
+ */
+function rememberTab(sessionId: string, frame: HTMLIFrameElement | null) {
+  let hash: string | undefined;
+  try {
+    hash = frame?.contentWindow?.location.hash;
+  } catch {
+    return; // Not readable (the frame navigated off-origin): keep what we had.
+  }
+  if (hash === undefined) return;
+  try {
+    const tab = knownTab(hash);
+    if (tab) window.sessionStorage.setItem(tabKey(sessionId), tab);
+    else window.sessionStorage.removeItem(tabKey(sessionId));
+  } catch {
+    // Storage unavailable: a reload opens Overview, as before.
+  }
+}
 
 export function IrisWorkspace() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const chatMode = searchParams.get("mode") === "chat";
   const mode = useResolvedThemeMode();
   const frame = useRef<HTMLIFrameElement>(null);
-  // The workspace mounts with the shell's appearance in its URL and is told
-  // about later changes by message. Rewriting `src` would reload the iframe
-  // and discard the conversation inside it, which is the one thing on this
-  // page that cannot be recovered — so the mount value is captured once.
-  const [mountTheme] = useState(mode);
+  useEffect(loadInter, []);
   // next-themes resolves after first paint, so the mount value can be a guess.
   // Posting on every change (and again on load, since a message sent before
   // the document exists goes nowhere) corrects it without a reload.
@@ -67,13 +150,53 @@ export function IrisWorkspace() {
       if (!response.ok) {
         const detail = await response
           .json()
-          .then((body: { detail?: unknown }) => (typeof body.detail === "string" ? body.detail : ""))
+          .then((body: { detail?: unknown }) =>
+            typeof body.detail === "string" ? body.detail : "",
+          )
           .catch(() => "");
         throw Error(detail || `The account could not be read (HTTP ${response.status})`);
       }
       return response.json();
     },
   });
+  // The caller's recent Iris sessions, newest first, so a visit can go back
+  // to a tenant instead of adding a new session every time. Read on the
+  // landing, and inside a session only when the frame asks to open a tenant
+  // (resumeOrCreate below); a failure just means there is nothing to resume.
+  const recentQuery = (agentId: string | null | undefined) => ({
+    queryKey: ["iris-recent-sessions", agentId],
+    queryFn: async ({ signal }: { signal?: AbortSignal }): Promise<IrisSession[]> => {
+      const params = new URLSearchParams({
+        agent_id: agentId ?? "",
+        limit: "50",
+        sort_by: "updated_at",
+        visibility: "mine",
+      });
+      try {
+        const response = await authenticatedFetch(`/v1/sessions?${params}`, { signal });
+        if (!response.ok) return [];
+        return ((await response.json()) as { data?: IrisSession[] }).data ?? [];
+      } catch {
+        return [];
+      }
+    },
+  });
+  const recent = useQuery({
+    ...recentQuery(data?.agent_id),
+    enabled: Boolean(!sessionId && data?.agent_id),
+  });
+  const resumable: Record<string, string> = {};
+  const resumeIds: Record<string, string> = {};
+  for (const binding of data?.bindings ?? []) {
+    const last = resumableSession(binding, recent.data);
+    if (!last) continue;
+    resumable[binding.tenant_id] = lastUsed(last);
+    resumeIds[binding.tenant_id] = last.id;
+  }
+  const resume = (tenantId: string) => {
+    const id = resumeIds[tenantId];
+    if (id) navigate(`/${chatMode ? "c" : "iris"}/${encodeURIComponent(id)}`);
+  };
   async function create(tenantId: string) {
     const binding = data?.bindings.find((b) => b.tenant_id === tenantId);
     if (!data?.agent_id || !binding) return;
@@ -108,6 +231,63 @@ export function IrisWorkspace() {
       setBusy(false);
     }
   }
+  // The v2 workspace's Accounts tab asks the shell to open another tenant.
+  // It never switches tenant inside its own session: the shell goes to the
+  // caller's last session on that tenant, matched as the landing's Resume
+  // matches (host AND workspace), and only when there is none opens a NEW one
+  // through the same create() as the landing. Only for a message from its own
+  // frame, on its own origin, naming a bound tenant. The pinned UI never
+  // posts this, so without v2 the listener stays idle.
+  async function resumeOrCreate(tenantId: string) {
+    const binding = data?.bindings.find((b) => b.tenant_id === tenantId);
+    if (!data?.agent_id || !binding) return;
+    // Offline refuses Resume as well as New, as on the landing; create() says why.
+    if (binding.host_online === false) return create(tenantId);
+    // Read at the moment of the handoff (not kept from mount), so a session
+    // opened a minute ago in another tab is found. A failed read resumes
+    // nothing, and so does one that has not answered within the timeout.
+    const query = recentQuery(data.agent_id);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const gaveUp = new Promise<IrisSession[]>((resolve) => {
+      timer = setTimeout(() => {
+        void queryClient.cancelQueries({ queryKey: query.queryKey });
+        resolve([]);
+      }, HANDOFF_READ_TIMEOUT_MS);
+    });
+    const sessions = await Promise.race([
+      queryClient.fetchQuery({ ...query, staleTime: 0 }).catch((): IrisSession[] => []),
+      gaveUp,
+    ]).finally(() => clearTimeout(timer));
+    const last = resumableSession(binding, sessions);
+    if (!last) return create(tenantId);
+    if (last.id === sessionId) return; // Already here.
+    navigate(`/${chatMode ? "c" : "iris"}/${encodeURIComponent(last.id)}`);
+  }
+  const openTenant = useRef(resumeOrCreate);
+  openTenant.current = resumeOrCreate;
+  // One open at a time. A burst of messages (a double click in the frame, or
+  // a page that posts in a loop) arrives before React re-renders, so `busy`
+  // state would still read false for every one of them; a ref does not.
+  const opening = useRef(false);
+  useEffect(() => {
+    if (!sessionId) return;
+    const bound = new Set(data?.bindings.map((b) => b.tenant_id) ?? []);
+    function onMessage(event: MessageEvent) {
+      if (event.origin !== window.location.origin) return;
+      if (!frame.current || event.source !== frame.current.contentWindow) return;
+      const message: unknown = event.data;
+      if (typeof message !== "object" || message === null) return;
+      const { type, tenant_id: tenantId } = message as { type?: unknown; tenant_id?: unknown };
+      if (type !== OPEN_TENANT || typeof tenantId !== "string" || !bound.has(tenantId)) return;
+      if (opening.current) return;
+      opening.current = true;
+      void openTenant.current(tenantId).finally(() => {
+        opening.current = false;
+      });
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [sessionId, data]);
   // Embedded, the host proxies the whole API behind a path prefix and auth that
   // only its `fetcher` can satisfy — and an <iframe src> cannot be routed
   // through a JavaScript function. The workspace is a hosted page, not a bundle
@@ -129,51 +309,166 @@ export function IrisWorkspace() {
         <p>It is the same Iris session, with the same history.</p>
       </main>
     );
+  // The slot before the frame is always rendered (null when there is no
+  // error) so the iframe keeps its position: moving it would remount it and
+  // reload the workspace, losing the conversation inside.
   if (sessionId)
     return (
-      <iframe
-        ref={frame}
-        title="Iris workspace"
-        // oxlint-disable-next-line iframe-missing-sandbox -- Pinned same-origin host UI needs scripts and session cookies.
-        sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-top-navigation-by-user-activation"
-        className="h-full min-h-0 w-full flex-1 border-0"
-        onLoad={() =>
-          frame.current?.contentWindow?.postMessage({ irisHostTheme: mode }, window.location.origin)
-        }
-        src={`/v1/iris/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}`}
-      />
+      <>
+        {/* AppShell lays its ChatHeader over <main>: absolute, top-0, z-30,
+            transparent, h-14 (md:h-12). Over a framed page it takes every
+            click in that band, which is where the v2 tab bar sits. The frame
+            starts below it instead. Heights pinned in ChatHeader.test.tsx. */}
+        <div
+          aria-hidden="true"
+          data-iris-header-clearance=""
+          className="h-14 shrink-0 bg-[#F0EFED] md:h-12 dark:bg-[#121212]"
+        />
+        {error ? (
+          <div
+            role="alert"
+            className="flex shrink-0 items-center justify-between gap-3 border-b bg-[#FEF2F2] px-4 py-2 text-[#991B1B] text-sm dark:bg-[#2A1515] dark:text-[#FCA5A5]"
+          >
+            <span>Iris could not open that tenant in a new session. {error}</span>
+            <button type="button" className="shrink-0 underline" onClick={() => setError("")}>
+              Dismiss
+            </button>
+          </div>
+        ) : null}
+        {/* One frame per session. Reusing the element when the route moves
+            to another session in place (the openTenant handoff) left the old
+            session's history in it, so Back showed A's page under B's URL. */}
+        <IrisFrame key={sessionId} sessionId={sessionId} mode={mode} frameRef={frame} />
+      </>
     );
   return (
-    <main className="mx-auto flex w-full max-w-xl flex-col gap-4 p-6">
-      <h1 className="font-semibold text-xl">Iris workspace</h1>
-      <p>
-        Your bound tenants, ranked by cache misses in each one's newest complete capture. Iris
-        runs only after you open one. Monitoring is unavailable.
-      </p>
-      {isLoading ? (
-        <p role="status">Loading Iris…</p>
-      ) : !data?.agent_id || !data.bindings.length ? (
-        <p role="alert">
-          Iris has no authorized host binding. Ask the host operator to complete the Iris setup.
-        </p>
-      ) : (
-        <>
-          <IrisAccountView
-            tenants={data.bindings}
-            account={account.data ?? null}
-            accountError={account.error instanceof Error ? account.error.message : ""}
-            busy={busy}
-            loading={account.isPending}
-            openLabel={chatMode ? "Start chat" : "Open workspace"}
-            onOpen={(tenantId) => void create(tenantId)}
+    <div
+      className="flex min-h-0 w-full flex-1 overflow-y-auto bg-[#F0EFED] text-[#1A1A1A] antialiased dark:bg-[#121212] dark:text-[#E0E0E0]"
+      style={{ fontFamily: "Inter, system-ui, -apple-system, sans-serif" }}
+    >
+      <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 pt-20 pb-12 md:pt-12">
+        <div className="flex items-center gap-3">
+          <img
+            src="/v1/iris/portrait"
+            alt=""
+            className="size-12 rounded-xl bg-[#F5F5F5] object-cover dark:bg-[#242424]"
           />
-          <p>
-            Use “Refresh from host” inside the workspace to collect the first overview. “Open native
-            chat” continues the same conversation.
+          <div>
+            <p className="font-bold text-[#8A8A8A] text-[10px] uppercase tracking-[0.12em]">
+              airbrx cache intelligence
+            </p>
+            <h1 className="font-extrabold text-2xl tracking-[-0.02em]">Iris workspace</h1>
+          </div>
+        </div>
+        <p className="text-[#505050] text-sm leading-relaxed dark:text-[#A0A0A0]">
+          Your bound tenants, ranked by cache misses in each one's newest complete capture. Iris
+          runs only after you open one. Monitoring is unavailable.
+        </p>
+        {isLoading ? (
+          <p role="status" className="text-[#8A8A8A] text-sm">
+            Loading Iris…
           </p>
-        </>
-      )}
-      {error && <p role="alert">{error}</p>}
-    </main>
+        ) : !data?.agent_id || !data.bindings.length ? (
+          <p role="alert" className="text-sm">
+            Iris has no authorized host binding. Ask the host operator to complete the Iris setup.
+          </p>
+        ) : (
+          <>
+            <IrisAccountView
+              tenants={data.bindings}
+              account={account.data ?? null}
+              accountError={account.error instanceof Error ? account.error.message : ""}
+              busy={busy}
+              loading={account.isPending}
+              openLabel={chatMode ? "Start chat" : "Open workspace"}
+              onOpen={(tenantId) => void create(tenantId)}
+              resumable={resumable}
+              onResume={resume}
+            />
+            <p className="text-[#8A8A8A] text-xs leading-relaxed">
+              A session reads one tenant. Resume goes back to your last session on that tenant; New
+              starts another. “Open native chat” continues the same conversation.
+            </p>
+          </>
+        )}
+        {error && (
+          <p role="alert" className="text-[#DC2626] text-sm">
+            {error}
+          </p>
+        )}
+      </main>
+    </div>
   );
+}
+
+/**
+ * The framed workspace for one session. Keyed by session id, so each session
+ * gets its own element, and with it its own frame history.
+ */
+function IrisFrame({
+  sessionId,
+  mode,
+  frameRef,
+}: {
+  sessionId: string;
+  mode: ResolvedThemeMode;
+  frameRef: RefObject<HTMLIFrameElement | null>;
+}) {
+  // The workspace mounts with the shell's appearance in its URL and is told
+  // about later changes by message. Rewriting `src` would reload the iframe
+  // and discard the conversation inside it, which is the one thing on this
+  // page that cannot be recovered — so the mount values are captured once.
+  const [mountTheme] = useState(mode);
+  // Same for the tab: read once per mount, so the src never changes under it.
+  const [mountTab] = useState(() => rememberedTab(sessionId));
+  useLayoutEffect(() => {
+    const save = () => rememberTab(sessionId, frameRef.current);
+    window.addEventListener("pagehide", save);
+    return () => {
+      window.removeEventListener("pagehide", save);
+      // This component's layout cleanup runs before its iframe's ref is
+      // detached and the iframe leaves the DOM, so the frame is still readable.
+      save();
+    };
+  }, [sessionId, frameRef]);
+  return (
+    <iframe
+      ref={frameRef}
+      title="Iris workspace"
+      // oxlint-disable-next-line iframe-missing-sandbox -- Pinned same-origin host UI needs scripts and session cookies.
+      sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-top-navigation-by-user-activation"
+      className="h-full min-h-0 w-full flex-1 border-0"
+      onLoad={() =>
+        frameRef.current?.contentWindow?.postMessage(
+          { irisHostTheme: mode },
+          window.location.origin,
+        )
+      }
+      src={`/v1/iris/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}${mountTab ? `#${mountTab}` : ""}`}
+    />
+  );
+}
+
+/** "Last used Sep 26, 10:14 AM" for a session. */
+function lastUsed(session: IrisSession): string {
+  if (!session.updated_at) return "Your last session is ready to resume";
+  const when = new Date(session.updated_at * 1000).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `Last used ${when}`;
+}
+
+const INTER =
+  "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap";
+
+/** Inter is the airbrx typeface; the rest of the shell does not load it. */
+function loadInter() {
+  if (document.querySelector(`link[href="${INTER}"]`)) return;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = INTER;
+  document.head.appendChild(link);
 }

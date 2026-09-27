@@ -1,0 +1,651 @@
+/* Airbrx workspace kernel: brand tokens and the shared workspace layout,
+   copied from the first agent workspace (airbrx-branding skill v1.0), generic.
+   Orange is the only accent and is identical in both themes; dark mode flips
+   the neutrals only. Radii stay on the 12/16/20 scale.
+
+   Fonts are not loaded here: the page links Inter (and IBM Plex Mono if it
+   wants it) itself.
+
+   Layout: .topbar (.brand, #tabs, .actions), then .workspace, a grid of the
+   open tab (.home or .view) and the dock (.chat, or .dock-rail when collapsed).
+   body.docked marks a tab with the chat beside it; body.collapsed shrinks the
+   dock column to the 44 px rail. */
+:root {
+  --accent: #fd6c1d;
+  --accent-light: #ff8c42;
+  --accent-dark: #e65a0d;
+  --accent-tint: rgba(253, 108, 29, 0.08);
+  --accent-tint2: rgba(253, 108, 29, 0.14);
+  --ink: #1a1a1a;
+  --body: #505050;
+  --muted: #8a8a8a;
+  --surface: #f5f5f5;
+  --bg: #ffffff;
+  --page: #f0efed;
+  --border: #e8e8e8;
+  --border-strong: #d4d4d4;
+  --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.06), 0 0 1px rgba(0, 0, 0, 0.08);
+  --card-shadow-hover:
+    0 8px 24px rgba(0, 0, 0, 0.1), 0 0 1px rgba(0, 0, 0, 0.08);
+  --radius-sm: 12px;
+  --radius: 16px;
+  --radius-lg: 20px;
+  --urgent: #dc2626;
+  --urgent-tint: rgba(220, 38, 38, 0.07);
+  --warn: #d97706;
+  --warn-tint: rgba(217, 119, 6, 0.08);
+  --ok: #16a34a;
+  --ok-tint: rgba(22, 163, 74, 0.07);
+  --info: #2563eb;
+  --info-tint: rgba(37, 99, 235, 0.07);
+  --font: "Inter", system-ui, -apple-system, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --dock-width: 380px;
+  --rail-width: 44px;
+}
+:root[data-theme="dark"] {
+  --bg: #1a1a1a;
+  --page: #121212;
+  --surface: #242424;
+  --ink: #e0e0e0;
+  --body: #a0a0a0;
+  --muted: #7a7a7a;
+  --border: #333333;
+  --border-strong: #444444;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+html {
+  height: 100%;
+}
+body {
+  font-family: var(--font);
+  background: var(--page);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+[hidden] {
+  display: none !important;
+}
+a {
+  color: var(--accent-dark);
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 11px;
+}
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* Top bar: brand, the tabs, actions */
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  padding: 10px 20px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand > img {
+  height: 20px;
+  display: block;
+}
+.brand-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+.brand-agent img {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+.eyebrow,
+.section-title,
+.kpi .label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+/* Tabs wrap rather than scroll: a tab behind an invisible sideways scroll is
+   a tab nobody finds. On a narrow frame the actions drop to their own line. */
+#tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+#tabs button,
+.actions {
+  white-space: nowrap;
+}
+#tabs button {
+  background: transparent;
+  color: var(--body);
+  font-weight: 500;
+  padding: 7px 12px;
+}
+#tabs button:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+#tabs button.active {
+  background: var(--accent-tint);
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+/* Workspace: the open tab on the left, the chat docked on the right */
+.workspace {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--dock-width);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px 20px 20px;
+}
+body.collapsed .workspace {
+  grid-template-columns: minmax(0, 1fr) var(--rail-width);
+}
+.home,
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  overflow-y: auto;
+}
+.dock {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.dock-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  background: var(--bg);
+  color: var(--body);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.dock-rail img {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+.dock-rail span {
+  writing-mode: vertical-rl;
+  font-size: 12px;
+}
+.dock-rail:hover {
+  color: var(--accent-dark);
+  border-color: var(--accent);
+}
+
+/* Buttons */
+button {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  border: none;
+  transition: background 0.15s;
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+.primary {
+  background: var(--accent);
+  color: #fff;
+}
+.primary:hover:not(:disabled) {
+  background: var(--accent-dark);
+}
+.secondary {
+  background: var(--bg);
+  color: var(--ink);
+  border: 1.5px solid var(--border-strong);
+  font-weight: 500;
+}
+.secondary:hover:not(:disabled) {
+  background: var(--surface);
+}
+.chip {
+  background: var(--bg);
+  color: var(--ink);
+  border: 1.5px solid var(--border-strong);
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.chip:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+button.link {
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+button.link:hover {
+  color: var(--ink);
+}
+.asks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+/* KPIs */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.kpi {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--card-shadow);
+  padding: 16px 20px;
+  position: relative;
+  overflow: hidden;
+}
+.kpi::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: var(--accent);
+}
+.kpi .value {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--accent);
+  line-height: 1.1;
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.kpi .note {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.kpi.unread .value {
+  color: var(--muted);
+}
+
+/* Notices, cards, section titles */
+.notice {
+  margin: 12px 20px 0;
+  background: var(--accent-tint);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 12px 16px;
+  color: var(--ink);
+  font-size: 13px;
+}
+.notice.error {
+  background: var(--urgent-tint);
+  border-left-color: var(--urgent);
+}
+.card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+  padding: 20px 22px;
+}
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.section-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.empty {
+  color: var(--muted);
+  padding: 16px 4px;
+  font-size: 13px;
+}
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--body);
+  vertical-align: top;
+}
+tr.row {
+  cursor: pointer;
+}
+tr.row:hover td {
+  background: var(--surface);
+}
+tr.row.selected td {
+  background: var(--accent-tint);
+}
+td strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* Badges */
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--body);
+  white-space: nowrap;
+}
+.badge.accent {
+  background: var(--accent-tint);
+  color: var(--accent-dark);
+}
+.badge.ok {
+  background: var(--ok-tint);
+  color: var(--ok);
+}
+.badge.warn {
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+.badge.urgent {
+  background: var(--urgent-tint);
+  color: var(--urgent);
+}
+.badge.info {
+  background: var(--info-tint);
+  color: var(--info);
+}
+
+/* Chat */
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.chat-head .section-title {
+  margin-bottom: 0;
+  flex: 1;
+}
+.context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+#messages,
+.messages {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 160px;
+  margin-bottom: 12px;
+}
+/* Direct children only: an answer's own list items are not chat bubbles. */
+#messages > li,
+.messages > li {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#messages li.user,
+.messages li.user {
+  background: var(--accent-tint);
+  color: var(--ink);
+  align-self: flex-end;
+  max-width: 90%;
+}
+#messages li.agent,
+.messages li.agent {
+  background: var(--surface);
+  color: var(--ink);
+  /* The answer is rendered into paragraphs and lists, with <br> for breaks. */
+  white-space: normal;
+}
+#messages li.agent > * + *,
+.messages li.agent > * + * {
+  margin-top: 6px;
+}
+#messages li.agent ul,
+#messages li.agent ol,
+.messages li.agent ul,
+.messages li.agent ol {
+  padding-left: 20px;
+}
+#messages li.agent ul,
+.messages li.agent ul {
+  list-style: disc;
+}
+#messages li.agent ol,
+.messages li.agent ol {
+  list-style: decimal;
+}
+#messages li.agent li + li,
+.messages li.agent li + li {
+  margin-top: 2px;
+}
+#messages li.agent table,
+.messages li.agent table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+#messages li.agent th,
+#messages li.agent td,
+.messages li.agent th,
+.messages li.agent td {
+  border: 1px solid var(--border);
+  padding: 3px 6px;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: normal;
+}
+#messages li.agent th,
+.messages li.agent th {
+  font-weight: 600;
+  background: var(--bg);
+}
+#messages li.agent code,
+.messages li.agent code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 4px;
+}
+#messages li.system,
+.messages li.system {
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 4px;
+}
+#messages li.error,
+.messages li.error {
+  background: var(--urgent-tint);
+  color: var(--urgent);
+}
+#messages li .retry,
+.messages li .retry {
+  margin-left: 8px;
+}
+#messages li.progress,
+.messages li.progress {
+  font-style: italic;
+}
+#messages li.progress::before,
+.messages li.progress::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+  animation: aw-pulse 1.2s ease-in-out infinite;
+}
+@keyframes aw-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+#composer textarea,
+textarea {
+  width: 100%;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  resize: vertical;
+}
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.composer-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+@media (max-width: 1100px) {
+  :root {
+    --dock-width: 320px;
+  }
+}
+@media (max-width: 760px) {
+  /* One column: the open tab, then the chat below it. */
+  body {
+    height: auto;
+    overflow: visible;
+  }
+  .topbar {
+    gap: 10px;
+    padding: 10px 16px;
+  }
+  /* Room for Omnigent's sidebar toggle, which floats over the top left. */
+  .brand {
+    margin-left: 44px;
+    min-height: 40px;
+  }
+  .actions {
+    flex-wrap: wrap;
+    white-space: normal;
+    margin-left: 0;
+  }
+  .workspace,
+  body.collapsed .workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    padding: 12px 16px 16px;
+  }
+  .dock-rail {
+    flex-direction: row;
+    justify-content: center;
+  }
+  .dock-rail span {
+    writing-mode: horizontal-tb;
+  }
+  .kpis {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #messages li.progress::before,
+  .messages li.progress::before {
+    animation: none;
+  }
+}

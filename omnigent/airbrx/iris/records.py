@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import date, datetime, timedelta, timezone
 
 from omnigent.airbrx.iris.runtime import TOOLS
 
@@ -66,18 +67,23 @@ def paired(items):
     :param items: Session items in chronological order.
     :returns: Pairs of (function_call_output item, bare tool name).
     """
+    return [(output, name) for output, name, _ in _paired_calls(items)]
+
+
+def _paired_calls(items):
+    """`paired`, keeping the function_call item each output was matched to."""
     calls, outputs = {}, {}
     for i in items:
         if i.get("type") == "function_call":
-            calls.setdefault(i.get("call_id"), []).append(bare_tool_name(i.get("name")))
+            calls.setdefault(i.get("call_id"), []).append(i)
         elif i.get("type") == "function_call_output":
             outputs.setdefault(i.get("call_id"), []).append(i)
     pairs = []
-    for call_id, names in calls.items():
+    for call_id, recorded in calls.items():
         # strict=False: a cancelled or still-running turn leaves a call with no
         # output yet, and the pairing should stop at the shorter side.
-        for name, output in zip(names, outputs.get(call_id, []), strict=False):
-            pairs.append((output, name))
+        for call, output in zip(recorded, outputs.get(call_id, []), strict=False):
+            pairs.append((output, bare_tool_name(call.get("name")), call))
     # Chronological, because callers pick the newest reference per tool.
     pairs.sort(key=lambda pair: pair[0].get("created_at", 0))
     return pairs
@@ -120,8 +126,27 @@ def report_references(items):
     `items` in chronological order. `created_at` is epoch seconds on the
     function_call_output item that carried the report.
     """
+    return [(tool, file_id, created_at) for tool, file_id, created_at, *_ in report_calls(items)]
+
+
+#: No arguments recorded, spelled the ways a host records "none".
+_NO_ARGUMENTS = (None, "", "{}")
+
+
+def report_calls(items):
+    """`report_references`, each with what the tool was asked and when.
+
+    (tool, file_id, created_at, arguments, called_at). `arguments` is the
+    call's recorded arguments as a dict (`{}` when none were recorded), or None
+    when they were recorded but cannot be read as a JSON object, so a caller
+    can tell "called with no arguments" from "called with arguments nobody can
+    read". `called_at` is epoch seconds on the function_call item itself: when
+    the call was made, not when its answer was recorded (`created_at`). Every
+    stored item carries a store-assigned `created_at`; a record without one
+    falls back to the output's.
+    """
     references = []
-    for item, tool in paired(items):
+    for item, tool, call in _paired_calls(items):
         if tool not in TOOLS:
             continue
         try:
@@ -129,7 +154,62 @@ def report_references(items):
         except (ValueError, TypeError):
             continue
         if isinstance(result, dict) and not result.get("error") and not result.get("error_code"):
+            arguments = _arguments(call.get("arguments"))
+            created_at = item.get("created_at", 0)
+            called_at = call.get("created_at", created_at)
             for download in result.get("downloads", []):
                 if download.get("filename") == "report.json":
-                    references.append((tool, download["file_id"], item.get("created_at", 0)))
+                    references.append(
+                        (tool, download["file_id"], created_at, arguments, called_at)
+                    )
     return references
+
+
+def _arguments(recorded):
+    if recorded in _NO_ARGUMENTS:
+        return {}
+    if isinstance(recorded, dict):
+        return recorded
+    try:
+        parsed = json.loads(recorded)
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+#: iris_overview's default window: this many completed UTC days, ending (end
+#: exclusive) on the day it runs. `iris.config.period` in the pinned archive.
+_CURRENT_PERIOD_DAYS = 7
+
+
+def reads_current_period(arguments: dict | None, called_at: float) -> bool:
+    """Whether an iris_overview call read the tenant's current period.
+
+    Called without dates, iris_overview reads the current period by definition:
+    the seven completed UTC days before the day it runs. Called with dates, it
+    read the current period only if the dates name exactly that window for the
+    UTC day the call was made (`called_at`, epoch seconds, from the
+    function_call item; see `report_calls`). The day the answer was recorded
+    does not decide it, so a call made at 23:59:58 UTC and answered at 00:00:04
+    is judged by the day it was made. Anything else, typically an older window
+    read to compare against, is not the overview.
+
+    Decided from what the tool was asked, never from what it found: a capture
+    that covered 3 of 7 days (`period_complete: false`) is still the current
+    period, and says so in its own metrics. Arguments that were recorded but
+    cannot be read are not assumed to be the default.
+
+    Shared by the workspace state (`routes.read_state`) and the account
+    ranking (`account.collect_captures`), so both mean the same capture.
+    """
+    if arguments is None:
+        return False
+    start, end = arguments.get("start_date"), arguments.get("end_date")
+    if start is None and end is None:
+        return True
+    try:
+        window = (date.fromisoformat(start), date.fromisoformat(end))
+    except (TypeError, ValueError):
+        return False
+    day = datetime.fromtimestamp(called_at, timezone.utc).date()
+    return window == (day - timedelta(days=_CURRENT_PERIOD_DAYS), day)

@@ -219,3 +219,827 @@ class TenantDisplayNames(unittest.TestCase):
         # Widening the allowed keys must not widen them to anything.
         with self.assertRaises(ValueError):
             self.parse([self.binding(nickname="db-prod")])
+
+
+# --- Workspace v2 state (docs/iris/WORKSPACE_V2.md, section 2) -------------------------
+#
+# The harness mounts stand-ins for the native session routes on the test app;
+# see tests/airbrx/test_iris_workspace_fixtures.py.
+
+import pytest  # noqa: E402
+
+from omnigent.airbrx.iris import routes as iris_routes  # noqa: E402
+from tests.airbrx.test_iris_workspace_fixtures import (  # noqa: E402
+    API,
+    AUDIT_ID,
+    FILES,
+    FRESH_OVERVIEW_ID,
+    INVESTIGATE_ID,
+    NOW,
+    OVERVIEW_ID,
+    PROPOSE_ID,
+    READ_AT,
+    SESSION,
+    IrisSession,
+    captured,
+    investigate_report,
+    make_client,
+    propose_report,
+    read_nothing,
+    respond,
+    tool_run,
+    worked,
+)
+from tests.airbrx.test_iris_workspace_fixtures import (  # noqa: E402
+    answer as answer_item,
+)
+from tests.airbrx.test_iris_workspace_fixtures import (  # noqa: E402
+    user as user_item,
+)
+
+
+def _state(monkeypatch, tmp_path, session):
+    response = make_client(monkeypatch, tmp_path, session).get(f"{API}/state")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _refresh(monkeypatch, tmp_path, session):
+    return make_client(monkeypatch, tmp_path, session).post(f"{API}/refresh", json={})
+
+
+def test_captured_at_is_the_overview_items_clock(monkeypatch, tmp_path):
+    body = _state(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    assert body["captured_at"] == READ_AT
+    # The same clock cache_age_seconds is measured on.
+    assert body["cache_age_seconds"] == NOW - body["captured_at"]
+
+
+def test_investigation_and_proposal_are_returned_whole(monkeypatch, tmp_path):
+    body = _state(monkeypatch, tmp_path, IrisSession(worked(), FILES))
+    assert body["investigation"] == FILES[INVESTIGATE_ID]
+    assert set(body["investigation"]) >= {"current", "previous", "findings", "evidence"}
+    assert body["proposal"] == FILES[PROPOSE_ID]
+    assert body["proposal"]["proposal_status"] == "validated"
+    assert body["proposal"]["proposal_view"]["rule_id"] == "report-cache"
+
+
+def test_the_newest_investigation_and_proposal_win(monkeypatch, tmp_path):
+    newer_investigation = {**investigate_report(), "message": "the newer comparison"}
+    newer_proposal = {**propose_report(), "proposal_status": "invalid"}
+    files = {**FILES, "inv-2": newer_investigation, "prop-2": newer_proposal}
+    items = [
+        *worked(),
+        *tool_run("iris_investigate", "inv-2", READ_AT + 20, "inv2"),
+        *tool_run("iris_propose", "prop-2", READ_AT + 21, "prop2"),
+    ]
+    body = _state(monkeypatch, tmp_path, IrisSession(items, files))
+    assert body["investigation"]["message"] == "the newer comparison"
+    assert body["proposal"]["proposal_status"] == "invalid"
+    assert body["report_times"]["iris_investigate"] == READ_AT + 20
+    assert body["report_times"]["iris_propose"] == READ_AT + 21
+
+
+def test_absent_investigation_and_proposal_are_null(monkeypatch, tmp_path):
+    body = _state(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    assert body["investigation"] is None
+    assert body["proposal"] is None
+
+
+def test_report_times_names_every_tool_and_null_when_absent(monkeypatch, tmp_path):
+    body = _state(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    assert body["report_times"] == {
+        "iris_audit": READ_AT + 2,
+        "iris_investigate": None,
+        "iris_overview": READ_AT,
+        "iris_propose": None,
+    }
+
+
+def test_a_refresh_keeps_the_investigation_and_the_proposal(monkeypatch, tmp_path):
+    """A refresh never calls investigate or propose, so bounding them would blank both tabs."""
+    response = _refresh(monkeypatch, tmp_path, IrisSession(worked(), FILES, respond))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["investigation"] == FILES[INVESTIGATE_ID]
+    assert body["proposal"] == FILES[PROPOSE_ID]
+    # Each says how old it is; the overview is this turn's.
+    assert body["report_times"]["iris_investigate"] == READ_AT + 8
+    assert body["report_times"]["iris_propose"] == READ_AT + 10
+    assert body["captured_at"] == NOW - 1
+    assert body["report_times"]["iris_overview"] == NOW - 1
+
+
+def test_a_refresh_still_bounds_the_overview_and_audit(monkeypatch, tmp_path):
+    """Only this turn's overview and audit count; an older audit is not passed off as fresh."""
+
+    def overview_only(text, at):
+        return [
+            *tool_run("iris_overview", FRESH_OVERVIEW_ID, at, "fresh-o"),
+            answer_item("Overview only.", at, "a-o"),
+        ]
+
+    response = _refresh(monkeypatch, tmp_path, IrisSession(captured(), FILES, overview_only))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["audit"] == {"findings": []}
+    assert body["report_times"]["iris_audit"] is None
+    assert body["captured_at"] == NOW - 1
+
+
+def test_a_refresh_that_read_nothing_is_still_a_409(monkeypatch, tmp_path):
+    """An investigation or proposal in the session does not stand in for an overview."""
+
+    response = _refresh(monkeypatch, tmp_path, IrisSession(worked(), FILES, read_nothing))
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize("tool", ["iris_investigate", "iris_propose"])
+@pytest.mark.parametrize("path", ["state", "refresh"])
+def test_a_cross_tenant_investigation_or_proposal_is_a_403(monkeypatch, tmp_path, tool, path):
+    foreign = {**FILES[INVESTIGATE_ID], "tenant_id": "someone-else"}
+    items = [*worked(), *tool_run(tool, "foreign", READ_AT + 20, "foreign")]
+    session = IrisSession(items, {**FILES, "foreign": foreign}, respond)
+    client = make_client(monkeypatch, tmp_path, session)
+    response = (
+        client.get(f"{API}/state") if path == "state" else client.post(f"{API}/refresh", json={})
+    )
+    assert response.status_code == 403
+    assert "someone-else" not in response.text
+
+
+def test_the_refresh_prompt_keeps_its_first_sentence(monkeypatch, tmp_path):
+    """W3's history reload recognises a refresh turn by this sentence, byte for byte."""
+    session = IrisSession(captured(), FILES, respond)
+    assert _refresh(monkeypatch, tmp_path, session).status_code == 200
+    (posted,) = [e for e in session.posted if e["type"] == "message"]
+    text = posted["data"]["content"][0]["text"]
+    assert text.startswith("Call iris_overview and iris_audit for the selected tenant. ")
+
+
+def test_existing_state_keys_are_unchanged(monkeypatch, tmp_path):
+    body = _state(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    assert body["overview"] == FILES[OVERVIEW_ID]
+    assert body["audit"] == FILES[AUDIT_ID]
+    assert body["rules"] == [
+        {"ruleId": "report-cache", "cacheHits": 80, "cacheMisses": 20, "totalExecutions": 100}
+    ]
+    assert body["rule_effectiveness_meta"] == {
+        "year": None,
+        "generatedAt": None,
+        "totalQueries": None,
+    }
+    assert body["stale"] is False
+    assert body["monitoring"] is None
+
+
+# --- Assets under OMNIGENT_IRIS_UI (WORKSPACE_V2.md, D1 and section 2 "Assets") --------
+
+UI = f"/v1/iris/sessions/{SESSION}/ui"
+
+
+@pytest.fixture
+def v2_ui(tmp_path, monkeypatch):
+    """A stand-in iris/ui/ tree (W3 writes the real one) and a stand-in kernel (W2)."""
+    import sys
+    import types
+
+    root = tmp_path / "iris-ui"
+    (root / "views").mkdir(parents=True)
+    (root / "index.html").write_text(
+        '<!doctype html><script src="kernel/dom.js"></script><script src="app.js"></script>'
+    )
+    (root / "app.js").write_text("// v2 app\n")
+    (root / "style.css").write_text("/* v2 */\n")
+    (root / "views" / "overview.js").write_text("// overview view\n")
+    (root / "secret.txt").write_text("not an app file\n")
+    # Files a partial match on the app names would serve.
+    (root / "app.jsx").write_text("// not the app\n")
+    (root / "views" / "overview.js.bak").write_text("// a backup\n")
+    (root / "old").mkdir()
+    (root / "old" / "app.js").write_text("// an old copy\n")
+    monkeypatch.setattr(iris_routes, "UI_ROOT", root, raising=False)
+
+    kernel = tmp_path / "kernel"
+    kernel.mkdir()
+    (kernel / "dom.js").write_text("// kernel dom\n")
+    (kernel / "unlisted.js").write_text("// not in the allowlist\n")
+    assets = types.ModuleType("omnigent.airbrx.workspace.assets")
+    assets.KERNEL_ASSETS = frozenset({"dom.js", "missing.js"})
+    assets.kernel_asset = lambda name: kernel / name
+    package = types.ModuleType("omnigent.airbrx.workspace")
+    package.assets = assets
+    monkeypatch.setitem(sys.modules, "omnigent.airbrx.workspace", package)
+    monkeypatch.setitem(sys.modules, "omnigent.airbrx.workspace.assets", assets)
+    monkeypatch.setenv("OMNIGENT_IRIS_UI", "v2")
+    return root
+
+
+def _ui_client(monkeypatch, tmp_path):
+    return make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+
+
+def test_v2_serves_the_new_index_without_host_js(v2_ui, monkeypatch, tmp_path):
+    for path in (f"{UI}/", f"{UI}/index.html"):
+        response = _ui_client(monkeypatch, tmp_path).get(path)
+        assert response.status_code == 200
+        assert response.text == (v2_ui / "index.html").read_text()
+        assert "host.js" not in response.text
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["x-frame-options"] == "SAMEORIGIN"
+        assert response.headers["content-type"].startswith("text/html")
+
+
+@pytest.mark.parametrize("name", ["app.js", "style.css", "views/overview.js"])
+def test_v2_serves_the_app_files_no_store(v2_ui, monkeypatch, tmp_path, name):
+    response = _ui_client(monkeypatch, tmp_path).get(f"{UI}/{name}")
+    assert response.status_code == 200
+    assert response.text == (v2_ui / name).read_text()
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_v2_serves_allowlisted_kernel_files_no_store(v2_ui, monkeypatch, tmp_path):
+    response = _ui_client(monkeypatch, tmp_path).get(f"{UI}/kernel/dom.js")
+    assert response.status_code == 200
+    assert response.text == "// kernel dom\n"
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize("name", ["iris-portrait.png", "airbrx-logo.png"])
+def test_v2_serves_the_pinned_images(v2_ui, monkeypatch, tmp_path, name):
+    response = _ui_client(monkeypatch, tmp_path).get(f"{UI}/assets/{name}")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, max-age=3600"
+    assert response.content[:4] == b"\x89PNG"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # Honesty rule 1: no synthetic or captured data, under v2 either.
+        "iris-state.json",
+        "demo-state.json",
+        # v2 does not serve or inject the pinned adapter, or the pinned app.
+        "host.js",
+        "theme.js",
+        "assets/PROVENANCE.md",
+        # Only the patterns are served, not whatever sits in the directory.
+        "secret.txt",
+        # The app names are matched whole: a prefix or substring match serves these.
+        "app.jsx",
+        "views/overview.js.bak",
+        "old/app.js",
+        # Encoded, so the client does not normalise the dot segment away.
+        "views/..%2Fsecret.txt",
+        "views/..%2F..%2Fsecret.txt",
+        "views/nested/overview.js",
+        "views/overview.css",
+        # The kernel's own allowlist, and a listed file that is not on disk.
+        "kernel/unlisted.js",
+        "kernel/missing.js",
+        "kernel/..%2Fapp.js",
+        "kernel/..%2F..%2Fsecret.txt",
+        "kernel/",
+    ],
+)
+def test_v2_serves_nothing_else(v2_ui, monkeypatch, tmp_path, name):
+    assert _ui_client(monkeypatch, tmp_path).get(f"{UI}/{name}").status_code == 404
+
+
+def test_v2_without_the_kernel_package_404s_kernel_files(v2_ui, monkeypatch, tmp_path):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "omnigent.airbrx.workspace.assets", None)
+    assert _ui_client(monkeypatch, tmp_path).get(f"{UI}/kernel/dom.js").status_code == 404
+
+
+def test_v2_is_read_per_request(v2_ui, monkeypatch, tmp_path):
+    client = _ui_client(monkeypatch, tmp_path)
+    assert "host.js" not in client.get(f"{UI}/index.html").text
+    monkeypatch.delenv("OMNIGENT_IRIS_UI")
+    assert "host.js" in client.get(f"{UI}/index.html").text
+
+
+@pytest.mark.parametrize("value", [None, "", "V2", "v1", "pinned", "1", " v2"])
+def test_anything_but_v2_serves_the_pinned_ui_as_before(v2_ui, monkeypatch, tmp_path, value):
+    if value is None:
+        monkeypatch.delenv("OMNIGENT_IRIS_UI")
+    else:
+        monkeypatch.setenv("OMNIGENT_IRIS_UI", value)
+    client = _ui_client(monkeypatch, tmp_path)
+    index = client.get(f"{UI}/index.html")
+    assert index.status_code == 200
+    assert '<script src="host.js"></script><script src="theme.js">' in index.text
+    assert index.text != (v2_ui / "index.html").read_text()
+    assert client.get(f"{UI}/host.js").status_code == 200
+    assert client.get(f"{UI}/theme.js").status_code == 200
+    for name in ("iris-state.json", "demo-state.json", "kernel/dom.js", "views/overview.js"):
+        assert client.get(f"{UI}/{name}").status_code == 404, name
+
+
+def test_assets_still_require_an_iris_session(v2_ui, monkeypatch, tmp_path):
+    client = _ui_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(iris_routes, "require_user", lambda request, provider: None)
+    assert client.get(f"{UI}/index.html").status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("package", "relpath"),
+    [
+        ("omnigent.airbrx.iris", "ui/index.html"),
+        ("omnigent.airbrx.iris", "ui/app.js"),
+        ("omnigent.airbrx.iris", "ui/views/overview.js"),
+        ("omnigent.airbrx.workspace", "ui/dom.js"),
+        ("omnigent.airbrx.workspace", "ui/brand.css"),
+    ],
+)
+def test_the_v2_ui_and_kernel_are_declared_package_data(package, relpath):
+    """Declared before the files exist, so W2 and W3 land into a wheel that already ships them.
+
+    test_airbrx_package_data.py checks the files on disk, which cannot see
+    `ui/` before it is written; this checks the declaration itself.
+    """
+    from tests.airbrx.test_airbrx_package_data import _declared_globs, _matches
+
+    assert _matches(_declared_globs().get(package, []), relpath)
+
+
+class _Unreadable(dict):
+    """Report files where any id not listed makes the native file route answer 500."""
+
+    def __missing__(self, file_id):
+        raise HTTPException(500, "file store unavailable")
+
+
+@pytest.mark.parametrize("tool", ["iris_investigate", "iris_propose"])
+@pytest.mark.parametrize("path", ["state", "refresh"])
+def test_an_unreadable_investigation_or_proposal_leaves_the_rest_of_state(
+    monkeypatch, tmp_path, tool, path
+):
+    """One failed fetch of an optional report nulls that report, not the whole read."""
+    items = [*worked(), *tool_run(tool, "gone", READ_AT + 20, "gone")]
+    session = IrisSession(items, FILES, respond)
+    session.files = _Unreadable(FILES)
+    client = make_client(monkeypatch, tmp_path, session)
+    response = (
+        client.get(f"{API}/state") if path == "state" else client.post(f"{API}/refresh", json={})
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    key = "investigation" if tool == "iris_investigate" else "proposal"
+    other = "proposal" if key == "investigation" else "investigation"
+    assert body[key] is None
+    assert body["report_times"][tool] is None
+    assert body[other] is not None
+    assert body["overview"] == FILES[FRESH_OVERVIEW_ID if path == "refresh" else OVERVIEW_ID]
+    assert body["audit"]["findings"]
+
+
+def test_an_unreadable_overview_still_fails_the_read(monkeypatch, tmp_path):
+    """Only the optional reports are isolated; the capture itself is not papered over."""
+    session = IrisSession(captured(), FILES)
+    session.files = _Unreadable({k: v for k, v in FILES.items() if k != OVERVIEW_ID})
+    client = make_client(monkeypatch, tmp_path, session)
+    assert client.get(f"{API}/state").status_code >= 400
+
+
+def test_readiness_names_the_automatic_first_collect_not_an_import(monkeypatch, tmp_path):
+    """The workspace shows this line verbatim; Iris collects, she does not import (iris #29)."""
+    response = make_client(monkeypatch, tmp_path, IrisSession()).get(f"{API}/readiness")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["turn_completed_here"] is False
+    assert body["unverified"] == [
+        "no model turn has completed in this session yet, so whether the execution host "
+        "can reach the model is unknown. The first time this workspace opens, it collects "
+        "a fresh overview from the host automatically, and that runs a model turn. Asking "
+        "Iris a question runs one too. This line goes away once a turn has completed."
+    ]
+    assert "import" not in " ".join(body["unverified"]).lower()
+
+
+def test_readiness_has_no_unverified_line_once_a_turn_completed(monkeypatch, tmp_path):
+    body = make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES)).get(
+        f"{API}/readiness"
+    )
+    assert body.json()["unverified"] == []
+
+
+# --- A page reload is not a Stop (WORKSPACE_V2.md, section 7 gate: "a reload mid-chat") --
+#
+# A reload aborts the page's in-flight `api/chat` fetch, so the server sees the
+# chat request's client disconnect. The turn itself runs in the native session,
+# and the reloaded page reads its answer back from history. Only the explicit
+# Stop (`api/cancel`) may interrupt it.
+
+import asyncio  # noqa: E402
+
+
+def _drive_chat_then_disconnect(app, session, *, answer_after: float):
+    """Send one chat request over raw ASGI whose client goes away as soon as it is sent.
+
+    Every `receive()` after the body answers `http.disconnect`, which is what the
+    server is handed when a browser reload aborts the fetch. `answer_after`
+    seconds later the native session records Iris's answer, as a turn that
+    carried on would.
+    """
+    body = json.dumps(
+        {"history": [{"role": "user", "content": "Why did the hit rate drop?"}], "deadline": 30}
+    ).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": f"{API}/chat",
+        "raw_path": f"{API}/chat".encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver"), (b"content-type", b"application/json")],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+    sent_body = False
+    messages = []
+
+    async def receive():
+        nonlocal sent_body
+        if not sent_body:
+            sent_body = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+
+    async def answer_later():
+        await asyncio.sleep(answer_after)
+        session.items.append(answer_item("The hit rate fell on Tuesday.", NOW, "a-late"))
+
+    async def main():
+        later = asyncio.create_task(answer_later())
+        try:
+            await asyncio.wait_for(app(scope, receive, send), timeout=20)
+        except asyncio.CancelledError:
+            # What the old adapter raised on a disconnect; the assertions say why it fails.
+            pass
+        finally:
+            later.cancel()
+
+    asyncio.run(main())
+    return messages
+
+
+def test_a_reload_mid_turn_does_not_interrupt_the_turn(monkeypatch, tmp_path):
+    session = IrisSession(captured(), FILES, lambda text, at: [])
+    client = make_client(monkeypatch, tmp_path, session)
+    _drive_chat_then_disconnect(client.app, session, answer_after=1.2)
+    kinds = [e["type"] for e in session.posted]
+    assert kinds == ["message"], f"a reload interrupted Iris's turn: native events {kinds}"
+    # The turn ran to its answer, which the reloaded page reads back from history.
+    assert any(i.get("id") == "a-late" for i in session.items)
+
+
+def test_stop_still_interrupts_the_turn(monkeypatch, tmp_path):
+    session = IrisSession(captured(), FILES)
+    response = make_client(monkeypatch, tmp_path, session).post(f"{API}/cancel", json={})
+    assert response.status_code == 200, response.text
+    assert [e["type"] for e in session.posted] == ["interrupt"]
+
+
+def test_a_turn_past_its_deadline_is_still_interrupted(monkeypatch, tmp_path):
+    """The adapter's own deadline is unchanged: it cancels the turn and says so."""
+    session = IrisSession(captured(), FILES, lambda text, at: [])
+    response = make_client(monkeypatch, tmp_path, session).post(
+        f"{API}/chat",
+        json={"history": [{"role": "user", "content": "Still there?"}], "deadline": 1},
+    )
+    assert response.status_code == 504
+    assert [e["type"] for e in session.posted] == ["message", "interrupt"]
+
+
+# --- `overview` is the tenant's current period, not the newest window read ----------------
+#
+# iris_overview takes optional start_date/end_date. Called without them it reads
+# the tenant's current period: the seven completed UTC days before the day it
+# runs. A mid-session question ("how did the week before compare?") makes Iris
+# call it again with an older window, and that report is newer than the capture.
+# Picking the newest report whatever its window put the comparison window in the
+# Overview tab after a reload.
+
+from tests.airbrx.test_iris_workspace_fixtures import metrics, summary_rows  # noqa: E402
+
+COMPARISON_ID = "file-overview-comparison"
+PARTIAL_ID = "file-overview-partial"
+
+
+def _with_arguments(run, arguments):
+    for item in run:
+        if item["type"] == "function_call":
+            item["arguments"] = json.dumps(arguments)
+    return run
+
+
+def _comparison_overview():
+    rows = summary_rows(12, "comparison")
+    report = FILES[OVERVIEW_ID]
+    return {
+        **report,
+        "message": "the comparison window",
+        "evidence": rows,
+        "metrics": metrics("2026-09-12", "2026-09-19", rows),
+    }
+
+
+def _partial_overview():
+    """3 of 7 days covered: the capture is incomplete, and it is still the current period."""
+    rows = summary_rows(24, "partial")[:3]
+    return {
+        **FILES[OVERVIEW_ID],
+        "message": "the partial current capture",
+        "incomplete": True,
+        "evidence": rows,
+        "metrics": {
+            **metrics("2026-09-24", "2026-09-27", rows),
+            "covered_days": 3,
+            "requested_days": 7,
+            "period_complete": False,
+        },
+    }
+
+
+def _compared(at=READ_AT + 20):
+    """After the capture, Iris read an older window to compare against."""
+    return [
+        user_item("How did the week before compare?", at - 2, "u-compare"),
+        *_with_arguments(
+            tool_run("iris_overview", COMPARISON_ID, at, "compare"),
+            {"start_date": "2026-09-12", "end_date": "2026-09-19"},
+        ),
+        answer_item("The week before was similar.", at + 2, "a-compare"),
+    ]
+
+
+def _files(**extra):
+    return {
+        **FILES,
+        COMPARISON_ID: _comparison_overview(),
+        PARTIAL_ID: _partial_overview(),
+        **extra,
+    }
+
+
+def test_a_newer_comparison_window_does_not_become_the_overview(monkeypatch, tmp_path):
+    body = _state(monkeypatch, tmp_path, IrisSession([*captured(), *_compared()], _files()))
+    assert body["overview"] == FILES[OVERVIEW_ID]
+    # Everything measured on the overview follows the one chosen.
+    assert body["captured_at"] == READ_AT
+    assert body["report_times"]["iris_overview"] == READ_AT
+    assert body["cache_age_seconds"] == NOW - READ_AT
+
+
+def test_a_partial_current_capture_is_still_the_current_period(monkeypatch, tmp_path):
+    items = [
+        *captured(),
+        *tool_run("iris_overview", PARTIAL_ID, READ_AT + 10, "partial"),
+        *_compared(READ_AT + 20),
+    ]
+    body = _state(monkeypatch, tmp_path, IrisSession(items, _files()))
+    assert body["overview"]["message"] == "the partial current capture"
+    assert body["overview"]["metrics"]["period_complete"] is False
+    assert body["report_times"]["iris_overview"] == READ_AT + 10
+
+
+def test_explicit_dates_naming_the_current_period_are_the_current_period(monkeypatch, tmp_path):
+    # READ_AT is 2026-09-27T00:21Z: the current period is 09-20 up to 09-27, end exclusive.
+    items = [
+        *captured(),
+        *_compared(READ_AT + 20),
+        *_with_arguments(
+            tool_run("iris_overview", PARTIAL_ID, READ_AT + 30, "explicit"),
+            {"start_date": "2026-09-20", "end_date": "2026-09-27"},
+        ),
+    ]
+    body = _state(monkeypatch, tmp_path, IrisSession(items, _files()))
+    assert body["overview"]["message"] == "the partial current capture"
+    assert body["captured_at"] == READ_AT + 30
+
+
+def test_only_a_comparison_window_is_no_current_overview(monkeypatch, tmp_path):
+    """The app auto-collects on a 409, which reads the current period."""
+    session = IrisSession(_compared(), _files())
+    response = make_client(monkeypatch, tmp_path, session).get(f"{API}/state")
+    assert response.status_code == 409
+    assert "the comparison window" not in response.text
+
+
+def test_a_refresh_answers_with_its_current_period_not_its_comparison(monkeypatch, tmp_path):
+    def refresh_then_compare(text, at):
+        return [
+            *tool_run("iris_overview", FRESH_OVERVIEW_ID, at, "fresh-o"),
+            *tool_run("iris_audit", AUDIT_ID, at, "fresh-a"),
+            *_with_arguments(
+                tool_run("iris_overview", COMPARISON_ID, at + 0.5, "fresh-c"),
+                {"start_date": "2026-09-12", "end_date": "2026-09-19"},
+            ),
+            answer_item("Read both.", at + 1, "a-both"),
+        ]
+
+    session = IrisSession(captured(), _files(), refresh_then_compare)
+    response = make_client(monkeypatch, tmp_path, session).post(f"{API}/refresh", json={})
+    assert response.status_code == 200, response.text
+    assert response.json()["overview"] == FILES[FRESH_OVERVIEW_ID]
+    assert response.json()["captured_at"] == NOW - 1
+
+
+def test_report_calls_carries_each_calls_arguments():
+    from omnigent.airbrx.iris.records import report_calls
+
+    items = [
+        *tool_run("iris_overview", "default", 10, "d"),
+        *_with_arguments(
+            tool_run("iris_overview", "dated", 11, "w"),
+            {"start_date": "2026-09-12", "end_date": "2026-09-19"},
+        ),
+        *tool_run("iris_overview", "garbled", 12, "g"),
+    ]
+    items[-2]["arguments"] = "{not json"
+    assert [(file_id, arguments) for _, file_id, _, arguments, _ in report_calls(items)] == [
+        ("default", {}),
+        ("dated", {"start_date": "2026-09-12", "end_date": "2026-09-19"}),
+        ("garbled", None),
+    ]
+
+
+# --- Follow-ups to #115 (review nits 1a, 2a, 2b, 2c; W3 busy 409) -------------------------
+
+#: 2026-09-27T00:00:00Z. READ_AT is 00:21 the same day.
+MIDNIGHT = READ_AT - 21 * 60
+
+
+def _straddling(window, call_at, output_at, file_id=OVERVIEW_ID, call_id="straddle"):
+    """An iris_overview call recorded at `call_at` whose output is recorded at `output_at`."""
+    run = _with_arguments(tool_run("iris_overview", file_id, output_at, call_id), window)
+    run[0]["created_at"] = call_at
+    return run
+
+
+def test_a_call_made_before_midnight_and_answered_after_is_current(monkeypatch, tmp_path):
+    """Called 09-26T23:59:58Z for 09-19..09-26 (that day's current period), answered 00:00:04."""
+    items = [
+        user_item("Read the tenant.", MIDNIGHT - 10, "u-straddle"),
+        *_straddling(
+            {"start_date": "2026-09-19", "end_date": "2026-09-26"}, MIDNIGHT - 2, MIDNIGHT + 4
+        ),
+    ]
+    body = _state(monkeypatch, tmp_path, IrisSession(items, FILES))
+    assert body["overview"] == FILES[OVERVIEW_ID]
+    assert body["captured_at"] == MIDNIGHT + 4
+
+
+def test_the_window_is_decided_by_when_the_call_was_made_not_answered(monkeypatch, tmp_path):
+    """Called on 09-26 for 09-20..09-27, the NEXT day's window, though answered on 09-27."""
+    items = [
+        *captured(MIDNIGHT - 600),
+        *_straddling(
+            {"start_date": "2026-09-20", "end_date": "2026-09-27"},
+            MIDNIGHT - 2,
+            MIDNIGHT + 4,
+            file_id=PARTIAL_ID,
+        ),
+    ]
+    body = _state(monkeypatch, tmp_path, IrisSession(items, _files()))
+    assert body["overview"] == FILES[OVERVIEW_ID]
+    assert body["captured_at"] == MIDNIGHT - 600
+
+
+def test_unreadable_recorded_arguments_are_not_the_current_period(monkeypatch, tmp_path):
+    """A newer overview whose arguments cannot be read is not assumed to be the default."""
+    garbled = tool_run("iris_overview", PARTIAL_ID, READ_AT + 10, "garbled")
+    garbled[0]["arguments"] = "{not json"
+    body = _state(monkeypatch, tmp_path, IrisSession([*captured(), *garbled], _files()))
+    assert body["overview"] == FILES[OVERVIEW_ID]
+    assert body["captured_at"] == READ_AT
+
+
+def test_only_unreadable_arguments_is_no_current_overview(monkeypatch, tmp_path):
+    garbled = tool_run("iris_overview", PARTIAL_ID, READ_AT, "garbled")
+    garbled[0]["arguments"] = "[1, 2]"
+    session = IrisSession(garbled, _files())
+    response = make_client(monkeypatch, tmp_path, session).get(f"{API}/state")
+    assert response.status_code == 409
+    assert "the partial current capture" not in response.text
+
+
+def test_a_refresh_that_produced_nothing_says_so_despite_an_older_comparison(
+    monkeypatch, tmp_path
+):
+    """The comparison was read before this turn; this turn read nothing at all."""
+    session = IrisSession(_compared(), _files(), read_nothing)
+    response = make_client(monkeypatch, tmp_path, session).post(f"{API}/refresh", json={})
+    assert response.status_code == 409
+    assert "produced no overview" in response.json()["detail"]
+
+
+def test_a_refresh_that_read_only_a_comparison_window_says_that(monkeypatch, tmp_path):
+    def compare_only(text, at):
+        return [
+            *_with_arguments(
+                tool_run("iris_overview", COMPARISON_ID, at, "fresh-c"),
+                {"start_date": "2026-09-12", "end_date": "2026-09-19"},
+            ),
+            answer_item("Read the week before.", at + 1, "a-cmp"),
+        ]
+
+    session = IrisSession(captured(), _files(), compare_only)
+    response = make_client(monkeypatch, tmp_path, session).post(f"{API}/refresh", json={})
+    assert response.status_code == 409
+    assert "read no current-period overview" in response.json()["detail"]
+
+
+def test_a_refresh_while_a_turn_runs_is_a_distinguishable_busy_409(monkeypatch, tmp_path):
+    """A reload during the first auto-collect: the orphan turn still runs.
+
+    The kernel's api() surfaces only `status` and the `detail` string, so the
+    busy answer is told apart by its detail, which is pinned here and differs
+    from both "no overview" answers.
+    """
+    session = IrisSession(captured(), FILES, respond, status="running")
+    response = make_client(monkeypatch, tmp_path, session).post(f"{API}/refresh", json={})
+    assert response.status_code == 409
+    assert response.json() == {"detail": iris_routes.BUSY_DETAIL}
+    assert "no overview" not in iris_routes.BUSY_DETAIL
+    assert "current-period" not in iris_routes.BUSY_DETAIL
+    assert session.posted == []
+
+
+def test_a_cancelled_handler_does_not_interrupt_the_turn(monkeypatch, tmp_path):
+    """Cancellation is teardown (a disconnect on a stack that cancels, or shutdown), not a Stop.
+
+    The reload test above never cancels the handler, so on its own it leaves the
+    `CancelledError` half of the old interrupt untested (review nit 1a).
+    """
+    session = IrisSession(captured(), FILES, lambda text, at: [])
+    client = make_client(monkeypatch, tmp_path, session)
+    body = json.dumps(
+        {"history": [{"role": "user", "content": "Why did the hit rate drop?"}], "deadline": 30}
+    ).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": f"{API}/chat",
+        "raw_path": f"{API}/chat".encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver"), (b"content-type", b"application/json")],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+    sent_body = False
+
+    async def receive():
+        nonlocal sent_body
+        if not sent_body:
+            sent_body = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await asyncio.Event().wait()  # the client never goes away on its own
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        pass
+
+    async def main():
+        handler = asyncio.create_task(client.app(scope, receive, send))
+        # Until the turn is posted and the watch has polled at least once.
+        for _ in range(100):
+            if session.posted:
+                break
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.7)
+        handler.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await handler
+        await asyncio.sleep(0.1)
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    leftover = asyncio.run(main())
+    kinds = [e["type"] for e in session.posted]
+    assert kinds == ["message"], f"a cancelled handler interrupted Iris's turn: {kinds}"
+    assert leftover == []
+
+
+def test_report_calls_carries_when_each_call_was_made():
+    """`called_at` is the function_call item's clock; `created_at` stays the output's."""
+    from omnigent.airbrx.iris.records import report_calls
+
+    straddle = _straddling({}, MIDNIGHT - 2, MIDNIGHT + 4)
+    unstamped = tool_run("iris_overview", "unstamped", 50, "u")
+    del unstamped[0]["created_at"]
+    assert [
+        (file_id, created_at, called_at)
+        for _, file_id, created_at, _, called_at in report_calls([*unstamped, *straddle])
+    ] == [("unstamped", 50, 50), (OVERVIEW_ID, MIDNIGHT + 4, MIDNIGHT - 2)]

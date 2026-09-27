@@ -4424,6 +4424,30 @@ def server(
         except Exception as exc:  # noqa: BLE001 - one agent must not take the server down
             click.echo(f"  warning: Eva is bound but did not register: {exc}", err=True)
 
+    # Tally, the read-only control-plane chief of staff. Eva's block, with
+    # Tally's names: no bindings means no registration and no launch provider.
+    from omnigent.airbrx.tally.config import bindings as tally_bindings
+    from omnigent.airbrx.tally.package import bundle_root as tally_bundle
+    from omnigent.airbrx.tally.package import portrait_path as tally_portrait
+
+    if tally_bindings():
+        # Her runner needs TALLY_PORTAL_MCP_URL and a resolvable reference to
+        # her portal read token, per session.
+        from omnigent.airbrx.tally.runtime import launch_env as tally_launch_env
+        from omnigent.runtime.launch_env import register as register_launch_env
+
+        register_launch_env(tally_launch_env)
+
+        if agent_avatar_store.get("tally") is None:
+            agent_avatar_store.put("tally", tally_portrait().read_bytes(), "image/png")
+
+        # One agent's bad bundle must cost it its place in the drawer and
+        # nothing else, the same posture as Iris and Eva above.
+        try:
+            _preregister_agent(tally_bundle(), agent_store, artifact_store, agent_cache)
+        except Exception as exc:  # noqa: BLE001 - one agent must not take the server down
+            click.echo(f"  warning: Tally is bound but did not register: {exc}", err=True)
+
     # Managed sandbox hosts (host_type="managed" sessions): parse the
     # config's `sandbox:` section up front so an operator typo stops
     # startup instead of 502-ing the first managed session.
