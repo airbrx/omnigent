@@ -17,6 +17,10 @@ vi.mock("@/lib/routing", () => ({
 }));
 vi.mock("@/lib/identity", () => ({ authenticatedFetch: vi.fn() }));
 vi.mock("@/lib/host", () => ({ getOmnigentHostConfig: vi.fn(() => ({})) }));
+const health = vi.hoisted(() => ({ hostOnline: undefined as boolean | null | undefined }));
+vi.mock("@/hooks/RunnerHealthProvider", () => ({
+  useSessionHostOnline: () => health.hostOnline,
+}));
 const theme = vi.hoisted(() => ({ mode: "light" as "light" | "dark" }));
 vi.mock("@/components/theme/useResolvedThemeMode", () => ({
   useResolvedThemeMode: () => theme.mode,
@@ -27,6 +31,7 @@ beforeEach(() => {
   routing.params = {};
   routing.search = new URLSearchParams();
   theme.mode = "light";
+  health.hostOnline = undefined;
   vi.mocked(getOmnigentHostConfig).mockReturnValue({} as never);
 });
 
@@ -191,4 +196,83 @@ it("keeps the frame below the shell header, so the header cannot take the tab ba
   expect(clearance).toHaveAttribute("aria-hidden", "true");
   expect(clearance).toHaveClass("h-14", "md:h-12", "shrink-0");
   expect(clearance!.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+function hostStatus(status: "online" | "offline", post = 201) {
+  vi.mocked(authenticatedFetch).mockImplementation(async (url, init) => {
+    if (url === "/v1/tally")
+      return new Response(JSON.stringify({ agent_id: "agent-tally", bindings: [HOSTED] }));
+    if (url === "/v1/hosts")
+      return new Response(
+        JSON.stringify({
+          hosts: [{ host_id: "coordinator-host", name: "mac", owner: "abram", status }],
+        }),
+      );
+    if (url === "/v1/sessions" && init?.method === "POST")
+      return new Response(JSON.stringify({ id: "new-session", detail: "host offline" }), {
+        status: post,
+      });
+    return new Response("{}", { status: 404 });
+  });
+}
+
+function expectPortalTabs() {
+  for (const name of ["Analytics", "Agent management", "Sprint board"])
+    expect(screen.getByRole("tab", { name })).toBeInTheDocument();
+}
+
+it("an offline host shows Agent not connected, with the portal tabs still usable", async () => {
+  hostStatus("offline");
+  const { container } = show();
+  const panel = await screen.findByRole("status", { name: "Agent not connected" });
+  expect(panel).toHaveTextContent("Agent not connected");
+  expect(panel).toHaveTextContent("chat is unavailable");
+  expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+  expect(container.querySelector("[data-tally-header-clearance]")).not.toBeNull();
+  expectPortalTabs();
+  expect(screen.getByTitle("Portal: Analytics")).toHaveAttribute("src", "/gateway/app/#overview");
+  fireEvent.click(screen.getByRole("tab", { name: "Sprint board" }));
+  expect(screen.getByTitle("Portal: Sprint board")).toHaveAttribute("src", "/gateway/app/#board");
+});
+
+it("Retry rechecks the host and returns to Start once it is back online", async () => {
+  hostStatus("offline");
+  show();
+  await screen.findByRole("status", { name: "Agent not connected" });
+  hostStatus("online");
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("button", { name: "Start" })).toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "Agent not connected" })).toBeNull();
+});
+
+it("a start the offline host refuses shows Agent not connected, not a generic failure", async () => {
+  hostStatus("online", 409);
+  show();
+  fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+  expect(await screen.findByRole("status", { name: "Agent not connected" })).toBeInTheDocument();
+  expect(screen.queryByText(/Could not start Tally/)).toBeNull();
+  expectPortalTabs();
+  expect(routing.navigate).not.toHaveBeenCalled();
+});
+
+it("a hostless start failure keeps the plain error", async () => {
+  vi.mocked(authenticatedFetch).mockImplementation(async (url, init) => {
+    if (url === "/v1/tally")
+      return new Response(JSON.stringify({ agent_id: "agent-tally", bindings: [BINDING] }));
+    if (url === "/v1/sessions" && init?.method === "POST")
+      return new Response("{}", { status: 500 });
+    return new Response("{}", { status: 404 });
+  });
+  show();
+  fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not start Tally");
+  expect(screen.queryByRole("status", { name: "Agent not connected" })).toBeNull();
+});
+
+it("an open session whose host goes offline keeps its frame and says so", () => {
+  routing.params = { sessionId: "owned-session" };
+  health.hostOnline = false;
+  show();
+  expect(screen.getByRole("status", { name: "Agent not connected" })).toBeInTheDocument();
+  expect(screen.getByTitle("Tally workspace")).toBeInTheDocument();
 });
