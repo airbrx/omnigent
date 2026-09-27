@@ -1142,7 +1142,7 @@
                 inv.current,
               ),
             )
-          : null,
+          : "",
         el(
           "div",
           { class: "asks" },
@@ -1824,7 +1824,8 @@
       if (!String(text).startsWith(REFRESH_SENTENCE)) return null;
       const at = item && finite(item.created_at) ? item.created_at : Infinity;
       lastCollectTurn = Math.max(lastCollectTurn, at);
-      return "You had Iris collect a fresh overview.";
+      // The record does not say who started it; most are the page's own.
+      return "Iris collected a fresh overview.";
     },
     stripUser: (text) => String(text).replace(CONTEXT_NOTE, ""),
     transcript,
@@ -2214,6 +2215,8 @@
   $("native-chat").setAttribute("href", `/c/${encodeURIComponent(SESSION_ID)}`);
   $("composer").addEventListener("submit", (event) => {
     event.preventDefault();
+    // Enter still submits while Send is disabled: keep the question unsent.
+    if (busy) return;
     const input = $("input");
     const text = input.value;
     input.value = "";

@@ -887,9 +887,10 @@ it("rule 12: a reload rebuilds the chat from the session, and names a refresh tu
   ];
   await mount();
   await waitFor(() => expect(messages().querySelectorAll("li.agent")).toHaveLength(2));
-  expect(
-    within(messages()).getByText("You had Iris collect a fresh overview."),
-  ).toBeInTheDocument();
+  // The record does not say who started a collect turn: most are the page's
+  // own automatic one, so a reload does not say "You had" (QA final 2026-09-27).
+  expect(within(messages()).getByText("Iris collected a fresh overview.")).toBeInTheDocument();
+  expect(messages().textContent).not.toContain("You had Iris collect");
   expect(within(messages()).getByText("Is it safe?")).toBeInTheDocument();
   expect(messages().textContent).not.toContain("I am looking at");
   expect(messages().textContent).not.toContain("Call iris_overview");
@@ -1493,6 +1494,68 @@ it("F4 (review N5): a partial current capture (3 of 7 days) is not labelled an e
   expect(strayText(view())).toEqual([]);
 });
 
+// QA final 2026-09-27 R1: a session with a capture and no period comparison
+// (every fresh session after its first collect) showed "null" on Results.
+it("R1: Results with a capture and no period comparison shows no stray 'null'", async () => {
+  serve({}, "captured");
+  await mount("#results");
+  expect(view().textContent).toContain("Baseline and now");
+  expect(view().textContent).not.toContain("Iris's own period comparison");
+  expect(strayText(view())).toEqual([]);
+  expect(view().textContent).not.toMatch(/\bnull\b/);
+});
+
+/**
+ * Text nodes on the page with the word "null" or "undefined" in them, except
+ * where the page shows Iris's words or data verbatim: her answers (li.agent)
+ * and the raw JSON of what she read (pre.json), where null is a JSON value.
+ */
+function nullishText(root: Element) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const found: string[] = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.parentElement?.closest("li.agent, pre.json, script, style")) continue;
+    if (/\b(null|undefined)\b/i.test(n.textContent ?? "")) found.push(n.textContent!);
+  }
+  return found;
+}
+
+const CAPTURED_STATE = ADAPTER.captured.state.body as State;
+const NULLISH_STATES: [string, () => State][] = [
+  ["a fresh capture with no comparison", () => structuredClone(CAPTURED_STATE)],
+  [
+    "a partial capture",
+    () => {
+      const state = structuredClone(CAPTURED_STATE);
+      Object.assign(state.overview.metrics, {
+        covered_days: 3,
+        requested_days: 7,
+        period_complete: false,
+      });
+      return state;
+    },
+  ],
+  ["a full state with a comparison and a proposal", () => makeState()],
+];
+
+// The guard for R1's whole class: an empty branch passed to a native append
+// prints "null". Every tab, for each state, in the page and the shell.
+it.each(
+  NULLISH_STATES.flatMap(([name, state]) =>
+    TABS.map(([label, id]) => [label, name, id, state] as const),
+  ),
+)("the %s tab shows no stray 'null' or 'undefined' for %s", async (label, _, id, state) => {
+  serve({ state: () => json(state()) });
+  // Opened on another tab, so the click is a switch.
+  await mount(id === "overview" ? "#accounts" : "");
+  tab(label);
+  await waitFor(() => expect(window.location.hash).toBe(`#${id}`));
+  await waitFor(() => expect(view().textContent).toContain(label));
+  if (id === "accounts")
+    await waitFor(() => expect(view().textContent).not.toContain("Reading the account."));
+  expect(nullishText(document.body)).toEqual([]);
+});
+
 it("B4 (review N1): a turn that ends while the page reads its history still shows its answer", async () => {
   items = [userItem("u1", "How is the cache?")];
   sessionStatus = "running";
@@ -1713,4 +1776,26 @@ it("on a phone the Accounts table stacks, each cell named by its column", async 
   expect(phone).toMatch(/table\.accounts td \{[^}]*display: block/);
   expect(phone).toMatch(/table\.accounts thead \{[^}]*display: none/);
   expect(phone).toMatch(/td\[data-label\]::before \{[^}]*content: attr\(data-label\)/);
+});
+
+// QA final 2026-09-27: a question sent with Enter while the background refresh
+// of a stale capture ran never reached the server, and its text was gone from
+// the box. Send is disabled while Iris is busy; Enter now keeps the text too.
+it("Enter while a background refresh runs sends nothing and keeps the question in the box", async () => {
+  const held = deferred<Response>();
+  serve({ refresh: () => held.promise }, "stale_capture");
+  start();
+  await waitFor(() => expect(calls("refresh")).toHaveLength(1));
+  expect(document.getElementById("send")).toBeDisabled();
+  const input = screen.getByRole("textbox", { name: "Message Iris" }) as HTMLTextAreaElement;
+  fireEvent.change(input, { target: { value: "How is the cache?" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(input.value).toBe("How is the cache?");
+  expect(calls("chat")).toHaveLength(0);
+  held.resolve(replay(ADAPTER.stale_capture.refresh));
+  await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
+  expect(input.value).toBe("How is the cache?");
+  fireEvent.keyDown(input, { key: "Enter" });
+  await waitFor(() => expect(calls("chat")).toHaveLength(1));
+  expect(chatBodies()[0].history.at(-1).content).toBe("How is the cache?");
 });
