@@ -2,9 +2,9 @@
 
 The state tests use the item shapes Eva's deployment stores (bare server-prefixed
 names, results sometimes wrapped as ``{"result": "<json>"}``, a reused
-``call_id``). The portal's result shapes were not available when this was
-written, so the KPI tests pin the rule that matters more than any shape: a
-value that was not read, or not reported, is ``None`` with a reason, never 0.
+``call_id``). Fixtures follow the portal's real ``structuredContent`` shapes, small and
+synthetic. A value that was not read, or not reported, is ``None`` with a
+reason, never 0.
 """
 
 from __future__ import annotations
@@ -61,23 +61,74 @@ def answer(text: str = "2 agents tracked") -> dict[str, Any]:
     }
 
 
-BOARD = {
-    "columns": [
-        {
-            "name": "Needs decision",
-            "items": [
-                {"title": "Pick the Superset host", "type": "decision", "status": "open"},
-                {"title": "Old call", "type": "decision", "status": "done"},
-            ],
-        },
-        {
-            "name": "Blocked",
-            "items": [{"title": "Portal token rotation", "labels": ["blocker"]}],
-        },
-    ]
+SPRINT_MD = """# Sprint 14
+
+## Decisions needed from Abram
+
+- Pick the Superset host for the pilot dashboards
+  - context: two candidates, both priced
+- Approve the portal read-token rotation window
+1. Decide whether Tally v2 gets a write boundary
+
+## Blockers
+
+| Item | Owner | Since |
+|---|---|---|
+| Portal token rotation | ops | 2026-09-20 |
+| Superset SSO callback | platform | 2026-09-22 |
+
+## Done
+
+- Shipped the analytics overview
+"""
+BOARD = {"markdown": SPRINT_MD, "truncated": False}
+AGENT_ROW = {
+    "agent_id": "iris",
+    "label": "iris",
+    "run_count": 2,
+    "input_tokens": 1383,
+    "output_tokens": 692,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 1443,
+    "api_equivalent_usd": 0.023187,
+    "actual_charges_usd": None,
+    "subscription_fee_usd": None,
+    "databricks_list_price_usd": None,
+    "avoided_data_cost_usd": None,
+    "event_count": 2,
 }
-ANALYTICS = {"agents": [{"name": "iris"}, {"name": "eva"}], "estimated_savings_usd": 1200}
-HEALTH = {"status": "ok", "as_of": "2026-09-26T10:00:00Z"}
+ANALYTICS = {
+    "mode": "live_evidence",
+    "updated_at": "2026-09-26T10:00:00Z",
+    "summary": {
+        "run_count": 3,
+        "input_tokens": 2000,
+        "output_tokens": 900,
+        "api_equivalent_usd": 0.031,
+        "actual_charges_usd": None,
+        "databricks_list_price_usd": None,
+        "avoided_data_cost_usd": None,
+    },
+    "agents": [AGENT_ROW, {**AGENT_ROW, "agent_id": "eva", "label": "eva", "run_count": 1}],
+    "gateway": {},
+    "limitations": ["actual charges are not reported yet"],
+    "organization": {},
+    "hosts": [],
+    "source_coverage": {},
+    "airbrx_mcp": {},
+    "airbrx_pricing": {},
+    "model_gateway": {},
+    "pricing": {},
+    "run_count": 3,
+}
+HEALTH = {"status": "ok", "mode": "live_evidence_with_fixtures"}
+POLICY = {
+    "desired": {"version": 3},
+    "applied": {"version": 3},
+    "observed": {"version": 2},
+    "audit": [{"at": "2026-09-25T09:00:00Z", "action": "apply"}],
+    "storage": "append-only event log",
+}
 
 
 # --------------------------------------------------------------------------
@@ -111,8 +162,8 @@ def test_an_empty_session_says_so_and_every_kpi_is_unread() -> None:
         assert kpi["reason"] == "not read yet"
 
 
-def test_kpis_come_from_the_recorded_reads() -> None:
-    items = [
+def _all_reads() -> list[dict[str, Any]]:
+    return [
         call("portal__get_sprint_board", {}, "a"),
         out(BOARD, "a", at=100),
         call("portal__get_analytics_overview", {}, "b"),
@@ -120,57 +171,96 @@ def test_kpis_come_from_the_recorded_reads() -> None:
         call("portal__get_health", {}, "c"),
         out(HEALTH, "c", at=120),
     ]
-    state = workspace_state(items, BINDING)
+
+
+def test_kpis_come_from_the_portals_real_shapes() -> None:
+    state = workspace_state(_all_reads(), BINDING)
     k = state["kpis"]
-    assert k["decisions_waiting"]["value"] == 1
-    assert k["blockers"]["value"] == 1
+    # Two top-level decisions and one numbered; the nested context line is not one.
+    assert k["decisions_waiting"]["value"] == 3
+    assert k["blockers"]["value"] == 2
     assert k["agents_tracked"]["value"] == 2
     assert k["data_freshness"]["value"] == "2026-09-26T10:00:00Z"
+    assert state["blockers"] == ["Portal token rotation", "Superset SSO callback"]
+    assert state["decisions"][0] == "Pick the Superset host for the pilot dashboards"
     assert state["refreshed_at"] == 120
     assert state["empty"] is False
 
 
-def test_a_board_that_reports_counts_directly_is_read_directly() -> None:
-    board = {"decisions_waiting": 3, "blockers": []}
-    state = workspace_state([call("portal__get_sprint_board"), out(board)], BINDING)
-    assert state["kpis"]["decisions_waiting"]["value"] == 3
-    # An empty list the portal reported is a real zero: the board was read.
-    assert state["kpis"]["blockers"]["value"] == 0
+def test_api_equivalent_spend_is_labelled_an_estimate_and_charges_stay_null() -> None:
+    spend = workspace_state(_all_reads(), BINDING)["kpis"]["api_equivalent_usd"]
+    assert spend["value"] == 0.031
+    assert spend["basis"] == "estimated"
+    assert spend["actual_charges_usd"] is None
 
 
-def test_a_value_the_portal_did_not_report_is_unavailable_not_zero() -> None:
+def test_a_structured_content_envelope_is_unwrapped() -> None:
+    envelope = {"content": [{"type": "text", "text": "..."}], "structuredContent": HEALTH}
+    state = workspace_state([call("portal__get_health"), out(envelope)], BINDING)
+    assert state["health"]["data"] == HEALTH
+
+
+def test_a_missing_section_is_unavailable_not_zero() -> None:
+    board = {"markdown": "# Sprint 14\n\n## Done\n\n- a thing\n", "truncated": True}
+    k = workspace_state([call("portal__get_sprint_board"), out(board)], BINDING)["kpis"]
+    for name in ("decisions_waiting", "blockers"):
+        assert k[name]["value"] is None
+        assert "no" in k[name]["reason"] and "truncated" in k[name]["reason"]
+
+
+def test_an_empty_blockers_table_is_a_real_zero() -> None:
+    md = "## Decisions needed from Abram\n\nNone this week.\n\n## Blockers\n\n| Item |\n|---|\n"
+    k = workspace_state(
+        [call("portal__get_sprint_board"), out({"markdown": md, "truncated": False})], BINDING
+    )["kpis"]
+    assert k["blockers"]["value"] == 0
+    assert k["decisions_waiting"]["value"] == 0
+
+
+def test_a_blockers_section_without_a_table_is_unavailable() -> None:
+    md = "## Blockers\n\nSee the thread.\n"
+    k = workspace_state(
+        [call("portal__get_sprint_board"), out({"markdown": md, "truncated": False})], BINDING
+    )["kpis"]
+    assert k["blockers"]["value"] is None
+
+
+def test_values_the_portal_did_not_report_are_unavailable_not_zero() -> None:
     items = [
         call("portal__get_sprint_board", {}, "a"),
-        out({"sprint": "S14"}, "a"),
+        out({"truncated": False}, "a"),
         call("portal__get_analytics_overview", {}, "b"),
-        out({"cost_usd": 10}, "b"),
-        call("portal__get_health", {}, "c"),
-        out({"status": "ok"}, "c"),
+        out({"mode": "live_evidence", "summary": {"api_equivalent_usd": None}}, "b"),
     ]
     k = workspace_state(items, BINDING)["kpis"]
-    for name in ("decisions_waiting", "blockers", "agents_tracked", "data_freshness"):
+    for name in (
+        "decisions_waiting",
+        "blockers",
+        "agents_tracked",
+        "data_freshness",
+        "api_equivalent_usd",
+    ):
         assert k[name]["value"] is None, name
         assert k[name]["reason"] and k[name]["reason"] != "not read yet", name
 
 
-def test_a_boolean_is_not_a_count() -> None:
-    state = workspace_state(
-        [call("portal__get_analytics_overview"), out({"agents_tracked": True})], BINDING
-    )
-    assert state["kpis"]["agents_tracked"]["value"] is None
+def test_a_boolean_is_not_a_number() -> None:
+    bad = {**ANALYTICS, "summary": {"api_equivalent_usd": True}}
+    state = workspace_state([call("portal__get_analytics_overview"), out(bad)], BINDING)
+    assert state["kpis"]["api_equivalent_usd"]["value"] is None
 
 
 def test_policies_are_kept_per_agent_and_the_newest_wins() -> None:
     items = [
         call("portal__get_agent_policy", {"agent": "iris"}, "a"),
-        out({"version": 1}, "a", at=1),
+        out({**POLICY, "desired": {"version": 1}}, "a", at=1),
         call("portal__get_agent_policy", {"agent": "eva"}, "b"),
         out({"version": 7}, "b", at=2),
         call("portal__get_agent_policy", {"agent": "iris"}, "c"),
-        out({"version": 2}, "c", at=3),
+        out(POLICY, "c", at=3),
     ]
     policies = workspace_state(items, BINDING)["policies"]
-    assert policies["iris"]["data"] == {"version": 2}
+    assert policies["iris"]["data"]["storage"] == "append-only event log"
     assert policies["eva"]["data"] == {"version": 7}
 
 
@@ -485,3 +575,11 @@ def test_the_tabs_frame_the_portal_through_the_gateway_proxy() -> None:
         assert path in source
     assert "/eva/app" not in source
     assert "tallyHostTheme" in source
+
+
+def test_the_spend_tile_is_labelled_an_estimate() -> None:
+    page = (UI / "index.html").read_text()
+    assert 'id="kpi-spend"' in page
+    assert "estimated at published rates, not a charge" in page
+    source = (UI / "app.js").read_text()
+    assert "api_equivalent" in source and "actual_charges" in source

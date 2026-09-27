@@ -12,8 +12,8 @@ says so, and it never falls back to sample data.
 
 **Missing is never zero.** Every KPI carries a value or ``None``, and ``None``
 comes with the reason: not read yet, or read and not reported by the portal.
-The portal's result shapes are read defensively, because this module was
-written without the portal's source in front of it.
+The shapes read here are the portal's own ``structuredContent`` (docs/tally/
+RUNBOOK.md, "Tool results"); anything outside them is read defensively.
 
 **Refresh is a turn** that asks Tally to make her four reads and write nothing.
 
@@ -73,20 +73,9 @@ REFRESH_PROMPT = (
     "the portal did not report."
 )
 
-#: Board statuses that mean an item no longer waits on anyone.
-_DONE = frozenset(
-    {"done", "closed", "resolved", "complete", "completed", "shipped", "decided", "cancelled"}
-)
-#: Keys a health or analytics result may use for when its data is from.
-_FRESHNESS_KEYS = (
-    "data_freshness",
-    "freshness",
-    "as_of",
-    "last_updated",
-    "updated_at",
-    "generated_at",
-    "last_sync_at",
-)
+#: The sprint board sections the KPIs come from, matched on the heading text.
+DECISIONS_HEADING = "Decisions needed from Abram"
+BLOCKERS_HEADING = "Blockers"
 
 
 class ChatMessage(BaseModel):
@@ -125,9 +114,12 @@ def _decode(output: Any) -> Any:
             return None
     if isinstance(value, dict) and set(value) == {"result"} and isinstance(value["result"], str):
         try:
-            return json.loads(value["result"])
+            value = json.loads(value["result"])
         except ValueError:
             return None
+    # An MCP CallToolResult recorded whole: the data is its structuredContent.
+    if isinstance(value, dict) and isinstance(value.get("structuredContent"), dict):
+        return value["structuredContent"]
     return value
 
 
@@ -167,112 +159,115 @@ def _count(value: Any) -> int | None:
     return value
 
 
-def _board_items(board: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """The board's items, flat, or None when the board has no item list at all."""
-    for key in ("items", "cards", "tasks", "issues"):
-        value = board.get(key)
-        if isinstance(value, list):
-            return [x for x in value if isinstance(x, dict)]
-    columns = board.get("columns") or board.get("lanes")
-    if not isinstance(columns, list):
+def _number(value: Any) -> float | int | None:
+    """A number, or None. ``null`` in the portal means unavailable, never zero."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    found = False
-    items: list[dict[str, Any]] = []
-    for column in columns:
-        if not isinstance(column, dict):
+    return value
+
+
+def markdown_section(markdown: str, heading: str) -> list[str] | None:
+    """The lines under ``## <heading>`` up to the next ``#``/``##`` heading.
+
+    ``None`` when the heading is absent, which is "unavailable", not zero.
+    Deeper headings (``###``) stay inside the section.
+    """
+    lines = markdown.replace("\r\n", "\n").split("\n")
+    for n, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("## ") and stripped[3:].strip().lower() == heading.lower():
+            body: list[str] = []
+            for rest in lines[n + 1 :]:
+                marker = rest.lstrip()
+                if marker.startswith(("# ", "## ")):
+                    break
+                body.append(rest)
+            return body
+    return None
+
+
+_LIST_ITEM = ("- ", "* ", "+ ")
+
+
+def decision_items(markdown: str) -> list[str] | None:
+    """The top-level list items under "Decisions needed from Abram".
+
+    Nested items belong to the item above them and are not counted.
+    """
+    section = markdown_section(markdown, DECISIONS_HEADING)
+    if section is None:
+        return None
+    items: list[str] = []
+    for line in section:
+        if not line or line[0].isspace():
             continue
-        name = column.get("name") or column.get("title") or column.get("id")
-        for key in ("items", "cards", "tasks"):
-            value = column.get(key)
-            if isinstance(value, list):
-                found = True
-                items.extend({**x, "_column": name} for x in value if isinstance(x, dict))
-                break
-    return items if found else None
+        head, _, rest = line.partition(" ")
+        if line.startswith(_LIST_ITEM):
+            items.append(line[2:].strip())
+        elif head.endswith((".", ")")) and head[:-1].isdigit() and rest.strip():
+            items.append(rest.strip())
+    return items
 
 
-def _tags(item: dict[str, Any]) -> set[str]:
-    """Every label-like string on an item, lowercased."""
-    out: set[str] = set()
-    for key in ("type", "kind", "category", "status", "state", "column", "_column"):
-        value = item.get(key)
-        if isinstance(value, str):
-            out.add(value.lower())
-    for key in ("labels", "tags"):
-        value = item.get(key)
-        if isinstance(value, list):
-            out.update(v.lower() for v in value if isinstance(v, str))
-    return out
+def _cells(row: str) -> list[str]:
+    inner = row.strip()
+    if inner.startswith("|"):
+        inner = inner[1:]
+    if inner.endswith("|"):
+        inner = inner[:-1]
+    return [c.strip() for c in inner.split("|")]
 
 
-def _is_open(item: Any) -> bool:
-    if not isinstance(item, dict):
-        return True
-    for key in ("status", "state", "_column"):
-        value = item.get(key)
-        if isinstance(value, str) and value.lower() in _DONE:
-            return False
-    return True
+def _is_separator(row: str) -> bool:
+    cells = _cells(row)
+    return bool(cells) and all(c and set(c) <= set(":- ") and "-" in c for c in cells)
 
 
-def _board_count(
-    board: dict[str, Any], keys: tuple[str, ...], markers: tuple[str, ...]
-) -> tuple[int | None, str]:
-    """Count open board entries of one kind, or say why it cannot be counted."""
-    for key in keys:
-        if key not in board:
-            continue
-        value = board[key]
-        if isinstance(value, list):
-            return sum(1 for x in value if _is_open(x)), f"sprint board, {key}"
-        count = _count(value)
-        if count is not None:
-            return count, f"sprint board, {key}"
-    items = _board_items(board)
-    if items is None:
-        return None, "the sprint board did not report this"
-    matched = sum(
-        1 for item in items if _is_open(item) and any(m in t for t in _tags(item) for m in markers)
-    )
-    return matched, "sprint board items"
+def blocker_rows(markdown: str) -> list[str] | None:
+    """The first-column item of each row of the table under "Blockers".
+
+    ``None`` when the section is missing or holds no table (header and
+    separator), because then the board did not say. A table with a header and
+    no rows is a real zero.
+    """
+    section = markdown_section(markdown, BLOCKERS_HEADING)
+    if section is None:
+        return None
+    rows = [line for line in section if line.strip().startswith("|")]
+    if len(rows) < 2 or not _is_separator(rows[1]):
+        return None
+    items: list[str] = []
+    for row in rows[2:]:
+        cells = _cells(row)
+        if any(cells):
+            items.append(cells[0])
+    return items
 
 
-def _agents_tracked(analytics: dict[str, Any]) -> tuple[int | None, str]:
-    for key in ("agents_tracked", "agent_count"):
-        count = _count(analytics.get(key))
-        if count is not None:
-            return count, f"analytics, {key}"
-    agents = analytics.get("agents")
-    if isinstance(agents, (list, dict)):
-        return len(agents), "analytics, agents"
-    count = _count(agents)
-    if count is not None:
-        return count, "analytics, agents"
-    return None, "the analytics overview did not report this"
+def board_summary(board: Any) -> dict[str, Any] | None:
+    """Decisions and blockers parsed out of the sprint board's markdown."""
+    if not isinstance(board, dict) or not isinstance(board.get("markdown"), str):
+        return None
+    markdown = board["markdown"]
+    return {
+        "decisions": decision_items(markdown),
+        "blockers": blocker_rows(markdown),
+        "truncated": bool(board.get("truncated")),
+    }
 
 
-def _freshness(*sources: dict[str, Any] | None) -> tuple[Any, str]:
-    for label, source in zip(("health", "analytics"), sources, strict=False):
-        if not isinstance(source, dict):
-            continue
-        for key in _FRESHNESS_KEYS:
-            value = source.get(key)
-            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
-                return value, f"{label}, {key}"
-    return None, "the portal did not report when its data is from"
-
-
-def _kpi(read: dict[str, Any] | None, derive: Any) -> dict[str, Any]:
+def _kpi(read: dict[str, Any] | None, value: Any, source: str, missing: str) -> dict[str, Any]:
     """One KPI: a value with its source, or None with the reason."""
     if read is None:
         return {"value": None, "source": None, "reason": "not read yet", "at": None}
-    data = read["data"]
-    if not isinstance(data, dict):
-        return {"value": None, "source": None, "reason": "not reported", "at": read["at"]}
-    value, source = derive(data)
     if value is None:
-        return {"value": None, "source": None, "reason": source, "at": read["at"]}
+        return {"value": None, "source": None, "reason": missing, "at": read["at"]}
     return {"value": value, "source": source, "reason": None, "at": read["at"]}
+
+
+def _analytics(read: dict[str, Any] | None) -> dict[str, Any]:
+    data = read["data"] if read else None
+    return data if isinstance(data, dict) else {}
 
 
 def workspace_state(
@@ -311,24 +306,51 @@ def workspace_state(
     board = reads["get_sprint_board"]
     health = reads["get_health"]
 
-    freshness_source = health or analytics
+    overview = _analytics(analytics)
+    summary = overview.get("summary") if isinstance(overview.get("summary"), dict) else {}
+    agents = overview.get("agents")
+    updated_at = overview.get("updated_at")
+    parsed = board_summary(board["data"]) if board else None
+    truncated = " (the board was truncated)" if parsed and parsed["truncated"] else ""
+    decisions = parsed["decisions"] if parsed else None
+    blockers = parsed["blockers"] if parsed else None
     kpis = {
         "decisions_waiting": _kpi(
             board,
-            lambda b: _board_count(
-                b, ("decisions_waiting", "open_decisions", "decisions"), ("decision",)
-            ),
+            len(decisions) if decisions is not None else None,
+            f"sprint board, {DECISIONS_HEADING}",
+            f'the sprint board has no "{DECISIONS_HEADING}" section{truncated}',
         ),
         "blockers": _kpi(
-            board, lambda b: _board_count(b, ("blockers", "blocked"), ("blocked", "blocker"))
+            board,
+            len(blockers) if blockers is not None else None,
+            f"sprint board, {BLOCKERS_HEADING} table",
+            f'the sprint board has no "{BLOCKERS_HEADING}" table{truncated}',
         ),
-        "agents_tracked": _kpi(analytics, _agents_tracked),
+        "agents_tracked": _kpi(
+            analytics,
+            len(agents) if isinstance(agents, list) else None,
+            "analytics, agents",
+            "the analytics overview did not report agents",
+        ),
         "data_freshness": _kpi(
-            freshness_source,
-            lambda _: _freshness(
-                health["data"] if health else None, analytics["data"] if analytics else None
-            ),
+            analytics,
+            updated_at if isinstance(updated_at, str) and updated_at else None,
+            "analytics, updated_at",
+            "the analytics overview did not report when its data is from",
         ),
+        # An ESTIMATE at published rates, not a charge. actual_charges_usd is
+        # the only measured charge and is reported beside it, null or not.
+        "api_equivalent_usd": {
+            **_kpi(
+                analytics,
+                _number(summary.get("api_equivalent_usd")),
+                "analytics, summary.api_equivalent_usd",
+                "the analytics overview did not report API-equivalent spend",
+            ),
+            "basis": "estimated",
+            "actual_charges_usd": _number(summary.get("actual_charges_usd")),
+        },
     }
 
     stamps = [r["at"] for r in (analytics, board, health) if r and r.get("at")]
@@ -340,6 +362,8 @@ def workspace_state(
         "board": board,
         "health": health,
         "policies": policies,
+        "decisions": decisions,
+        "blockers": blockers,
         "kpis": kpis,
         "refreshed_at": refreshed_at,
         "errors": errors[-5:],

@@ -148,9 +148,11 @@
   /** Whether a field name says it is measured or estimated. Nothing is assumed. */
   function basisBadge(key) {
     const k = String(key).toLowerCase();
-    if (/estimat|advertis|project|forecast|potential/.test(k))
+    // api_equivalent_usd is a published-rate equivalent, not a charge;
+    // actual_charges_usd is the only measured charge.
+    if (/estimat|advertis|project|forecast|potential|api_equivalent/.test(k))
       return el("span", { class: "badge warn" }, "estimated");
-    if (/measured|actual|observed/.test(k))
+    if (/measured|actual_charges|observed/.test(k))
       return el("span", { class: "badge ok" }, "measured");
     return null;
   }
@@ -363,11 +365,12 @@
             ]),
           ),
         ),
-        readCard(
-          "Sprint board",
-          state.board,
-          "Tally has not read the sprint board in this session.",
+        itemList(
+          "Decisions needed from Abram",
+          state.decisions,
+          k.decisions_waiting,
         ),
+        itemList("Blockers", state.blockers, k.blockers),
       );
     } else if (view === "health") {
       container.append(
@@ -378,6 +381,8 @@
         ),
       );
     } else {
+      const agentsTable = agentsCard(state.analytics);
+      if (agentsTable) container.append(agentsTable);
       container.append(
         readCard(
           "Analytics overview",
@@ -388,20 +393,125 @@
     }
   }
 
+  /** One board section as a list, or unavailable with the reason. Never "0" for missing. */
+  function itemList(title, items, kpi) {
+    return el(
+      "div",
+      { class: "card detail", style: "margin-bottom:12px" },
+      el("h2", {}, title),
+      el(
+        "div",
+        { class: "sub" },
+        kpi && kpi.at ? `From the sprint board, read ${shortWhen(kpi.at)}` : "",
+      ),
+      Array.isArray(items)
+        ? items.length
+          ? el(
+              "ul",
+              { class: "rules" },
+              items.map((item) =>
+                el("li", {}, el("span", {}, item), el("span")),
+              ),
+            )
+          : el("p", { class: "muted small" }, "None on the board.")
+        : el(
+            "p",
+            { class: "muted small" },
+            `Unavailable: ${(kpi && kpi.reason) || "not read yet"}.`,
+          ),
+    );
+  }
+
+  function money(value) {
+    return typeof value === "number"
+      ? `$${value.toFixed(value < 1 ? 4 : 2)}`
+      : null;
+  }
+
+  /** Per-agent usage from the analytics overview. null reads unavailable. */
+  function agentsCard(read) {
+    const agents = read && read.data && read.data.agents;
+    if (!Array.isArray(agents)) return null;
+    const cell = (value) =>
+      value === null || value === undefined ? unavailable() : String(value);
+    return el(
+      "div",
+      { class: "card", style: "margin-bottom:12px" },
+      el("div", { class: "section-title" }, `Agents · ${agents.length}`),
+      el(
+        "table",
+        {},
+        el(
+          "thead",
+          {},
+          el(
+            "tr",
+            {},
+            el("th", {}, "Agent"),
+            el("th", {}, "Runs"),
+            el("th", {}, "Tokens in / out"),
+            el("th", {}, "API-equivalent ", basisBadge("api_equivalent_usd")),
+            el("th", {}, "Actual charges ", basisBadge("actual_charges_usd")),
+          ),
+        ),
+        el(
+          "tbody",
+          {},
+          agents.map((a) =>
+            el(
+              "tr",
+              {},
+              el(
+                "td",
+                {},
+                el("strong", {}, String(a.label || a.agent_id || "unnamed")),
+              ),
+              el("td", { class: "mono" }, cell(a.run_count)),
+              el(
+                "td",
+                { class: "mono" },
+                a.input_tokens === null || a.input_tokens === undefined
+                  ? unavailable()
+                  : `${a.input_tokens} / ${a.output_tokens ?? "unavailable"}`,
+              ),
+              el(
+                "td",
+                { class: "mono" },
+                money(a.api_equivalent_usd) || unavailable(),
+              ),
+              el(
+                "td",
+                { class: "mono" },
+                money(a.actual_charges_usd) || unavailable(),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   function renderKpis() {
     const k = (state && state.kpis) || {};
     const tiles = [
       ["kpi-decisions", k.decisions_waiting, "on the sprint board"],
       ["kpi-blockers", k.blockers, "open on the board"],
       ["kpi-agents", k.agents_tracked, "in analytics"],
-      ["kpi-freshness", k.data_freshness, "as the portal reports it"],
+      ["kpi-freshness", k.data_freshness, "analytics updated_at"],
+      [
+        "kpi-spend",
+        k.api_equivalent_usd,
+        "estimated at published rates, not a charge",
+      ],
     ];
     for (const [id, kpi, note] of tiles) {
       const known = kpi && kpi.value !== null && kpi.value !== undefined;
       $(id).textContent = known
         ? id === "kpi-freshness"
           ? freshnessText(kpi.value)
-          : String(kpi.value)
+          : id === "kpi-spend"
+            ? money(kpi.value)
+            : String(kpi.value)
         : UNREAD;
       const tile = $(id).parentElement;
       tile.classList.toggle("unread", !known);

@@ -28,7 +28,7 @@ The workspace tabs frame the portal's own pages through the existing
 same-origin gateway proxy (`omnigent/airbrx/gateway/proxy.py`):
 Analytics `/gateway/app/#overview`, Agent management `/gateway/app/#agents`,
 Sprint board `/gateway/app/#board`. The home view's KPIs (decisions waiting,
-blockers, agents tracked, data freshness) are derived from Tally's recorded tool
+blockers, agents tracked, data freshness, estimated API-equivalent spend) are derived from Tally's recorded tool
 results with no model call; a value she has not read, or the portal did not
 report, shows as a dash with the reason, never as zero.
 
@@ -136,6 +136,24 @@ Tally. Two shapes work with this code, and neither needs a code change:
   binding, which will not run.
 
 This is a finding to decide on, not something this change resolves.
+
+## Tool results
+
+What the workspace reads from each tool's `structuredContent`:
+
+- `get_analytics_overview`: the analytics object plus `run_count`. Agents
+  tracked is `len(agents)`; data freshness is `updated_at`.
+  `summary.api_equivalent_usd` is shown as **estimated** spend at published
+  rates, never as a charge; `actual_charges_usd` is the only measured charge
+  and shows as unavailable while it is `null`.
+- `get_sprint_board`: `{"markdown", "truncated"}`. Decisions waiting counts the
+  top-level list items under `## Decisions needed from Abram`; blockers counts
+  the rows of the table under `## Blockers`. A missing section, or a Blockers
+  section with no table, is unavailable, not zero.
+- `get_agent_policy`: desired, applied and observed state, `audit` and
+  `storage`, shown as read.
+- `get_health`: `status`, `mode` and, when hosted, `hosting` and
+  `analytics_source`, shown as read.
 
 ## Readiness
 
