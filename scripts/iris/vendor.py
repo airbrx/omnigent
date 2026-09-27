@@ -60,7 +60,7 @@ files = subprocess.check_output(
 # `theme.js`) is out too. v2 is the only workspace since the cutover (W5), the
 # host never serves the pinned app, and `airbrx/iris` marks `ui/` dev-only. From
 # `ui/` only the images the v2 route reads out of the archive travel, with
-# their provenance note (`routes._PINNED_IMAGES`).
+# their provenance note (`ui_assets.PINNED_IMAGES`).
 allowed = [
     p for p in files if p.startswith(("iris/", "omnigent/", "ui/assets/")) or p == "pyproject.toml"
 ]
