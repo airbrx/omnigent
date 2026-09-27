@@ -27,6 +27,7 @@ from omnigent.host.connect import (
     HostRetryableConnectionError,
     _augment_user_path,
     _build_runner_env,
+    _installer_path,
     _reexec_self,
     _RunnerHandle,
     _should_auto_upgrade,
@@ -4395,6 +4396,83 @@ def test_reexec_self_really_reexecs_under_python_m(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr[-800:]
     assert "REEXEC_OK ['--server', 'https://x.example']" in result.stdout
+
+
+# ── installer PATH hint (_installer_path) ──────────
+
+
+def _make_fake_uv(bin_dir: Path) -> Path:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    uv = bin_dir / "uv"
+    uv.write_text("#!/bin/sh\n")
+    uv.chmod(0o755)
+    return uv
+
+
+def _dirs_with_uv(path: str) -> list[str]:
+    return [d for d in path.split(os.pathsep) if os.access(os.path.join(d, "uv"), os.X_OK)]
+
+
+def test_installer_path_finds_uv_under_python_m_launch(tmp_path: Path) -> None:
+    """The supervised service runs ``python -m omnigent.host.service_entry``,
+    so ``sys.argv[0]`` is a ``.py`` file under site-packages, not a launcher.
+    ``uv`` next to the interpreter must still land on the installer's PATH,
+    and the site-packages dir must not."""
+    venv_bin = tmp_path / "venv" / "bin"
+    _make_fake_uv(venv_bin)
+    executable = venv_bin / "python"
+    executable.write_text("#!/bin/sh\n")
+    argv0 = tmp_path / "venv" / "lib" / "site-packages" / "omnigent" / "host" / "service_entry.py"
+    argv0.parent.mkdir(parents=True)
+    argv0.write_text("")
+    home = tmp_path / "home"
+    home.mkdir()
+
+    path = _installer_path(
+        argv0=str(argv0),
+        executable=str(executable),
+        environ={"PATH": "/usr/bin:/bin"},
+        home=str(home),
+    )
+
+    assert _dirs_with_uv(path) == [str(venv_bin)]
+    assert str(argv0.parent) not in path.split(os.pathsep)
+
+
+def test_installer_path_keeps_console_script_dir(tmp_path: Path) -> None:
+    """A console-script launch (``~/.local/bin/omnigent``) still prepends the
+    launcher's own directory, where ``uv`` sits beside it."""
+    launcher_dir = tmp_path / "bin"
+    _make_fake_uv(launcher_dir)
+    argv0 = launcher_dir / "omnigent"
+    argv0.write_text("#!/bin/sh\n")
+    home = tmp_path / "home"
+    home.mkdir()
+
+    path = _installer_path(
+        argv0=str(argv0),
+        executable=str(tmp_path / "venv" / "bin" / "python"),
+        environ={"PATH": "/usr/bin:/bin"},
+        home=str(home),
+    )
+
+    assert path.split(os.pathsep)[0] == str(launcher_dir)
+    assert path.endswith("/usr/bin:/bin")
+
+
+def test_installer_path_keeps_user_bin_fallbacks(tmp_path: Path) -> None:
+    """``~/.local/bin`` and ``~/.cargo/bin`` stay on PATH regardless of how
+    the host was launched."""
+    home = tmp_path / "home"
+    path = _installer_path(
+        argv0=str(tmp_path / "sp" / "service_entry.py"),
+        executable=str(tmp_path / "venv" / "bin" / "python"),
+        environ={"PATH": "/usr/bin"},
+        home=str(home),
+    )
+    dirs = path.split(os.pathsep)
+    assert str(home / ".local" / "bin") in dirs
+    assert str(home / ".cargo" / "bin") in dirs
 
 
 def test_terminate_live_runners_sleeps_sessions_and_counts(tmp_path: Path) -> None:
