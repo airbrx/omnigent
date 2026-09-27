@@ -56,6 +56,11 @@
     (/\/tally\/sessions\/([^/]+)\/ui\//.exec(location.pathname) || [])[1] || "",
   );
   const POLL_MS = Number(document.body.dataset.pollMs) || 1500;
+  // A refresh that finds her runner still starting (after a deploy or idle it
+  // takes about two minutes to reconnect) waits 1, 2, 3... steps, at most 6,
+  // for up to 36 steps in all: 5s, 10s, 15s... for about three minutes.
+  const RETRY_MS = Number(document.body.dataset.retryMs) || 5000;
+  let retryCancelled = false;
 
   function el(tag, attrs, ...children) {
     const node = document.createElement(tag);
@@ -825,6 +830,48 @@
     return raw;
   }
 
+  /**
+   * Whether a failure is her runner not being up yet, which passes on its own.
+   * A 504 or any 4xx is an answer, not an absence, and is never retried.
+   */
+  function runnerStarting(error) {
+    const status = error && error.status;
+    const raw = (error && error.message) || "";
+    return (
+      status === 502 ||
+      status === 503 ||
+      (status === 500 && /native session operation failed/i.test(raw))
+    );
+  }
+
+  /**
+   * Refresh, waiting out a runner that is still starting. Only refresh does
+   * this: a failed chat turn may already have been posted, and resending it
+   * would ask Tally twice, while a second refresh only reads the portal again.
+   */
+  async function refreshWhileStarting() {
+    let waited = 0;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await api("refresh", {});
+      } catch (error) {
+        const delay = Math.min(attempt, 6) * RETRY_MS;
+        if (
+          !runnerStarting(error) ||
+          retryCancelled ||
+          waited + delay > 36 * RETRY_MS
+        )
+          throw error;
+        showProgress("Tally is starting up… retrying");
+        await new Promise((resolve) => {
+          setTimeout(resolve, delay);
+        });
+        waited += delay;
+        if (retryCancelled) throw error;
+      }
+    }
+  }
+
   function setBusy(value) {
     busy = value;
     $("send").disabled = value;
@@ -1000,9 +1047,10 @@
     addMessage("system", "Refreshing: Tally is reading the portal.");
     await markExisting();
     const stopWatching = watchTurn(new Set());
+    retryCancelled = false;
     try {
       // Refresh answers with the state itself, as Iris's and Eva's do.
-      state = await api("refresh", {});
+      state = await refreshWhileStarting();
       await stopWatching();
       addMessage("system", "Refreshed: Tally has read the portal.");
       render();
@@ -1044,10 +1092,10 @@
     }
   });
   $("refresh").addEventListener("click", () => void refresh());
-  $("cancel").addEventListener(
-    "click",
-    () => void api("cancel", {}).catch(() => {}),
-  );
+  $("cancel").addEventListener("click", () => {
+    retryCancelled = true;
+    void api("cancel", {}).catch(() => {});
+  });
   window.addEventListener("hashchange", () => {
     showTab(tabFromHash(), true);
     renderView();
