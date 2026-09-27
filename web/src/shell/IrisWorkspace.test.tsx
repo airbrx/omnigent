@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getOmnigentHostConfig } from "@/lib/host";
 import { authenticatedFetch } from "@/lib/identity";
-import { IrisWorkspace, shortId } from "./IrisWorkspace";
+import { IrisWorkspace, resumableSession, shortId } from "./IrisWorkspace";
 
 const routing = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -44,8 +44,20 @@ const CATALOG = {
   bindings: [
     // One host the server can see and one it cannot: `true` and `null` are
     // both openable, so every existing drill-in test exercises that contract.
-    { tenant_id: "fixture", host_id: "approved-host", workspace: "/approved", fixture: true, host_online: true },
-    { tenant_id: "live-tenant", host_id: "quiet-host", workspace: "/live", fixture: false, host_online: null },
+    {
+      tenant_id: "fixture",
+      host_id: "approved-host",
+      workspace: "/approved",
+      fixture: true,
+      host_online: true,
+    },
+    {
+      tenant_id: "live-tenant",
+      host_id: "quiet-host",
+      workspace: "/live",
+      fixture: false,
+      host_online: null,
+    },
   ],
 };
 const ACCOUNT = {
@@ -53,8 +65,16 @@ const ACCOUNT = {
   tenants: 2,
   ranked: [
     {
-      tenant_id: "live-tenant", name: null, hit_rate: 0.5, hit_rate_denominator: 10, requests: 10,
-      cache_misses: 5, covered_days: 7, requested_days: 7, captured_at: 0, age_seconds: 120,
+      tenant_id: "live-tenant",
+      name: null,
+      hit_rate: 0.5,
+      hit_rate_denominator: 10,
+      requests: 10,
+      cache_misses: 5,
+      covered_days: 7,
+      requested_days: 7,
+      captured_at: 0,
+      age_seconds: 120,
     },
   ],
   quarantined: [{ tenant_id: "fixture", name: null, reason: "never_collected", detail: null }],
@@ -84,13 +104,17 @@ it("drills into a tenant through native session creation with that tenant's bind
   show();
   await screen.findByText("Never collected");
   // Ranked before quarantined, as the server ordered them.
-  expect(screen.getAllByRole("row").slice(1).map((r) => r.getAttribute("data-tenant"))).toEqual([
-    "live-tenant",
-    "fixture",
-  ]);
+  expect(
+    screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.getAttribute("data-tenant")),
+  ).toEqual(["live-tenant", "fixture"]);
   fireEvent.click(within(rowFor("fixture")).getByRole("button", { name: /^Open workspace/ }));
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
-  const create = vi.mocked(authenticatedFetch).mock.calls.find(([, init]) => init?.method === "POST");
+  const create = vi
+    .mocked(authenticatedFetch)
+    .mock.calls.find(([, init]) => init?.method === "POST");
   expect(create?.[0]).toBe("/v1/sessions");
   expect(JSON.parse(create?.[1]?.body as string)).toEqual({
     agent_id: "registered-iris",
@@ -98,7 +122,9 @@ it("drills into a tenant through native session creation with that tenant's bind
     workspace: "/approved",
   });
   // No model ran to build the list: the only POST is the drill-in.
-  expect(vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  expect(
+    vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST"),
+  ).toHaveLength(1);
 });
 
 it("opens native chat through the same tenant-bound create", async () => {
@@ -113,9 +139,14 @@ it("opens native chat through the same tenant-bound create", async () => {
 it("keeps drill-in available when the account request fails, and says why", async () => {
   serve({
     "/v1/iris/account": () =>
-      new Response(JSON.stringify({ detail: "The session list could not be read, so the account cannot be shown" }), {
-        status: 502,
-      }),
+      new Response(
+        JSON.stringify({
+          detail: "The session list could not be read, so the account cannot be shown",
+        }),
+        {
+          status: 502,
+        },
+      ),
   });
   show();
   expect(await screen.findByRole("alert")).toHaveTextContent("session list could not be read");
@@ -159,10 +190,14 @@ it("will not offer a tenant whose host the catalog reports offline, and never PO
   const button = within(down).getByRole("button", { name: /^Open workspace/ });
   expect(button).toBeDisabled();
   fireEvent.click(button);
-  expect(vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  expect(
+    vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST"),
+  ).toHaveLength(0);
   expect(routing.navigate).not.toHaveBeenCalled();
   // The other binding is unaffected: one sleeping host is not an outage.
-  expect(within(rowFor("live-tenant")).getByRole("button", { name: /^Open workspace/ })).not.toBeDisabled();
+  expect(
+    within(rowFor("live-tenant")).getByRole("button", { name: /^Open workspace/ }),
+  ).not.toBeDisabled();
 });
 
 it("offers a tenant whose host is online, with the same create request as before", async () => {
@@ -173,7 +208,9 @@ it("offers a tenant whose host is online, with the same create request as before
   expect(up).not.toHaveTextContent(/offline/);
   fireEvent.click(within(up).getByRole("button", { name: /^Open workspace/ }));
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
-  const create = vi.mocked(authenticatedFetch).mock.calls.find(([, init]) => init?.method === "POST");
+  const create = vi
+    .mocked(authenticatedFetch)
+    .mock.calls.find(([, init]) => init?.method === "POST");
   // host_online is a catalog fact, not a session parameter: the body is unchanged.
   expect(JSON.parse(create?.[1]?.body as string)).toEqual({
     agent_id: "registered-iris",
@@ -193,7 +230,9 @@ it("treats unknown host liveness as openable and says nothing about it", async (
   expect(unknown).not.toHaveTextContent(/unknown/);
   fireEvent.click(within(unknown).getByRole("button", { name: /^Open workspace/ }));
   await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
-  const create = vi.mocked(authenticatedFetch).mock.calls.find(([, init]) => init?.method === "POST");
+  const create = vi
+    .mocked(authenticatedFetch)
+    .mock.calls.find(([, init]) => init?.method === "POST");
   expect(JSON.parse(create?.[1]?.body as string)).toEqual({
     agent_id: "registered-iris",
     host_id: "quiet-host",
@@ -282,4 +321,265 @@ it("keeps enough of a UUID to tell two tenants apart", () => {
   expect(shortId("f65d9135-0ba3-4c58-8768-c48a1334041d")).not.toBe(
     shortId("f65d9136-0ba3-4c58-8768-c48a1334041d"),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Workspace v2 (docs/iris/WORKSPACE_V2.md): branded landing, Resume per
+// tenant, and the open-tenant handoff from the framed app.
+// ---------------------------------------------------------------------------
+
+function posts() {
+  return vi.mocked(authenticatedFetch).mock.calls.filter(([, init]) => init?.method === "POST");
+}
+
+it("brands the landing as Iris's, with her packaged portrait and the triage table as the picker", async () => {
+  serve();
+  show();
+  await screen.findByText("Never collected");
+  // Her portrait comes from the pinned archive through the existing route:
+  // no image is committed into the web bundle.
+  const portrait = document.querySelector("img");
+  expect(portrait).toHaveAttribute("src", "/v1/iris/portrait");
+  expect(screen.getByText("airbrx cache intelligence")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Iris workspace" })).toBeInTheDocument();
+  expect(document.querySelector('link[href*="family=Inter"]')).not.toBeNull();
+  // Multi-tenant: the account table is still how a tenant is chosen.
+  expect(screen.getByRole("table", { name: "Tenants in this account" })).toBeInTheDocument();
+  expect(screen.getByText(/Monitoring is unavailable/)).toBeInTheDocument();
+});
+
+// Both production tenants share one execution host. A match on the host alone
+// resumes whichever tenant was used last, which is the wrong tenant half the time.
+const SHARED = {
+  agent_id: "registered-iris",
+  bindings: [
+    {
+      tenant_id: "tenant-a",
+      host_id: "shared-host",
+      workspace: "/a",
+      fixture: false,
+      host_online: true,
+    },
+    {
+      tenant_id: "tenant-b",
+      host_id: "shared-host",
+      workspace: "/b",
+      fixture: true,
+      host_online: true,
+    },
+    {
+      tenant_id: "tenant-c",
+      host_id: "shared-host",
+      workspace: "/c",
+      fixture: false,
+      host_online: true,
+    },
+  ],
+};
+const RECENT = [
+  // Newest first, as the query asks for them.
+  { id: "session-b", host_id: "shared-host", workspace: "/b", updated_at: 1_790_000_300 },
+  { id: "session-elsewhere", host_id: "other-host", workspace: "/a", updated_at: 1_790_000_200 },
+  { id: "session-a", host_id: "shared-host", workspace: "/a", updated_at: 1_790_000_100 },
+];
+
+function serveShared() {
+  serve({
+    "/v1/iris": () => new Response(JSON.stringify(SHARED)),
+    "/v1/iris/account": () =>
+      new Response(JSON.stringify({ generated_at: 1, tenants: 3, ranked: [], quarantined: [] })),
+  });
+  const base = vi.mocked(authenticatedFetch).getMockImplementation();
+  vi.mocked(authenticatedFetch).mockImplementation(async (input, init) => {
+    if (String(input).startsWith("/v1/sessions?"))
+      return new Response(JSON.stringify({ data: RECENT }));
+    return base!(input, init);
+  });
+}
+
+it("matches a session to a tenant on host AND workspace, never the host alone", () => {
+  expect(resumableSession(SHARED.bindings[0], RECENT)?.id).toBe("session-a");
+  expect(resumableSession(SHARED.bindings[1], RECENT)?.id).toBe("session-b");
+  expect(resumableSession(SHARED.bindings[2], RECENT)).toBeUndefined();
+});
+
+it("resumes each tenant's own last session by navigating, with no POST", async () => {
+  serveShared();
+  show();
+  const resumeA = await screen.findByRole("button", { name: "Resume: tenant-a" });
+  // The recent-sessions read is the caller's own Iris sessions, newest first.
+  const read = vi
+    .mocked(authenticatedFetch)
+    .mock.calls.find(([url]) => String(url).startsWith("/v1/sessions?"));
+  const params = new URLSearchParams(String(read?.[0]).split("?")[1]);
+  expect(params.get("agent_id")).toBe("registered-iris");
+  expect(params.get("sort_by")).toBe("updated_at");
+  expect(params.get("visibility")).toBe("mine");
+  fireEvent.click(resumeA);
+  expect(routing.navigate).toHaveBeenCalledWith("/iris/session-a");
+  expect(posts()).toHaveLength(0);
+  // tenant-c shares the host but has no session in its workspace: New only.
+  const rowC = rowFor("tenant-c");
+  expect(within(rowC).queryByRole("button", { name: /^Resume/ })).not.toBeInTheDocument();
+  expect(within(rowC).getByRole("button", { name: "Open workspace: tenant-c" })).toBeEnabled();
+  // New beside Resume is still the tenant-bound create().
+  fireEvent.click(within(rowFor("tenant-b")).getByRole("button", { name: "New: tenant-b" }));
+  await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
+  expect(posts()).toHaveLength(1);
+  expect(JSON.parse(posts()[0][1]?.body as string)).toEqual({
+    agent_id: "registered-iris",
+    host_id: "shared-host",
+    workspace: "/b",
+  });
+});
+
+it("does not offer Resume or New for a tenant whose host is offline", async () => {
+  serveShared();
+  const base = vi.mocked(authenticatedFetch).getMockImplementation();
+  vi.mocked(authenticatedFetch).mockImplementation(async (input, init) => {
+    if (String(input) === "/v1/iris")
+      return new Response(
+        JSON.stringify({
+          ...SHARED,
+          bindings: SHARED.bindings.map((b) =>
+            b.tenant_id === "tenant-a" ? { ...b, host_online: false } : b,
+          ),
+        }),
+      );
+    return base!(input, init);
+  });
+  show();
+  const resumeA = await screen.findByRole("button", { name: "Resume: tenant-a" });
+  expect(resumeA).toBeDisabled();
+  expect(within(rowFor("tenant-a")).getByRole("button", { name: "New: tenant-a" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Resume: tenant-b" })).toBeEnabled();
+});
+
+describe("the iris.openTenant handoff from the framed workspace", () => {
+  async function mounted() {
+    routing.params = { sessionId: "owned-session" };
+    serve();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <IrisWorkspace />
+      </QueryClientProvider>,
+    );
+    // The listener checks the tenant against the catalog, so wait for it.
+    await waitFor(() => expect(client.getQueryData(["iris-workspace"])).toBeDefined());
+    return screen.getByTitle("Iris workspace") as HTMLIFrameElement;
+  }
+  function post(data: unknown, init: { origin?: string; source?: MessageEventSource | null } = {}) {
+    const frame = screen.getByTitle("Iris workspace") as HTMLIFrameElement;
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data,
+          origin: init.origin ?? window.location.origin,
+          source: init.source === undefined ? frame.contentWindow : init.source,
+        }),
+      );
+    });
+  }
+  const open = (tenant_id: unknown) => ({ type: "iris.openTenant", tenant_id });
+
+  it("opens a NEW session for a bound tenant through the existing create()", async () => {
+    const frame = await mounted();
+    expect(frame.contentWindow).not.toBeNull();
+    post(open("live-tenant"));
+    await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0][0]).toBe("/v1/sessions");
+    expect(JSON.parse(posts()[0][1]?.body as string)).toEqual({
+      agent_id: "registered-iris",
+      host_id: "quiet-host",
+      workspace: "/live",
+    });
+  });
+
+  it("ignores a message from a foreign origin", async () => {
+    await mounted();
+    post(open("live-tenant"), { origin: "https://evil.example" });
+    await act(async () => {});
+    expect(posts()).toHaveLength(0);
+    // The listener was live: the same message from the right origin opens.
+    post(open("live-tenant"));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+  });
+
+  it("ignores a same-origin message that did not come from the workspace frame", async () => {
+    await mounted();
+    post(open("live-tenant"), { source: window });
+    await act(async () => {});
+    expect(posts()).toHaveLength(0);
+    post(open("live-tenant"));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+  });
+
+  it("ignores a tenant the caller is not bound to, and anything that is not a tenant id", async () => {
+    await mounted();
+    post(open("someone-elses-tenant"));
+    post(open(42));
+    post(open(null));
+    post({ type: "iris.somethingElse", tenant_id: "live-tenant" });
+    post("iris.openTenant");
+    await act(async () => {});
+    expect(posts()).toHaveLength(0);
+    expect(routing.navigate).not.toHaveBeenCalled();
+    post(open("fixture"));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(JSON.parse(posts()[0][1]?.body as string).workspace).toBe("/approved");
+  });
+});
+
+it("with the v2 switch off, frames the pinned UI exactly as before and its messages open nothing", async () => {
+  // The switch is read per request by the asset route (D1), so the shell frames
+  // the same URL either way; what the pinned UI posts must not open anything.
+  routing.params = { sessionId: "owned-session" };
+  serve();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <IrisWorkspace />
+    </QueryClientProvider>,
+  );
+  await waitFor(() => expect(client.getQueryData(["iris-workspace"])).toBeDefined());
+  const frame = screen.getByTitle("Iris workspace") as HTMLIFrameElement;
+  expect(frame).toHaveAttribute("src", "/v1/iris/sessions/owned-session/ui/?theme=dark");
+  for (const token of [
+    "allow-scripts",
+    "allow-same-origin",
+    "allow-forms",
+    "allow-downloads",
+    "allow-top-navigation-by-user-activation",
+  ])
+    expect(frame.getAttribute("sandbox")?.split(" ")).toContain(token);
+  act(() => {
+    for (const data of [{ irisHostTheme: "light" }, { tenant_id: "live-tenant" }, "refresh"])
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data,
+          origin: window.location.origin,
+          source: frame.contentWindow,
+        }),
+      );
+  });
+  await act(async () => {});
+  expect(posts()).toHaveLength(0);
+  expect(routing.navigate).not.toHaveBeenCalled();
+  // No recent-sessions read inside a session: that is the landing's alone.
+  expect(
+    vi
+      .mocked(authenticatedFetch)
+      .mock.calls.some(([url]) => String(url).startsWith("/v1/sessions?")),
+  ).toBe(false);
+});
+
+it("with nothing to resume, the landing offers the one Open button per tenant, as before", async () => {
+  serve();
+  show();
+  await screen.findByText("Never collected");
+  expect(screen.getAllByRole("button", { name: /^Open workspace/ })).toHaveLength(2);
+  expect(screen.queryByRole("button", { name: /^Resume/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /^New/ })).not.toBeInTheDocument();
 });
