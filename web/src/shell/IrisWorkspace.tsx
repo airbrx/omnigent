@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useResolvedThemeMode } from "@/components/theme/useResolvedThemeMode";
 import { Button } from "@/components/ui/button";
 import { getOmnigentHostConfig } from "@/lib/host";
@@ -52,9 +52,62 @@ export function resumableSession(
 
 export { shortId } from "./IrisAccountView";
 
+/** The v2 workspace's tab ids, the only values its URL hash may carry (app.js TABS). */
+export const IRIS_TABS = [
+  "overview",
+  "findings",
+  "rules",
+  "proposals",
+  "evidence",
+  "results",
+  "accounts",
+] as const;
+type IrisTab = (typeof IRIS_TABS)[number];
+const tabKey = (sessionId: string) => `iris.tab:${sessionId}`;
+
+/** `#proposals` or `proposals` to the tab id, or nothing for anything else. */
+function knownTab(value: string | null | undefined): IrisTab | undefined {
+  const id = (value ?? "").replace(/^#/, "");
+  return (IRIS_TABS as readonly string[]).includes(id) ? (id as IrisTab) : undefined;
+}
+
+/** The tab this browser tab last showed for the session, checked on the way out. */
+function rememberedTab(sessionId: string): IrisTab | undefined {
+  try {
+    return knownTab(window.sessionStorage.getItem(tabKey(sessionId)));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Note which tab the frame shows, so a reload of the page reopens it.
+ *
+ * The frame keeps its tab in its own hash (tabs.js, via replaceState, so there
+ * is no event to follow); the shell mounts the frame from a URL it builds, so
+ * a page reload used to land on Overview. Only a known tab id is stored.
+ */
+function rememberTab(sessionId: string, frame: HTMLIFrameElement | null) {
+  let hash: string | undefined;
+  try {
+    hash = frame?.contentWindow?.location.hash;
+  } catch {
+    return; // Not readable (the frame navigated off-origin): keep what we had.
+  }
+  if (hash === undefined) return;
+  try {
+    const tab = knownTab(hash);
+    if (tab) window.sessionStorage.setItem(tabKey(sessionId), tab);
+    else window.sessionStorage.removeItem(tabKey(sessionId));
+  } catch {
+    // Storage unavailable: a reload opens Overview, as before.
+  }
+}
+
 export function IrisWorkspace() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const chatMode = searchParams.get("mode") === "chat";
   const mode = useResolvedThemeMode();
@@ -65,6 +118,22 @@ export function IrisWorkspace() {
   // and discard the conversation inside it, which is the one thing on this
   // page that cannot be recovered — so the mount value is captured once.
   const [mountTheme] = useState(mode);
+  // Same for the tab: read once per session, so the src never changes under
+  // it. Per session, because the route can move to another session in place.
+  const mountTabs = useRef(new Map<string, IrisTab | undefined>());
+  if (sessionId && !mountTabs.current.has(sessionId))
+    mountTabs.current.set(sessionId, rememberedTab(sessionId));
+  const mountTab = sessionId ? mountTabs.current.get(sessionId) : undefined;
+  useLayoutEffect(() => {
+    if (!sessionId) return;
+    const save = () => rememberTab(sessionId, frame.current);
+    window.addEventListener("pagehide", save);
+    return () => {
+      window.removeEventListener("pagehide", save);
+      // Layout cleanup runs before the frame leaves the DOM, so it is still readable.
+      save();
+    };
+  }, [sessionId]);
   // next-themes resolves after first paint, so the mount value can be a guess.
   // Posting on every change (and again on load, since a message sent before
   // the document exists goes nowhere) corrects it without a reload.
@@ -102,14 +171,14 @@ export function IrisWorkspace() {
     },
   });
   // The caller's recent Iris sessions, newest first, so a visit can go back
-  // to a tenant instead of adding a new session every time. Read only on the
-  // landing; a failure just means there is nothing to resume.
-  const recent = useQuery({
-    queryKey: ["iris-recent-sessions", data?.agent_id],
-    enabled: Boolean(!sessionId && data?.agent_id),
+  // to a tenant instead of adding a new session every time. Read on the
+  // landing, and inside a session only when the frame asks to open a tenant
+  // (resumeOrCreate below); a failure just means there is nothing to resume.
+  const recentQuery = (agentId: string | null | undefined) => ({
+    queryKey: ["iris-recent-sessions", agentId],
     queryFn: async (): Promise<IrisSession[]> => {
       const params = new URLSearchParams({
-        agent_id: data?.agent_id ?? "",
+        agent_id: agentId ?? "",
         limit: "50",
         sort_by: "updated_at",
         visibility: "mine",
@@ -122,6 +191,10 @@ export function IrisWorkspace() {
         return [];
       }
     },
+  });
+  const recent = useQuery({
+    ...recentQuery(data?.agent_id),
+    enabled: Boolean(!sessionId && data?.agent_id),
   });
   const resumable: Record<string, string> = {};
   const resumeIds: Record<string, string> = {};
@@ -170,12 +243,27 @@ export function IrisWorkspace() {
     }
   }
   // The v2 workspace's Accounts tab asks the shell to open another tenant.
-  // It never switches tenant inside its own session: the shell opens a NEW
-  // session through the same create() as the landing, and only for a
-  // message from its own frame, on its own origin, naming a bound tenant.
-  // The pinned UI never posts this, so without v2 the listener stays idle.
-  const openTenant = useRef(create);
-  openTenant.current = create;
+  // It never switches tenant inside its own session: the shell goes to the
+  // caller's last session on that tenant, matched as the landing's Resume
+  // matches (host AND workspace), and only when there is none opens a NEW one
+  // through the same create() as the landing. Only for a message from its own
+  // frame, on its own origin, naming a bound tenant. The pinned UI never
+  // posts this, so without v2 the listener stays idle.
+  async function resumeOrCreate(tenantId: string) {
+    const binding = data?.bindings.find((b) => b.tenant_id === tenantId);
+    if (!data?.agent_id || !binding) return;
+    // Offline refuses Resume as well as New, as on the landing; create() says why.
+    if (binding.host_online === false) return create(tenantId);
+    // Read at the moment of the handoff (not kept from mount), so a session
+    // opened a minute ago in another tab is found. A failed read resumes nothing.
+    const sessions = await queryClient.fetchQuery({ ...recentQuery(data.agent_id), staleTime: 0 });
+    const last = resumableSession(binding, sessions);
+    if (!last) return create(tenantId);
+    if (last.id === sessionId) return; // Already here.
+    navigate(`/${chatMode ? "c" : "iris"}/${encodeURIComponent(last.id)}`);
+  }
+  const openTenant = useRef(resumeOrCreate);
+  openTenant.current = resumeOrCreate;
   // One open at a time. A burst of messages (a double click in the frame, or
   // a page that posts in a loop) arrives before React re-renders, so `busy`
   // state would still read false for every one of them; a ref does not.
@@ -226,6 +314,15 @@ export function IrisWorkspace() {
   if (sessionId)
     return (
       <>
+        {/* AppShell lays its ChatHeader over <main>: absolute, top-0, z-30,
+            transparent, h-14 (md:h-12). Over a framed page it takes every
+            click in that band, which is where the v2 tab bar sits. The frame
+            starts below it instead. Heights pinned in ChatHeader.test.tsx. */}
+        <div
+          aria-hidden="true"
+          data-iris-header-clearance=""
+          className="h-14 shrink-0 bg-[#F0EFED] md:h-12 dark:bg-[#121212]"
+        />
         {error ? (
           <div
             role="alert"
@@ -249,7 +346,7 @@ export function IrisWorkspace() {
               window.location.origin,
             )
           }
-          src={`/v1/iris/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}`}
+          src={`/v1/iris/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}${mountTab ? `#${mountTab}` : ""}`}
         />
       </>
     );
