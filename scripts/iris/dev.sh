@@ -12,8 +12,8 @@
 # kills anything. Ctrl-C stops the viewer.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$HERE/../.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO="$(cd "$HERE/../.." && pwd -P)"
 PORT="${IRIS_VIEWER_PORT:-6790}"
 URL="http://127.0.0.1:$PORT/iris"
 OPEN=0
@@ -62,7 +62,8 @@ if [ -n "${IRIS_VIEWER_RUNS:-}" ]; then
 fi
 
 # A clean environment: the viewer never inherits CLAUDE_CODE_* or any token.
-CLEAN=(HOME="$HOME" PATH="$PATH" USER="${USER:-}" LANG="${LANG:-C.UTF-8}")
+# The viewer never serves Omnigent's web UI, so a fresh checkout skips building it.
+CLEAN=(HOME="$HOME" PATH="$PATH" USER="${USER:-}" LANG="${LANG:-C.UTF-8}" OMNIGENT_SKIP_WEB_UI=true)
 for name in IRIS_VIEWER_DEV_EMAIL IRIS_VIEWER_RELOAD IRIS_VIEWER_PUBLIC_URL; do
   if [ -n "${!name:-}" ]; then CLEAN+=("$name=${!name}"); fi
 done

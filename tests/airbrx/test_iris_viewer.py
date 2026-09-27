@@ -616,3 +616,90 @@ def test_dev_sh_never_kills_another_listener(body: dict | None) -> None:
             pass
     finally:
         server.shutdown()
+
+
+def stub_uv(tmp_path: Path) -> tuple[Path, Path]:
+    """A `uv` on PATH that records the environment and arguments it was started with."""
+    bin_dir, record = tmp_path / "bin", tmp_path / "uv-env.txt"
+    bin_dir.mkdir()
+    stub = bin_dir / "uv"
+    stub.write_text(f'#!/bin/sh\nenv > "{record}"\necho "ARGS $*" >> "{record}"\n')
+    stub.chmod(0o755)
+    return bin_dir, record
+
+
+@needs_lsof
+def test_dev_sh_starts_clean_and_skips_the_web_ui_build(tmp_path: Path) -> None:
+    # A fresh checkout's `uv run` builds the editable package; the viewer never
+    # serves Omnigent's web UI, so that build must be skipped.
+    bin_dir, record = stub_uv(tmp_path)
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "IRIS_VIEWER_PORT": str(free_port()),
+        "CLAUDE_CODE_FAKE": "leak",
+        "SECRET_TOKEN": "leak",
+    }
+    out = subprocess.run(
+        ["bash", str(DEV_SH)], capture_output=True, text=True, env=env, timeout=30
+    )
+    assert out.returncode == 0, out.stderr
+    started = record.read_text()
+    assert "OMNIGENT_SKIP_WEB_UI=true" in started.splitlines()
+    assert "leak" not in started
+    assert "--host 127.0.0.1" in started
+
+
+@needs_lsof
+def test_dev_sh_is_idempotent_through_a_symlinked_checkout(tmp_path: Path) -> None:
+    link = tmp_path / "checkout-link"
+    link.symlink_to(REPO)
+    server = serve({"ok": True, "app": "iris-viewer", "checkout": str(REPO.resolve())})
+    try:
+        env = {
+            "PATH": os.environ["PATH"],
+            "HOME": os.environ["HOME"],
+            "IRIS_VIEWER_PORT": str(server.server_address[1]),
+        }
+        out = subprocess.run(
+            ["bash", str(link / "scripts/iris/dev.sh")],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+    finally:
+        server.shutdown()
+    assert out.returncode == 0, out.stderr
+    assert "already running from this checkout" in out.stdout
+
+
+def test_a_download_is_never_read_under_an_id_off_the_layout(
+    client: TestClient, root: Path, monkeypatch
+) -> None:
+    # A corrupted index listing an id the layout refuses is still not read.
+    real_index = runs.SavedRun.file_index
+    read = []
+
+    def index_with_a_bad_id(self):
+        body = real_index(self)
+        return {"data": [*body["data"], {"id": "a.b", "filename": "report.json", "bytes": 1}]}
+
+    monkeypatch.setattr(runs.SavedRun, "file_index", index_with_a_bad_id)
+    monkeypatch.setattr(runs.SavedRun, "file", lambda self, file_id: read.append(file_id) or b"x")
+    assert client.get(f"{W38}/api/files/a.b/content").status_code == 404
+    assert read == []
+
+
+def test_a_download_whose_listed_name_is_not_a_report_is_named_download(
+    client: TestClient, root: Path
+) -> None:
+    index_path = root / "fixture-iris/2026-W38/files/index.json"
+    index = json.loads(index_path.read_bytes())
+    index["data"][0]["filename"] = 'x"\r\nSet-Cookie: a=b.json'
+    rewrite(root, "fixture-iris", "2026-W38", "files/index.json", runs.dump_json(index))
+    content = client.get(f"{W38}/api/files/{index['data'][0]['id']}/content")
+    assert content.status_code == 200
+    assert content.headers["content-disposition"] == 'attachment; filename="download"'
+    assert content.headers["content-type"] == "application/octet-stream"
+    assert "set-cookie" not in content.headers

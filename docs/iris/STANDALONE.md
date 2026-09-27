@@ -31,6 +31,8 @@ scripts/iris/dev.sh --open   # also opens the browser
   start with dev sign-in on any bind but `127.0.0.1`, `::1` or `localhost`, or
   when `IRIS_VIEWER_PUBLIC_URL` is https, and it refuses requests whose `Host`
   is not loopback.
+  The email is shown on the page and in `api/host`, so keep it a placeholder,
+  not a real address.
 - **Edits.** UI files are read from disk per request with `no-store`, so an
   edit to `iris/ui/**` or `workspace/ui/**` shows on a reload.
   `IRIS_VIEWER_RELOAD=1` adds uvicorn `--reload` for Python edits.
