@@ -466,6 +466,8 @@ include = ["omnigent*"]
 # host installed from install.sh cannot register her at all. Production runs
 # from source, which is why this survived a deploy.
 "omnigent.airbrx.eva" = ["bundle/**/*", "assets/**/*", "ui/**/*"]
+# Tally's bundle, portrait and workspace UI, for Eva's reason above.
+"omnigent.airbrx.tally" = ["bundle/**/*", "assets/**/*", "ui/**/*"]
 "omnigent.db" = ["alembic.ini"]
 "omnigent.db.migrations" = ["script.py.mako"]
 "omnigent.resources.examples" = ["*.yaml", "*.sh", "debby/**/*", "polly/**/*"]
