@@ -374,6 +374,36 @@ def test_navigate_anywhere_else_is_denied(url: object) -> None:
     assert linkedin_url_ok(url) is False
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        # LinkedIn's own redirectors, whatever they carry.
+        "https://www.linkedin.com/redir/redirect?url=https%3A%2F%2Fmail.google.com%2F",
+        "https://www.linkedin.com/redir/redirect/?url=x",
+        "https://www.linkedin.com/safety/go?url=https://mail.google.com/",
+        "https://www.linkedin.com/slink?code=abc123",
+        # Another address carried inside a linkedin.com one, in every encoding.
+        "https://www.linkedin.com/feed/?next=https://evil.example/",
+        "https://www.linkedin.com/feed/?next=//evil.example/",
+        "https://www.linkedin.com/feed/?next=https%3A%2F%2Fevil.example%2F",
+        "https://www.linkedin.com/feed/?next=https%253A%252F%252Fevil.example",
+        "https://www.linkedin.com/login?session_redirect=https%3A%2F%2Fevil.example",
+        "https://www.linkedin.com//evil.example/",
+        "https://www.linkedin.com/feed/?next=%5C%5Cevil.example",
+    ],
+)
+def test_a_linkedin_address_that_could_redirect_off_site_is_denied(url: str) -> None:
+    """A server redirect is the one thing --allowed-origins does not stop.
+
+    Measured in extension mode on 2026-09-27: a navigate whose 302 pointed at
+    another origin landed there, in what is now the operator's signed-in
+    Chrome. So such an address is refused before it is opened.
+    """
+    out = _call("mcp__omnigent__browser__browser_navigate", {"url": url})
+    assert out["result"] == "DENY"
+    assert linkedin_url_ok(url) is False
+
+
 def test_navigate_with_no_or_unreadable_arguments_is_denied() -> None:
     target = "mcp__omnigent__browser__browser_navigate"
     assert tool_boundary({"type": "tool_call", "target": target})["result"] == "DENY"
@@ -452,35 +482,126 @@ def test_the_outreach_server_carries_no_browser_and_the_browser_no_action() -> N
 
 
 def test_the_browser_server_is_fenced_at_launch() -> None:
-    """The launch flags are the third and fourth fences; pin them.
+    """The launch flags are the fourth and fifth fences; pin them.
 
-    Its own profile, headless, requests only to linkedin.com and licdn.com,
-    no page-registered tools, no extra capabilities, and no way onto the
-    operator's own Chrome (``--extension``, ``--cdp-endpoint``).
+    Extension mode since 2026-09-27: the operator's own Chrome through the
+    Playwright Extension, requests only to linkedin.com and licdn.com, no
+    page-registered tools, no extra capabilities. The token is read from the
+    keychain at spawn and never written here, and without one the server does
+    not start at all.
     """
     server = _server(BROWSER_SERVER)
     assert server.transport == "stdio"
     assert server.command == "/bin/sh"
     assert server.args[0] == "-c"
     line = server.args[1]
-    assert '--user-data-dir "$HOME/.eva-linkedin-profile"' in line
     assert "/.eva-playwright/node_modules/.bin/playwright-mcp" in line
+    assert "--extension" in line
     assert "--browser chrome" in line
-    assert "--headless" in line
-    assert "--sandbox" in line and "--no-sandbox" not in line
     assert '--allowed-origins "https://www.linkedin.com;*.licdn.com"' in line
     assert "--no-webmcp" in line
+    assert "-s eva-playwright-extension-token" in line
+    assert "exit 78" in line
+    # The token is a name in the keychain, never a value in the bundle.
+    assert not re.search(r"PLAYWRIGHT_MCP_EXTENSION_TOKEN=[\"']?[A-Za-z0-9_-]{8,}", line)
+    assert server.env == {}
     for absent in (
+        # The dedicated profile is gone: in extension mode a --user-data-dir
+        # would point the connect page at a Chrome without the extension.
+        "--user-data-dir",
+        "--eva-linkedin-profile",
+        "--headless",
         "--caps",
-        "--extension",
         "--cdp-endpoint",
+        "--endpoint",
         "--isolated",
         "--port",
         "--allow-unrestricted-file-access",
         "--storage-state",
         "--secrets",
+        "--shared-browser-context",
+        "--init-script",
+        "--init-page",
+        "--grant-permissions",
     ):
         assert absent not in line, absent
+
+
+def _run_browser_launch(tmp_path: Path, token: str | None) -> tuple[int, list[str], str]:
+    """Run the bundle's real launch line against a stand-in playwright-mcp.
+
+    The stand-in records the argv it was given and whether the token reached
+    its environment, then exits. ``USER`` names nobody, so the keychain lookup
+    finds nothing on a Mac and does not exist elsewhere: only an explicit
+    token can start it.
+    """
+    import subprocess
+
+    home = tmp_path / "home"
+    bin_dir = home / ".eva-playwright" / "node_modules" / ".bin"
+    bin_dir.mkdir(parents=True)
+    record = tmp_path / "argv.json"
+    stub = bin_dir / "playwright-mcp"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'python3 -c \'import json,os,sys; json.dump({{"argv": sys.argv[1:], '
+        f'"token": os.environ.get("PLAYWRIGHT_MCP_EXTENSION_TOKEN")}}, '
+        f'open("{record}", "w"))\' "$@"\n'
+    )
+    stub.chmod(0o755)
+    env = {
+        "HOME": str(home),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "USER": "eva-test-nobody",
+    }
+    if token is not None:
+        env["PLAYWRIGHT_MCP_EXTENSION_TOKEN"] = token
+    server = _server(BROWSER_SERVER)
+    proc = subprocess.run(
+        [server.command, *server.args], env=env, capture_output=True, text=True, timeout=30
+    )
+    if not record.exists():
+        return proc.returncode, [], proc.stderr
+    got = json.loads(record.read_text())
+    assert got["token"] == token
+    return proc.returncode, got["argv"], proc.stderr
+
+
+def test_the_extension_launch_keeps_the_origin_fence_and_the_tool_allow_list(
+    tmp_path: Path,
+) -> None:
+    """What Playwright is actually started with, not what the YAML says.
+
+    Extension mode changes where the browser comes from and nothing about the
+    fences: the origin allow list reaches playwright-mcp verbatim, no flag
+    that widens it or points it at another profile does, and the tools she
+    may call through it are still exactly the policy's five read tools.
+    """
+    code, argv, _ = _run_browser_launch(tmp_path, token="stand-in-token-not-a-secret")
+    assert code == 0
+    assert "--extension" in argv
+    i = argv.index("--allowed-origins")
+    assert argv[i + 1] == "https://www.linkedin.com;*.licdn.com"
+    assert argv.count("--allowed-origins") == 1
+    assert "--no-webmcp" in argv
+    assert argv[argv.index("--browser") + 1] == "chrome"
+    widening = ("--user-data-dir", "--blocked-origins", "--caps", "--cdp-endpoint", "--isolated")
+    for absent in widening:
+        assert absent not in argv, absent
+    assert sorted(_server(BROWSER_SERVER).tools) == sorted(BROWSER_TOOLS)
+
+
+def test_the_extension_launch_refuses_without_a_token(tmp_path: Path) -> None:
+    """No token, no browser: never the extension's tab picker.
+
+    The picker would hand her one of the operator's existing tabs, history and
+    all, and would hold her turn until somebody clicked. Refusing leaves her
+    with the paste-in route, which is what a failed browser server gives her.
+    """
+    code, argv, stderr = _run_browser_launch(tmp_path, token=None)
+    assert code == 78
+    assert argv == []
+    assert "eva-playwright-extension-token" in stderr
 
 
 def test_her_instructions_carry_the_browser_rules() -> None:
@@ -497,6 +618,15 @@ def test_her_instructions_carry_the_browser_rules() -> None:
     assert "sign in" in lower and "stop" in lower
     assert "record_linkedin_metrics" in rules and "once" in lower
     assert "never" in lower and "estimate" in lower
+    # Extension mode (2026-09-27): whose browser it is, and how to behave in it.
+    lower = " ".join(lower.split())
+    assert "abram's real google chrome" in lower
+    assert "work in your own tab" in lower
+    assert "never try to reach, read or take over any other tab" in lower
+    assert "never go back past the first linkedin page" in lower
+    assert "never click, type into a form, or press anything that changes state" in lower
+    for redirector in ("/redir/", "/safety/go", "/slink"):
+        assert redirector in rules, redirector
 
 
 def test_the_paste_in_route_stays_for_a_refusal_or_a_sign_in() -> None:
