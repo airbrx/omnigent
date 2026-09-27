@@ -126,6 +126,8 @@ const captured =
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let items: unknown[] = [];
+// The native session's status, as GET /v1/sessions/s1 reports it.
+let sessionStatus = "idle";
 const listeners: [string, EventListener][] = [];
 const realAdd = window.addEventListener.bind(window);
 let apiOptions: unknown[] = [];
@@ -156,6 +158,12 @@ function serve(
       ADAPTER[scenario][path] ?? ADAPTER.investigated_and_proposed[path] ?? ADAPTER.captured[path];
     if (recorded) return replay(recorded);
     switch (path) {
+      case "/v1/sessions/s1":
+        return json({
+          id: "s1",
+          status: sessionStatus,
+          active_response_id: sessionStatus === "running" ? "resp_1" : null,
+        });
       case "items":
         return json({ data: items.slice().reverse(), has_more: false });
       case "cancel":
@@ -263,6 +271,7 @@ function deferred<T>() {
 beforeEach(() => {
   localStorage.clear();
   items = [];
+  sessionStatus = "idle";
   apiOptions = [];
   window.addEventListener = ((type: string, listener: EventListener, options?: unknown) => {
     listeners.push([type, listener]);
@@ -853,6 +862,76 @@ it("rule 12: a reload rebuilds the chat from the session, and names a refresh tu
   expect(within(messages()).getByText("Is it safe?")).toBeInTheDocument();
   expect(messages().textContent).not.toContain("I am looking at");
   expect(messages().textContent).not.toContain("Call iris_overview");
+});
+
+// QA 2026-09-26 B4: reloaded while Iris was answering, the page showed the
+// question and never the answer, until one more reload. The reload now follows
+// the turn that is still running and shows its answer when it ends.
+const userItem = (id: string, text: string) => ({
+  id,
+  type: "message",
+  role: "user",
+  content: [{ type: "input_text", text }],
+});
+const assistantItem = (id: string, text: string) => ({
+  id,
+  type: "message",
+  role: "assistant",
+  content: [{ type: "output_text", text }],
+});
+
+it("B4: a reload mid-turn shows the answer when the turn ends, without another reload", async () => {
+  items = [userItem("u1", "How is the cache?")];
+  sessionStatus = "running";
+  start();
+  await waitFor(() =>
+    expect(document.getElementById("freshness")?.textContent).toMatch(/Iris read this tenant /),
+  );
+  await waitFor(() =>
+    expect(messages().querySelector("[role=status]")?.textContent).toBe("Iris is working…"),
+  );
+  // Iris is busy: the page does not offer a second turn over the running one.
+  expect(document.getElementById("send")).toBeDisabled();
+  items.push(
+    { id: "f1", type: "function_call", name: "iris__iris_overview", arguments: "{}" },
+    { id: "o1", type: "function_call_output", output: "SECRET-TOOL-OUTPUT" },
+    assistantItem("a1", "Hit rate is **80.0%**.\n\nOne rule causes most misses."),
+  );
+  sessionStatus = "idle";
+  await waitFor(() =>
+    expect(messages().querySelector("li.agent")?.textContent).toContain("One rule causes"),
+  );
+  expect(messages().querySelectorAll("li.agent > p")).toHaveLength(2);
+  expect(messages().textContent).not.toContain("SECRET-TOOL-OUTPUT");
+  await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
+  expect(messages().querySelector("[role=status]")).toBeNull();
+  expect(calls("chat")).toHaveLength(0);
+  expect(calls("refresh")).toHaveLength(0);
+});
+
+it("B4: a reload during the first collection waits for it, then draws its capture without collecting again", async () => {
+  items = [userItem("u0", "Call iris_overview and iris_audit for the selected tenant. Go.")];
+  sessionStatus = "running";
+  serve(
+    {
+      state: () =>
+        sessionStatus === "running"
+          ? detail("No session overview yet; use Refresh from host", 409)
+          : json(makeState()),
+    },
+    "fresh_session",
+  );
+  start();
+  await waitFor(() =>
+    expect(messages().querySelector("[role=status]")?.textContent).toBe("Iris is working…"),
+  );
+  expect(calls("refresh")).toHaveLength(0);
+  items.push(assistantItem("a0", "Collected."));
+  sessionStatus = "idle";
+  await waitFor(() => expect(view().textContent).toContain("80.0%"));
+  await waitFor(() => expect(document.getElementById("refresh")).not.toBeDisabled());
+  expect(calls("refresh")).toHaveLength(0);
+  expect(messages().querySelector("li.agent")?.textContent).toBe("Collected.");
 });
 
 it("rule 13: Stop calls cancel, stops streaming and clears the progress line", async () => {

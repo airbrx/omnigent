@@ -1913,8 +1913,39 @@
     renderHost();
   }
 
-  /** The first read of state on this load, and the only one that may collect. */
-  async function firstRead() {
+  /**
+   * The page loaded while a turn was running (a reload mid-chat). Draw what
+   * capture there is without collecting over the turn, follow the turn until
+   * it ends so its answer shows, then read state as a load would.
+   */
+  async function resumeRunningTurn() {
+    setBusy(true);
+    let result = { resumed: false, status: "" };
+    try {
+      await firstRead({ mayCollect: false });
+      result = await stream.resumeTurn();
+    } finally {
+      setBusy(false);
+    }
+    if (result.status === "failed")
+      transcript.add(
+        "error",
+        "Iris's turn that was running when this page loaded failed. Open native chat to see what happened. Nothing has been computed in her place.",
+      );
+    else if (result.status === "timeout")
+      transcript.add(
+        "system",
+        "Iris is still on the turn that was running when this page loaded. Open native chat to follow it.",
+      );
+    await loadReadiness();
+    await firstRead();
+  }
+
+  /**
+   * The first read of state on this load, and the only one that may collect
+   * (not while a turn from before the load is still running: `mayCollect`).
+   */
+  async function firstRead({ mayCollect = true } = {}) {
     let first = null;
     try {
       first = await api("state");
@@ -1925,7 +1956,7 @@
         return;
       }
     }
-    if (first === null) return autoCollect("first");
+    if (first === null) return mayCollect ? autoCollect("first") : render();
     if (!first.stale) {
       accept(first);
       render();
@@ -1935,10 +1966,10 @@
       // Shown with its label while one fresh collection runs behind it.
       accept(first);
       render();
-      return autoCollect("stale");
+      return mayCollect ? autoCollect("stale") : undefined;
     }
     heldStale = true;
-    return autoCollect("stale");
+    return mayCollect ? autoCollect("stale") : render();
   }
 
   // ------------------------------------------------------------ wiring --
@@ -1985,6 +2016,8 @@
   (async () => {
     await stream.loadHistory();
     await loadReadiness();
-    await firstRead();
+    const status = await stream.sessionStatus();
+    if (status === "running" || status === "waiting") await resumeRunningTurn();
+    else await firstRead();
   })();
 })();

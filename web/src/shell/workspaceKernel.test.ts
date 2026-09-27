@@ -259,6 +259,8 @@ const user = (id: string, text: string): Item => ({
 let items: Item[] = [];
 let hasMore = false;
 let itemsStatus = 200;
+// The native session's status, as GET /v1/sessions/s1 reports it.
+let sessionStatus = "idle";
 let fetchMock: ReturnType<typeof vi.fn>;
 // While set, item reads wait on it: lets a test stop a turn mid-poll.
 let gate: Promise<void> | null = null;
@@ -266,6 +268,12 @@ let gate: Promise<void> | null = null;
 function serveItems() {
   gate = null;
   fetchMock = vi.fn(async (input: string) => {
+    if (String(input) === "/v1/sessions/s1")
+      return Response.json({
+        id: "s1",
+        status: sessionStatus,
+        active_response_id: sessionStatus === "running" ? "resp_1" : null,
+      });
     if (!String(input).startsWith("/v1/sessions/s1/items"))
       throw new Error(`unexpected fetch ${input}`);
     if (gate) await gate;
@@ -302,6 +310,7 @@ describe("stream", () => {
     items = [];
     hasMore = false;
     itemsStatus = 200;
+    sessionStatus = "idle";
     serveItems();
   });
 
@@ -451,6 +460,59 @@ describe("stream", () => {
       setTimeout(resolve, 80);
     });
     expect(itemReads()).toBe(reads);
+  });
+
+  // QA 2026-09-26 B4: a reload while Iris was answering showed the question
+  // and never the answer. loadHistory reads the record once; nothing watched
+  // the turn that was still running, so its answer waited for another reload.
+  it("resumeTurn follows a turn that was running at load until it ends", async () => {
+    items = [user("u1", "How is the cache?")];
+    sessionStatus = "running";
+    const { list, stream } = streamFixture();
+    await stream.loadHistory();
+    expect(lines(list)).toEqual([["user", "How is the cache?"]]);
+    const done = stream.resumeTurn();
+    await waitFor(() =>
+      expect(list.querySelector("[role=status]")?.textContent).toBe("Iris is working…"),
+    );
+    items.push({ id: "f1", type: "function_call", name: "iris__iris_overview", arguments: "{}" });
+    await waitFor(() =>
+      expect(list.querySelector("[role=status]")?.textContent).toBe(
+        "Reading the tenant's traffic…",
+      ),
+    );
+    items.push(
+      { id: "o1", type: "function_call_output", output: "SECRET-EVIDENCE" },
+      assistant("a1", "Hit rate is 80%.\n\nMisses are mostly one rule."),
+    );
+    sessionStatus = "idle";
+    await expect(done).resolves.toEqual({ resumed: true, status: "idle" });
+    expect(lines(list)).toEqual([
+      ["user", "How is the cache?"],
+      ["agent", "Hit rate is 80%.Misses are mostly one rule."],
+    ]);
+    expect(list.querySelectorAll("li.agent > p")).toHaveLength(2);
+    expect(list.textContent).not.toContain("SECRET-EVIDENCE");
+    expect(list.querySelector("[role=status]")).toBeNull();
+    const reads = fetchMock.mock.calls.length;
+    await new Promise((resolve) => {
+      setTimeout(resolve, 80);
+    });
+    expect(fetchMock.mock.calls.length).toBe(reads);
+  });
+
+  it("resumeTurn does nothing when no turn is running, or the session cannot be read", async () => {
+    items = [user("u1", "hi"), assistant("a1", "hello")];
+    const { list, stream } = streamFixture();
+    await stream.loadHistory();
+    await expect(stream.resumeTurn()).resolves.toEqual({ resumed: false, status: "idle" });
+    fetchMock.mockImplementation(async () => Response.json({ detail: "no" }, { status: 502 }));
+    await expect(stream.resumeTurn()).resolves.toEqual({ resumed: false, status: "" });
+    expect(list.querySelector("[role=status]")).toBeNull();
+    expect(lines(list)).toEqual([
+      ["user", "hi"],
+      ["agent", "hello"],
+    ]);
   });
 
   it("stop() is idempotent", async () => {
