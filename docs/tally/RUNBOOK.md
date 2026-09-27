@@ -92,8 +92,8 @@ The runner receives `TALLY_PORTAL_MCP_URL` (value) and `TALLY_PORTAL_MCP_TOKEN`
 
 ## Where Tally runs
 
-Abram's decision is that Tally runs with no `host_id`, next to the portal on
-the coordinator. What the code does with that, verified:
+Tally runs on the coordinator, next to the portal (Abram, September 26, 2026).
+What the code needs for that, verified:
 
 1. `launch_env` (`omnigent/airbrx/tally/runtime.py`) returns the URL and the
    token *reference* for a binding with or without `host_id`. `host_id` plays
@@ -135,7 +135,44 @@ Tally. Two shapes work with this code, and neither needs a code change:
   Start, as copied from Eva, creates a hostless session for a hostless
   binding, which will not run.
 
-This is a finding to decide on, not something this change resolves.
+**Decided: the first shape.** An Omnigent host runs on the coordinator, owned
+by Abram, and the binding names it.
+
+### Setting up the coordinator host (once, as `ubuntu`)
+
+Modeled on `deploy/omnigent-devbox/bootstrap/omnigent-host.service`. Two steps
+are Abram's alone because they are his credentials: the JumpCloud sign-in and
+the Claude token. Nothing below prints a secret.
+
+1. Check memory first: the coordinator is a t3.small, and a runner plus the
+   `claude` CLI adds to the server's footprint (`free -m`).
+2. Abram creates a Claude token on his own machine with `claude setup-token`.
+3. Create `/home/ubuntu/.config/omnigent/host.env`, mode 600:
+
+   ```
+   OMNIGENT_DATA_DIR=/home/ubuntu/.omnigent-host
+   OMNIGENT_HOST_ID=<uuid4 hex, generated once>
+   OMNIGENT_HOST_NAME=omnigent-coordinator
+   CLAUDE_CODE_OAUTH_TOKEN=<from step 2, pasted by Abram>
+   AIRBRX_TALLY_MCP_TOKEN=<copied from /etc/omnigent/gateway.env on the box>
+   OMNIGENT_HOST_SECRET_REFS=env:AIRBRX_TALLY_MCP_TOKEN
+   ```
+
+   Keep it separate from `/etc/omnigent/server.env`; the server does not read it.
+4. Abram signs in once, so the host belongs to him (a token reaches only sessions
+   on a host its user owns; never start it with `--shared`):
+   `OMNIGENT_DATA_DIR=/home/ubuntu/.omnigent-host /opt/omnigent/.venv/bin/omnigent login https://omnigent.airbrx.ai`
+5. A systemd user unit `omnigent-host.service` (with `loginctl enable-linger ubuntu`):
+   `ExecStart=/opt/omnigent/.venv/bin/omnigent host --server https://omnigent.airbrx.ai --non-interactive`,
+   `EnvironmentFile=/home/ubuntu/.config/omnigent/host.env`, `Restart=always`,
+   `HOME`, `USER`, `LOGNAME` and `PATH` set explicitly. No `--auto-upgrade`: the
+   host runs the server's own install, so a gated deploy upgrades both.
+6. Confirm the host is online (`GET /v1/hosts`), then add
+   `"host_id": "<OMNIGENT_HOST_ID>", "workspace": "/home/ubuntu/tally-workspace"`
+   to Tally's binding in `/etc/omnigent/tally.json` and restart `omnigent-server`.
+7. On the box: `curl -i http://127.0.0.1:4318/mcp` answers 405. Then open Tally
+   from the drawer and ask "what is blocked right now".
+
 
 ## Tool results
 
