@@ -11,7 +11,7 @@
   // code, so it is dropped rather than set.
   const URL_ATTRS = new Set(["href", "src", "action", "formaction", "xlink:href"]);
   const SCRIPT_URL = /^(javascript|vbscript|data):/i;
-  // The URL parser strips leading and trailing C0 controls and spaces, and
+  // The URL parser strips C0 controls and spaces at either end, and
   // removes ASCII tab, LF and CR anywhere, so "java\tscript:" still runs. The
   // test is made on the value with every C0 control, space and DEL removed,
   // which is stricter than the parser and never looser.
