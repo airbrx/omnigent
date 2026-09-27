@@ -865,8 +865,181 @@ def test_report_calls_carries_each_calls_arguments():
         *tool_run("iris_overview", "garbled", 12, "g"),
     ]
     items[-2]["arguments"] = "{not json"
-    assert [(file_id, arguments) for _, file_id, _, arguments in report_calls(items)] == [
+    assert [(file_id, arguments) for _, file_id, _, arguments, _ in report_calls(items)] == [
         ("default", {}),
         ("dated", {"start_date": "2026-09-12", "end_date": "2026-09-19"}),
         ("garbled", None),
     ]
+
+
+# --- Follow-ups to #115 (review nits 1a, 2a, 2b, 2c; W3 busy 409) -------------------------
+
+#: 2026-09-27T00:00:00Z. READ_AT is 00:21 the same day.
+MIDNIGHT = READ_AT - 21 * 60
+
+
+def _straddling(window, call_at, output_at, file_id=OVERVIEW_ID, call_id="straddle"):
+    """An iris_overview call recorded at `call_at` whose output is recorded at `output_at`."""
+    run = _with_arguments(tool_run("iris_overview", file_id, output_at, call_id), window)
+    run[0]["created_at"] = call_at
+    return run
+
+
+def test_a_call_made_before_midnight_and_answered_after_is_current(monkeypatch, tmp_path):
+    """Called 09-26T23:59:58Z for 09-19..09-26 (that day's current period), answered 00:00:04."""
+    items = [
+        user_item("Read the tenant.", MIDNIGHT - 10, "u-straddle"),
+        *_straddling(
+            {"start_date": "2026-09-19", "end_date": "2026-09-26"}, MIDNIGHT - 2, MIDNIGHT + 4
+        ),
+    ]
+    body = _state(monkeypatch, tmp_path, IrisSession(items, FILES))
+    assert body["overview"] == FILES[OVERVIEW_ID]
+    assert body["captured_at"] == MIDNIGHT + 4
+
+
+def test_the_window_is_decided_by_when_the_call_was_made_not_answered(monkeypatch, tmp_path):
+    """Called on 09-26 for 09-20..09-27, the NEXT day's window, though answered on 09-27."""
+    items = [
+        *captured(MIDNIGHT - 600),
+        *_straddling(
+            {"start_date": "2026-09-20", "end_date": "2026-09-27"},
+            MIDNIGHT - 2,
+            MIDNIGHT + 4,
+            file_id=PARTIAL_ID,
+        ),
+    ]
+    body = _state(monkeypatch, tmp_path, IrisSession(items, _files()))
+    assert body["overview"] == FILES[OVERVIEW_ID]
+    assert body["captured_at"] == MIDNIGHT - 600
+
+
+def test_unreadable_recorded_arguments_are_not_the_current_period(monkeypatch, tmp_path):
+    """A newer overview whose arguments cannot be read is not assumed to be the default."""
+    garbled = tool_run("iris_overview", PARTIAL_ID, READ_AT + 10, "garbled")
+    garbled[0]["arguments"] = "{not json"
+    body = _state(monkeypatch, tmp_path, IrisSession([*captured(), *garbled], _files()))
+    assert body["overview"] == FILES[OVERVIEW_ID]
+    assert body["captured_at"] == READ_AT
+
+
+def test_only_unreadable_arguments_is_no_current_overview(monkeypatch, tmp_path):
+    garbled = tool_run("iris_overview", PARTIAL_ID, READ_AT, "garbled")
+    garbled[0]["arguments"] = "[1, 2]"
+    session = IrisSession(garbled, _files())
+    response = make_client(monkeypatch, tmp_path, session).get(f"{API}/state")
+    assert response.status_code == 409
+    assert "the partial current capture" not in response.text
+
+
+def test_a_refresh_that_produced_nothing_says_so_despite_an_older_comparison(
+    monkeypatch, tmp_path
+):
+    """The comparison was read before this turn; this turn read nothing at all."""
+    session = IrisSession(_compared(), _files(), read_nothing)
+    response = make_client(monkeypatch, tmp_path, session).post(f"{API}/refresh", json={})
+    assert response.status_code == 409
+    assert "produced no overview" in response.json()["detail"]
+
+
+def test_a_refresh_that_read_only_a_comparison_window_says_that(monkeypatch, tmp_path):
+    def compare_only(text, at):
+        return [
+            *_with_arguments(
+                tool_run("iris_overview", COMPARISON_ID, at, "fresh-c"),
+                {"start_date": "2026-09-12", "end_date": "2026-09-19"},
+            ),
+            answer_item("Read the week before.", at + 1, "a-cmp"),
+        ]
+
+    session = IrisSession(captured(), _files(), compare_only)
+    response = make_client(monkeypatch, tmp_path, session).post(f"{API}/refresh", json={})
+    assert response.status_code == 409
+    assert "read no current-period overview" in response.json()["detail"]
+
+
+def test_a_refresh_while_a_turn_runs_is_a_distinguishable_busy_409(monkeypatch, tmp_path):
+    """A reload during the first auto-collect: the orphan turn still runs.
+
+    The kernel's api() surfaces only `status` and the `detail` string, so the
+    busy answer is told apart by its detail, which is pinned here and differs
+    from both "no overview" answers.
+    """
+    session = IrisSession(captured(), FILES, respond, status="running")
+    response = make_client(monkeypatch, tmp_path, session).post(f"{API}/refresh", json={})
+    assert response.status_code == 409
+    assert response.json() == {"detail": iris_routes.BUSY_DETAIL}
+    assert "no overview" not in iris_routes.BUSY_DETAIL
+    assert "current-period" not in iris_routes.BUSY_DETAIL
+    assert session.posted == []
+
+
+def test_a_cancelled_handler_does_not_interrupt_the_turn(monkeypatch, tmp_path):
+    """Cancellation is teardown (a disconnect on a stack that cancels, or shutdown), not a Stop.
+
+    The reload test above never cancels the handler, so on its own it leaves the
+    `CancelledError` half of the old interrupt untested (review nit 1a).
+    """
+    session = IrisSession(captured(), FILES, lambda text, at: [])
+    client = make_client(monkeypatch, tmp_path, session)
+    body = json.dumps(
+        {"history": [{"role": "user", "content": "Why did the hit rate drop?"}], "deadline": 30}
+    ).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": f"{API}/chat",
+        "raw_path": f"{API}/chat".encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver"), (b"content-type", b"application/json")],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+    sent_body = False
+
+    async def receive():
+        nonlocal sent_body
+        if not sent_body:
+            sent_body = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await asyncio.Event().wait()  # the client never goes away on its own
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        pass
+
+    async def main():
+        handler = asyncio.create_task(client.app(scope, receive, send))
+        # Until the turn is posted and the watch has polled at least once.
+        for _ in range(100):
+            if session.posted:
+                break
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.7)
+        handler.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await handler
+        await asyncio.sleep(0.1)
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    leftover = asyncio.run(main())
+    kinds = [e["type"] for e in session.posted]
+    assert kinds == ["message"], f"a cancelled handler interrupted Iris's turn: {kinds}"
+    assert leftover == []
+
+
+def test_report_calls_carries_when_each_call_was_made():
+    """`called_at` is the function_call item's clock; `created_at` stays the output's."""
+    from omnigent.airbrx.iris.records import report_calls
+
+    straddle = _straddling({}, MIDNIGHT - 2, MIDNIGHT + 4)
+    unstamped = tool_run("iris_overview", "unstamped", 50, "u")
+    del unstamped[0]["created_at"]
+    assert [
+        (file_id, created_at, called_at)
+        for _, file_id, created_at, _, called_at in report_calls([*unstamped, *straddle])
+    ] == [("unstamped", 50, 50), (OVERVIEW_ID, MIDNIGHT + 4, MIDNIGHT - 2)]
