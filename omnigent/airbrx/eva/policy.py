@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-#: The tools of ``contracts/mcp_tools.md``, minus the two Eva must not hold.
+#: The tools of ``contracts/mcp_tools.md`` Eva may hold. The contract's other
+#: tools are either named in ``WITHHELD`` below or simply absent.
 #: Kept as one frozenset rather than "all of them minus a deny list" so that a
 #: tool added to the contract is absent here until somebody decides it belongs,
 #: rather than arriving allowed by default.
@@ -45,6 +46,12 @@ EVA_TOOLS = frozenset(
         "record_linkedin_metrics",
         "list_plan_items",
         "record_plan_actual",
+        # airbrx-outreach#149 (2026-09-27): record the address of a post she
+        # found on its author's recent-activity page, so its analytics can be
+        # opened. The server fills only an empty ``linkedin_url`` and accepts
+        # only one post's https://www.linkedin.com/ address, so this can point
+        # a post at its page and cannot rewrite anything about it.
+        "set_linkedin_post_url",
     }
 )
 
@@ -55,9 +62,15 @@ EVA_TOOLS = frozenset(
 #:                    author's. Eva writes drafts.
 #: ``mark_sent``      nothing in this system sends. A rep sends from their own
 #:                    client and then records it. Eva cannot observe that event.
+#: ``upsert_linkedin_post``  rewrites a post's title, status, dates or copy.
+#:                    Eva only fills an empty address, with ``set_linkedin_post_url``.
 WITHHELD = {
     "approve_draft": "approval belongs to the lead owner or an admin, never the draft's author",
     "mark_sent": "nothing in this system sends; a rep records their own send",
+    "upsert_linkedin_post": (
+        "it rewrites a post's title, status, dates or copy; "
+        "Eva only fills an empty address with set_linkedin_post_url"
+    ),
 }
 
 #: Discovery, not execution. Same carve-out and the same reason as Iris's:
