@@ -219,3 +219,334 @@ class TenantDisplayNames(unittest.TestCase):
         # Widening the allowed keys must not widen them to anything.
         with self.assertRaises(ValueError):
             self.parse([self.binding(nickname="db-prod")])
+
+
+# --- Workspace v2 state (docs/iris/WORKSPACE_V2.md, section 2) -------------------------
+#
+# The harness mounts stand-ins for the native session routes on the test app;
+# see tests/airbrx/test_iris_workspace_fixtures.py.
+
+import pytest  # noqa: E402
+
+from omnigent.airbrx.iris import routes as iris_routes  # noqa: E402
+from tests.airbrx.test_iris_workspace_fixtures import (  # noqa: E402
+    API,
+    AUDIT_ID,
+    FILES,
+    FRESH_OVERVIEW_ID,
+    INVESTIGATE_ID,
+    NOW,
+    OVERVIEW_ID,
+    PROPOSE_ID,
+    READ_AT,
+    SESSION,
+    IrisSession,
+    captured,
+    investigate_report,
+    make_client,
+    propose_report,
+    read_nothing,
+    respond,
+    tool_run,
+    worked,
+)
+from tests.airbrx.test_iris_workspace_fixtures import (  # noqa: E402
+    answer as answer_item,
+)
+
+
+def _state(monkeypatch, tmp_path, session):
+    response = make_client(monkeypatch, tmp_path, session).get(f"{API}/state")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _refresh(monkeypatch, tmp_path, session):
+    return make_client(monkeypatch, tmp_path, session).post(f"{API}/refresh", json={})
+
+
+def test_captured_at_is_the_overview_items_clock(monkeypatch, tmp_path):
+    body = _state(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    assert body["captured_at"] == READ_AT
+    # The same clock cache_age_seconds is measured on.
+    assert body["cache_age_seconds"] == NOW - body["captured_at"]
+
+
+def test_investigation_and_proposal_are_returned_whole(monkeypatch, tmp_path):
+    body = _state(monkeypatch, tmp_path, IrisSession(worked(), FILES))
+    assert body["investigation"] == FILES[INVESTIGATE_ID]
+    assert set(body["investigation"]) >= {"current", "previous", "findings", "evidence"}
+    assert body["proposal"] == FILES[PROPOSE_ID]
+    assert body["proposal"]["proposal_status"] == "validated"
+    assert body["proposal"]["proposal_view"]["rule_id"] == "report-cache"
+
+
+def test_the_newest_investigation_and_proposal_win(monkeypatch, tmp_path):
+    newer_investigation = {**investigate_report(), "message": "the newer comparison"}
+    newer_proposal = {**propose_report(), "proposal_status": "invalid"}
+    files = {**FILES, "inv-2": newer_investigation, "prop-2": newer_proposal}
+    items = [
+        *worked(),
+        *tool_run("iris_investigate", "inv-2", READ_AT + 20, "inv2"),
+        *tool_run("iris_propose", "prop-2", READ_AT + 21, "prop2"),
+    ]
+    body = _state(monkeypatch, tmp_path, IrisSession(items, files))
+    assert body["investigation"]["message"] == "the newer comparison"
+    assert body["proposal"]["proposal_status"] == "invalid"
+    assert body["report_times"]["iris_investigate"] == READ_AT + 20
+    assert body["report_times"]["iris_propose"] == READ_AT + 21
+
+
+def test_absent_investigation_and_proposal_are_null(monkeypatch, tmp_path):
+    body = _state(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    assert body["investigation"] is None
+    assert body["proposal"] is None
+
+
+def test_report_times_names_every_tool_and_null_when_absent(monkeypatch, tmp_path):
+    body = _state(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    assert body["report_times"] == {
+        "iris_audit": READ_AT + 2,
+        "iris_investigate": None,
+        "iris_overview": READ_AT,
+        "iris_propose": None,
+    }
+
+
+def test_a_refresh_keeps_the_investigation_and_the_proposal(monkeypatch, tmp_path):
+    """A refresh never calls investigate or propose, so bounding them would blank both tabs."""
+    response = _refresh(monkeypatch, tmp_path, IrisSession(worked(), FILES, respond))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["investigation"] == FILES[INVESTIGATE_ID]
+    assert body["proposal"] == FILES[PROPOSE_ID]
+    # Each says how old it is; the overview is this turn's.
+    assert body["report_times"]["iris_investigate"] == READ_AT + 8
+    assert body["report_times"]["iris_propose"] == READ_AT + 10
+    assert body["captured_at"] == NOW - 1
+    assert body["report_times"]["iris_overview"] == NOW - 1
+
+
+def test_a_refresh_still_bounds_the_overview_and_audit(monkeypatch, tmp_path):
+    """Only this turn's overview and audit count; an older audit is not passed off as fresh."""
+
+    def overview_only(text, at):
+        return [
+            *tool_run("iris_overview", FRESH_OVERVIEW_ID, at, "fresh-o"),
+            answer_item("Overview only.", at, "a-o"),
+        ]
+
+    response = _refresh(monkeypatch, tmp_path, IrisSession(captured(), FILES, overview_only))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["audit"] == {"findings": []}
+    assert body["report_times"]["iris_audit"] is None
+    assert body["captured_at"] == NOW - 1
+
+
+def test_a_refresh_that_read_nothing_is_still_a_409(monkeypatch, tmp_path):
+    """An investigation or proposal in the session does not stand in for an overview."""
+
+    response = _refresh(monkeypatch, tmp_path, IrisSession(worked(), FILES, read_nothing))
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize("tool", ["iris_investigate", "iris_propose"])
+@pytest.mark.parametrize("path", ["state", "refresh"])
+def test_a_cross_tenant_investigation_or_proposal_is_a_403(monkeypatch, tmp_path, tool, path):
+    foreign = {**FILES[INVESTIGATE_ID], "tenant_id": "someone-else"}
+    items = [*worked(), *tool_run(tool, "foreign", READ_AT + 20, "foreign")]
+    session = IrisSession(items, {**FILES, "foreign": foreign}, respond)
+    client = make_client(monkeypatch, tmp_path, session)
+    response = (
+        client.get(f"{API}/state") if path == "state" else client.post(f"{API}/refresh", json={})
+    )
+    assert response.status_code == 403
+    assert "someone-else" not in response.text
+
+
+def test_the_refresh_prompt_keeps_its_first_sentence(monkeypatch, tmp_path):
+    """W3's history reload recognises a refresh turn by this sentence, byte for byte."""
+    session = IrisSession(captured(), FILES, respond)
+    assert _refresh(monkeypatch, tmp_path, session).status_code == 200
+    (posted,) = [e for e in session.posted if e["type"] == "message"]
+    text = posted["data"]["content"][0]["text"]
+    assert text.startswith("Call iris_overview and iris_audit for the selected tenant. ")
+
+
+def test_existing_state_keys_are_unchanged(monkeypatch, tmp_path):
+    body = _state(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    assert body["overview"] == FILES[OVERVIEW_ID]
+    assert body["audit"] == FILES[AUDIT_ID]
+    assert body["rules"] == [
+        {"ruleId": "report-cache", "cacheHits": 80, "cacheMisses": 20, "totalExecutions": 100}
+    ]
+    assert body["rule_effectiveness_meta"] == {
+        "year": None,
+        "generatedAt": None,
+        "totalQueries": None,
+    }
+    assert body["stale"] is False
+    assert body["monitoring"] is None
+
+
+# --- Assets under OMNIGENT_IRIS_UI (WORKSPACE_V2.md, D1 and section 2 "Assets") --------
+
+UI = f"/v1/iris/sessions/{SESSION}/ui"
+
+
+@pytest.fixture
+def v2_ui(tmp_path, monkeypatch):
+    """A stand-in iris/ui/ tree (W3 writes the real one) and a stand-in kernel (W2)."""
+    import sys
+    import types
+
+    root = tmp_path / "iris-ui"
+    (root / "views").mkdir(parents=True)
+    (root / "index.html").write_text(
+        '<!doctype html><script src="kernel/dom.js"></script><script src="app.js"></script>'
+    )
+    (root / "app.js").write_text("// v2 app\n")
+    (root / "style.css").write_text("/* v2 */\n")
+    (root / "views" / "overview.js").write_text("// overview view\n")
+    (root / "secret.txt").write_text("not an app file\n")
+    monkeypatch.setattr(iris_routes, "UI_ROOT", root, raising=False)
+
+    kernel = tmp_path / "kernel"
+    kernel.mkdir()
+    (kernel / "dom.js").write_text("// kernel dom\n")
+    (kernel / "unlisted.js").write_text("// not in the allowlist\n")
+    assets = types.ModuleType("omnigent.airbrx.workspace.assets")
+    assets.KERNEL_ASSETS = frozenset({"dom.js", "missing.js"})
+    assets.kernel_asset = lambda name: kernel / name
+    package = types.ModuleType("omnigent.airbrx.workspace")
+    package.assets = assets
+    monkeypatch.setitem(sys.modules, "omnigent.airbrx.workspace", package)
+    monkeypatch.setitem(sys.modules, "omnigent.airbrx.workspace.assets", assets)
+    monkeypatch.setenv("OMNIGENT_IRIS_UI", "v2")
+    return root
+
+
+def _ui_client(monkeypatch, tmp_path):
+    return make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+
+
+def test_v2_serves_the_new_index_without_host_js(v2_ui, monkeypatch, tmp_path):
+    for path in (f"{UI}/", f"{UI}/index.html"):
+        response = _ui_client(monkeypatch, tmp_path).get(path)
+        assert response.status_code == 200
+        assert response.text == (v2_ui / "index.html").read_text()
+        assert "host.js" not in response.text
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["x-frame-options"] == "SAMEORIGIN"
+        assert response.headers["content-type"].startswith("text/html")
+
+
+@pytest.mark.parametrize("name", ["app.js", "style.css", "views/overview.js"])
+def test_v2_serves_the_app_files_no_store(v2_ui, monkeypatch, tmp_path, name):
+    response = _ui_client(monkeypatch, tmp_path).get(f"{UI}/{name}")
+    assert response.status_code == 200
+    assert response.text == (v2_ui / name).read_text()
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_v2_serves_allowlisted_kernel_files_no_store(v2_ui, monkeypatch, tmp_path):
+    response = _ui_client(monkeypatch, tmp_path).get(f"{UI}/kernel/dom.js")
+    assert response.status_code == 200
+    assert response.text == "// kernel dom\n"
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize("name", ["iris-portrait.png", "airbrx-logo.png"])
+def test_v2_serves_the_pinned_images(v2_ui, monkeypatch, tmp_path, name):
+    response = _ui_client(monkeypatch, tmp_path).get(f"{UI}/assets/{name}")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, max-age=3600"
+    assert response.content[:4] == b"\x89PNG"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # Honesty rule 1: no synthetic or captured data, under v2 either.
+        "iris-state.json",
+        "demo-state.json",
+        # v2 does not serve or inject the pinned adapter, or the pinned app.
+        "host.js",
+        "theme.js",
+        "assets/PROVENANCE.md",
+        # Only the patterns are served, not whatever sits in the directory.
+        "secret.txt",
+        # Encoded, so the client does not normalise the dot segment away.
+        "views/..%2Fsecret.txt",
+        "views/..%2F..%2Fsecret.txt",
+        "views/nested/overview.js",
+        "views/overview.css",
+        # The kernel's own allowlist, and a listed file that is not on disk.
+        "kernel/unlisted.js",
+        "kernel/missing.js",
+        "kernel/..%2Fapp.js",
+        "kernel/..%2F..%2Fsecret.txt",
+        "kernel/",
+    ],
+)
+def test_v2_serves_nothing_else(v2_ui, monkeypatch, tmp_path, name):
+    assert _ui_client(monkeypatch, tmp_path).get(f"{UI}/{name}").status_code == 404
+
+
+def test_v2_without_the_kernel_package_404s_kernel_files(v2_ui, monkeypatch, tmp_path):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "omnigent.airbrx.workspace.assets", None)
+    assert _ui_client(monkeypatch, tmp_path).get(f"{UI}/kernel/dom.js").status_code == 404
+
+
+def test_v2_is_read_per_request(v2_ui, monkeypatch, tmp_path):
+    client = _ui_client(monkeypatch, tmp_path)
+    assert "host.js" not in client.get(f"{UI}/index.html").text
+    monkeypatch.delenv("OMNIGENT_IRIS_UI")
+    assert "host.js" in client.get(f"{UI}/index.html").text
+
+
+@pytest.mark.parametrize("value", [None, "", "V2", "v1", "pinned", "1", " v2"])
+def test_anything_but_v2_serves_the_pinned_ui_as_before(v2_ui, monkeypatch, tmp_path, value):
+    if value is None:
+        monkeypatch.delenv("OMNIGENT_IRIS_UI")
+    else:
+        monkeypatch.setenv("OMNIGENT_IRIS_UI", value)
+    client = _ui_client(monkeypatch, tmp_path)
+    index = client.get(f"{UI}/index.html")
+    assert index.status_code == 200
+    assert '<script src="host.js"></script><script src="theme.js">' in index.text
+    assert index.text != (v2_ui / "index.html").read_text()
+    assert client.get(f"{UI}/host.js").status_code == 200
+    assert client.get(f"{UI}/theme.js").status_code == 200
+    for name in ("iris-state.json", "demo-state.json", "kernel/dom.js", "views/overview.js"):
+        assert client.get(f"{UI}/{name}").status_code == 404, name
+
+
+def test_assets_still_require_an_iris_session(v2_ui, monkeypatch, tmp_path):
+    client = _ui_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(iris_routes, "require_user", lambda request, provider: None)
+    assert client.get(f"{UI}/index.html").status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("package", "relpath"),
+    [
+        ("omnigent.airbrx.iris", "ui/index.html"),
+        ("omnigent.airbrx.iris", "ui/app.js"),
+        ("omnigent.airbrx.iris", "ui/views/overview.js"),
+        ("omnigent.airbrx.workspace", "ui/dom.js"),
+        ("omnigent.airbrx.workspace", "ui/brand.css"),
+    ],
+)
+def test_the_v2_ui_and_kernel_are_declared_package_data(package, relpath):
+    """Declared before the files exist, so W2 and W3 land into a wheel that already ships them.
+
+    test_airbrx_package_data.py checks the files on disk, which cannot see
+    `ui/` before it is written; this checks the declaration itself.
+    """
+    from tests.airbrx.test_airbrx_package_data import _declared_globs, _matches
+
+    assert _matches(_declared_globs().get(package, []), relpath)
