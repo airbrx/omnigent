@@ -253,6 +253,24 @@ def _is_eva_agent(agent_name: str | None) -> bool:
     return is_eva(SimpleNamespace(name=agent_name))
 
 
+def _is_tally_agent(agent_name: str | None) -> bool:
+    """Is this harness running Tally (or a fork of her)?
+
+    Same shape and the same reasons as :func:`_is_eva_agent`: defers to
+    ``airbrx.tally.package.is_tally``, imports lazily, and fails open to
+    ``False`` so the harness still starts when the airbrx package is absent.
+    """
+    if not agent_name:
+        return False
+    try:
+        from types import SimpleNamespace
+
+        from omnigent.airbrx.tally.package import is_tally
+    except ImportError:
+        return False
+    return is_tally(SimpleNamespace(name=agent_name))
+
+
 def _resolve_skills_filter() -> str | list[str]:
     """
     Resolve the inner-executor ``skills_filter`` from env config.
@@ -351,7 +369,12 @@ def _build_claude_sdk_executor() -> Executor:
         # host's runner logs: runs on 2026-09-23 and 24 listed 12 of the
         # operator's claude.ai connector servers (Gmail, Slack, Drive, Ramp,
         # Linear among them) and up to 422 of their tools beside her own.
-        strict_mcp_config=_is_iris_agent(agent_name) or _is_eva_agent(agent_name),
+        #
+        # Tally has the same contract again (four read-only portal tools and
+        # nothing ambient), so she is added by name the same way.
+        strict_mcp_config=(
+            _is_iris_agent(agent_name) or _is_eva_agent(agent_name) or _is_tally_agent(agent_name)
+        ),
         # Iris declares `skills: none`, and her three bundled skills reach her
         # as INSTRUCTIONS, not as something to invoke: `bundle_root()` folds
         # every SKILL.md body into AGENTS.md (1728 -> 5780 characters). Her own
@@ -389,8 +412,15 @@ def _build_claude_sdk_executor() -> Executor:
         # tool_boundary already denies `Skill` and allows `ToolSearch` as
         # discovery. So this takes away nothing she uses and closes the same
         # possibly-ungated path.
+        #
+        # Tally the same: `skills: none`, no bundled skills, and her
+        # tool_boundary allows only her four reads and `ToolSearch`.
         disallowed_tools=(
-            ["Skill"] if _is_iris_agent(agent_name) or _is_eva_agent(agent_name) else None
+            ["Skill"]
+            if _is_iris_agent(agent_name)
+            or _is_eva_agent(agent_name)
+            or _is_tally_agent(agent_name)
+            else None
         ),
         api_key_helper=os.environ.get(_ENV_API_KEY_HELPER) or None,
     )
