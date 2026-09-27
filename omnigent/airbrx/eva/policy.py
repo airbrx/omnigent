@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import unquote
 
 #: The tools of ``contracts/mcp_tools.md`` Eva may hold. The contract's other
 #: tools are either named in ``WITHHELD`` below or simply absent.
@@ -107,6 +108,23 @@ BROWSER_TOOLS: dict[str, frozenset[str]] = {
 #: linkedin.com only, never another site, including a link LinkedIn offers.
 LINKEDIN_PREFIX = "https://www.linkedin.com/"
 
+#: LinkedIn's own redirectors: paths on www.linkedin.com whose job is to send
+#: the browser somewhere else. Refused by path, whatever they carry.
+#:
+#: This matters more since 2026-09-27, when her browser became the operator's
+#: own signed-in Chrome. Playwright's ``--allowed-origins`` stops a request to
+#: another origin, a page script's navigation and a subresource, but NOT a
+#: server redirect: measured in extension mode, a navigate to an allowed page
+#: answering 302 landed on the other origin and could be snapshotted. With a
+#: dedicated profile that was a page with nobody signed in; in the operator's
+#: Chrome it would be a page he is signed in to. So a URL that could redirect
+#: off-site is refused before it is ever opened.
+LINKEDIN_REDIRECTORS = ("redir/", "redir?", "safety/go", "slink", "externalredirect")
+
+#: How many rounds of percent-decoding a URL gets before it is inspected for an
+#: embedded address. Three covers double and triple encoding.
+_DECODE_ROUNDS = 3
+
 #: Longest wait she may ask for, in seconds. A page that has not rendered in
 #: half a minute is a page to report, not to sit on.
 MAX_WAIT_SECONDS = 30
@@ -120,10 +138,27 @@ def linkedin_url_ok(url: object) -> bool:
     follow it. What is left is what a browser rewrites before it navigates:
     whitespace and control characters, which it strips, and a backslash, which
     it reads as a slash. Any of those is a refusal.
+
+    Then the ways a linkedin.com address can still end somewhere else, because
+    a server redirect is the one thing the browser-side fence does not stop:
+    one of LinkedIn's redirector paths (:data:`LINKEDIN_REDIRECTORS`), or any
+    other address carried inside this one (a ``//`` after the host, plainly or
+    percent-encoded, as in ``?url=https%3A%2F%2Fevil.example``). None of the
+    pages she needs (a recent-activity page, a post, its analytics) carries
+    one.
     """
     if not isinstance(url, str) or not url.startswith(LINKEDIN_PREFIX):
         return False
-    return not any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F or c == "\\" for c in url)
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F or c == "\\" for c in url):
+        return False
+    rest = url[len(LINKEDIN_PREFIX) :]
+    for _ in range(_DECODE_ROUNDS):
+        rest = unquote(rest)
+    lowered = rest.lower()
+    # A leading slash makes ``//host`` with the prefix's own slash.
+    if lowered.startswith(("/", *LINKEDIN_REDIRECTORS)):
+        return False
+    return "//" not in lowered and "\\" not in lowered
 
 
 def _arguments(event: Any) -> dict[str, Any] | None:

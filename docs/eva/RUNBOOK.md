@@ -99,18 +99,61 @@ item without an address on its author's recent-activity page
 (`https://www.linkedin.com/in/<handle>/recent-activity/all/`, matched by date
 and opening words), record its address with `set_linkedin_post_url`, then open
 its analytics on linkedin.com and record the numbers with `record_linkedin_metrics`,
-once LinkedIn has been signed in on her profile. Until then, and whenever a call
+in Abram's own signed-in Chrome. Until then, and whenever a call
 is refused, she says so and falls back to the paste-in route.
 
 **Why a declared server and not Claude in Chrome.** The fence below only holds
 for tools Omnigent dispatches. Claude in Chrome's tools would come from the CLI
 itself (never, in fact: the claude-sdk executor does not pass `--chrome`), and a
 measured Iris turn ran a CLI-loaded tool (`ToolSearch`) with no policy
-evaluation. It would also drive the operator's own Chrome, signed in as them
-everywhere. So the browser is Playwright MCP, declared in Eva's bundle as a
+evaluation. So the browser is Playwright MCP, declared in Eva's bundle as a
 stdio server the runner spawns on the execution host. Its tools reach her CLI
 through the one `omnigent` server as `browser__<tool>`, so `--strict-mcp-config`
 (#97) and the `Skill` removal (#98) are unchanged.
+
+**Extension mode, 2026-09-27.** The first cut ran headless Chrome on a
+dedicated profile, `~/.eva-linkedin-profile`. It never got a session: LinkedIn
+refuses a sign-in inside an automation-launched Chrome. Abram chose to let Eva
+drive his own, already signed-in Chrome instead, through Microsoft's
+"Playwright Extension" and `playwright-mcp --extension`. How that mode works,
+read from `@playwright/mcp` 0.0.82 / playwright-core 1.64.0-alpha and the
+extension's source (microsoft/playwright `packages/extension`):
+
+- `playwright-mcp --extension` starts a WebSocket relay on 127.0.0.1 and
+  opens the extension's `connect.html` in the running Chrome (it spawns the
+  Chrome binary with that URL, which hands it to the running instance). The
+  extension only accepts a loopback relay.
+- **Approval.** Without a token, `connect.html` shows a tab picker and waits,
+  with no timeout, for someone to pick one of the open tabs. With
+  `PLAYWRIGHT_MCP_EXTENSION_TOKEN` equal to the token on the extension's status
+  page, it connects without a prompt and hands the client the fresh tab it
+  opened for the handshake. The token is per Chrome profile.
+- **Scope.** Each client gets its own tab group ("Playwright · <client>") and
+  sees only the tabs in it: the tab it was given, popups those tabs open, and
+  any tab a person drags into the group. No other tab is attached. Closing the
+  connection ungroups the tabs and leaves them open; Chrome itself is never
+  closed (`browser_close` disconnects the CDP relay and nothing more).
+- **The origin fence and the tool list are mode-independent.** The five-tool
+  allow list and `tool_boundary` live in Omnigent. `--allowed-origins` is the
+  same `context.route()` interception in both modes; in extension mode its
+  `Fetch.enable` travels to her attached tabs through `chrome.debugger`.
+
+**The bundle runs the token path only.** Its launch line reads the token from
+the login keychain item `eva-playwright-extension-token` (an explicit
+`PLAYWRIGHT_MCP_EXTENSION_TOKEN` in the spawn environment wins) and **refuses
+to start, exit 78, without one**. The picker would let an existing tab of
+Abram's, with its own history, become hers, and would hold her turn until
+somebody clicked. A refused start is what a missing install always gave her:
+the browser server fails and she offers the paste-in route.
+
+Why the keychain and not the host's launchd environment: a stdio MCP server
+declared without `env:` gets only the MCP SDK's default environment (`HOME`,
+`LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`), so a variable in the host's
+environment would need `OMNIGENT_RUNNER_ENV_PASSTHROUGH`, a change to
+`eva_host.sh`, a host restart, and an `env:` block that would also hand the
+Playwright process the outreach bearer token. The keychain keeps the token out
+of the host, the runner and every file, which is how this runbook already
+keeps Eva's secrets.
 
 **The fences, outermost first.**
 
@@ -118,18 +161,40 @@ through the one `omnigent` server as `browser__<tool>`, so `--strict-mcp-config`
    `browser_snapshot`, `browser_wait_for`, `browser_navigate_back`,
    `browser_close`. No click, type, key, form, evaluate, run code, upload,
    screenshot, tab, cookie or network tool, so she cannot post, comment, react
-   or message whatever a page says.
+   or message whatever a page says, and she cannot switch to another tab.
 2. `tool_boundary`: a navigate must start with `https://www.linkedin.com/` and
-   carry no whitespace, control character or backslash; each tool may carry
+   carry no whitespace, control character or backslash; since 2026-09-27 it
+   also refuses LinkedIn's redirectors (`/redir/`, `/safety/go`, `/slink`,
+   `/externalredirect`) and any address carrying another address (`//` after
+   the host, plain or percent-encoded up to three times). Each tool may carry
    only its named arguments (`browser_snapshot` never `filename`, which writes a
    file); a wait is at most 30 seconds; a bare or differently namespaced browser
    name is refused. The engine sends `data` as `{"name", "arguments"}`, the
    inner stack as `{"tool", "args"}`; both are read, and unreadable arguments
    are a denial.
-3. `--allowed-origins "https://www.linkedin.com;*.licdn.com"`: the browser
-   requests nothing else. Playwright documents this as not a security boundary
-   and not covering redirects, which is why 2 exists.
-4. `--no-webmcp`: a page cannot register tools of its own.
+3. The token-only start: a new tab of her own, in her own group.
+4. `--allowed-origins "https://www.linkedin.com;*.licdn.com"`: her tabs request
+   nothing else.
+5. `--no-webmcp`: a page cannot register tools of its own.
+
+**What the fence does in extension mode, measured 2026-09-27.** No real
+extension was involved (installing one is Abram's step): a stand-in for Chrome
+plus the extension spoke the extension's relay protocol to the real
+`playwright-mcp --extension` 0.0.82 and bridged `chrome.debugger` onto a
+throwaway headless Chrome, with `--allowed-origins` set to one of two local
+servers. Direct navigation to the other origin: `ERR_BLOCKED_BY_CLIENT`. A
+`fetch` and an `<img>` to it from the allowed page: blocked. A page script
+setting `location.href` to it: blocked. **A 302 from the allowed origin to the
+other one: followed, and the page loaded and could be snapshotted.** That is
+the gap Playwright documents ("does not affect redirects"), it is the same in
+both modes, and it is why fence 2 now refuses redirect-shaped addresses before
+they are opened. What remains is a linkedin.com page that redirects off-site
+without carrying the target in its address; none of the pages she opens
+(recent-activity, a post, its analytics) does.
+
+**What the operator must not do while she works:** drag another tab into her
+"Playwright" group (that hands it to her), or sign out of LinkedIn in that
+Chrome profile (she will stop at the sign-in page and offer paste-in).
 
 **What is installed on the execution host (LOCAL ONLY, as the operator, no
 sudo).**
@@ -137,43 +202,45 @@ sudo).**
 - `~/.eva-playwright`: `npm install --save-exact @playwright/mcp@0.0.82` from
   registry.npmjs.org (Microsoft's package, repo microsoft/playwright-mcp; it
   brings playwright and playwright-core 1.64.0-alpha-1789764292000). Nothing
-  global.
-- The Chrome channel is the installed Google Chrome
-  (`/Applications/Google Chrome.app`), which `--browser chrome` launches. No
-  Playwright browser download was needed.
-- `~/.eva-linkedin-profile` (mode 700): Eva's own browser profile, used by
-  nothing else. Headless during her turns, with Chrome's sandbox on
-  (`--sandbox`; Playwright turns it off by default).
+  global. Its relay speaks extension protocol 2.
+- Google Chrome (`/Applications/Google Chrome.app`), Abram's own, with the
+  Playwright Extension installed in the profile that is signed in to LinkedIn.
+  If several profiles have it, the last-used one wins; pin one by setting
+  `PLAYWRIGHT_MCP_PROFILE_DIR_NAME` (the last part of "Profile Path" on
+  `chrome://version`).
+- The keychain item `eva-playwright-extension-token` in Abram's login keychain.
 - `~/.eva-playwright/output`: where Playwright writes the snapshot a navigate
   takes; capped at 20 MB. Eva reads pages with an explicit `browser_snapshot`,
   which returns the text inline.
 
-The bundle launches it through `/bin/sh -c` only so `$HOME` resolves on the
-host that runs her turn: spec `args` are not environment-expanded, and a path
-naming one operator's home would be wrong on any other host. A host without
-the install fails to start the browser server and Eva falls back to paste-in.
+**Setup (Abram, once).**
 
-**The one-time sign-in (the operator, by hand).** Playwright launches Chrome
-with `--use-mock-keychain`, so a profile signed in by an ordinary Chrome window
-cannot be read by Eva's browser. The sign-in has to happen in a
-Playwright-launched window on the same profile:
+1. In the Chrome profile that is signed in to LinkedIn, install "Playwright
+   Extension" from the Chrome Web Store:
+   https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm
+2. Click the extension's icon; its status page shows
+   `PLAYWRIGHT_MCP_EXTENSION_TOKEN`. Copy the value.
+3. Store it (the command prompts for it, so it never lands in shell history):
 
-```sh
-~/.eva-playwright/sign-in.sh
-```
+   ```sh
+   security add-generic-password -U -a "$USER" -s eva-playwright-extension-token -T /usr/bin/security -w
+   ```
 
-It opens a headed Chrome on `~/.eva-linkedin-profile` at
-`https://www.linkedin.com/login` and returns when that window is closed. Sign
-in as the account whose post analytics Eva should read, then close the window.
-Nobody else types or sees the credentials. Run it while no Eva turn is using the
-browser (one Chrome at a time per profile). Re-run it whenever Eva reports that
-LinkedIn wants a sign-in.
+No host restart: the keychain is read each time her browser server starts.
+Regenerating the token on the status page means storing the new value the
+same way.
 
-**Known limits.** One profile means one browser at a time: two Eva sessions
-opening the browser at once on the same host, the second one fails to launch
-and falls back to paste-in. On a coordinator that has no install (production
-EC2), anything that resolves her MCP schemas server-side sees the browser as a
-failed server; her turns run on the execution host, where it is installed.
+**The dedicated profile is retired.** `~/.eva-linkedin-profile` and
+`~/.eva-playwright/sign-in.sh` are no longer used by anything and can be
+deleted by hand. To go back to that route, revert the PR that introduced
+extension mode; nothing else depends on it.
+
+**Known limits.** One client connection per tab: two Eva sessions at once each
+get their own group and tab. Her tab takes focus when she connects, because
+the extension activates it; she is working in Abram's visible browser, not a
+hidden one. On a coordinator that has no install (production EC2), anything
+that resolves her MCP schemas server-side sees the browser as a failed server;
+her turns run on the execution host, where it is installed.
 
 **Measured on the local 6770 stack, 2026-09-26, profile not yet signed in.**
 "Refresh stats with Eva" from the LinkedIn tab: her CLI `init` listed the one
