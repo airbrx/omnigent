@@ -189,7 +189,7 @@ Nothing below prints a secret.
   `ai.airbrx.gateway-portal`.
 - **Restart:** `launchctl kickstart -k gui/$UID/<label>`.
 - **Stop:** `launchctl bootout gui/$UID/<label>`.
-- **Logs:** the host's is `~/.omnigent-tally-host/data/logs/launchd.log`.
+- **Logs:** the host's is `~/.omnigent-tally-host/data/logs/launchd.log`; the portal's is `~/.airbrx-portal/logs/portal.log`.
 
 **Availability is a laptop's.** Both agents live in Abram's GUI domain: up
 while he is logged in, not after a reboot until he logs in. While the Mac
