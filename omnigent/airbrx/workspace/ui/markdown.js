@@ -1,8 +1,9 @@
 // Airbrx workspace kernel: the safe markdown subset agents write in chat.
 //
 // Bold, italics, inline code, bullet and numbered lists, pipe tables (a
-// header row, a separator row, then body rows; alignment is ignored) and line
-// breaks; headings render as bold paragraphs. No links, no images, no HTML. Every
+// header row, a separator row, then body rows; alignment is ignored),
+// blockquotes (`> ` lines, two levels deep), horizontal rules (`---`, `***`,
+// `___`) and line breaks; headings render as bold paragraphs. No links, no images, no HTML. Every
 // piece is built as DOM nodes with text content, so any markup in the text
 // (which can quote customer data) shows as the characters it is and never
 // becomes an element. Anything outside the subset shows as written.
@@ -42,6 +43,11 @@
   const BULLET = /^\s*[-*+]\s+(.*)$/;
   const NUMBERED = /^\s*(\d{1,9})[.)]\s+(.*)$/;
   const HEADING = /^\s*#{1,6}\s+(.*)$/;
+  // Three or more of one of - * _, optionally spaced, and nothing else.
+  const RULE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+  const QUOTE = /^ {0,3}>[ \t]?(.*)$/;
+  // Deeper `>` marks than this stay as the characters they are.
+  const QUOTE_DEPTH = 2;
 
   // One separator cell, already trimmed. The row is split and trimmed by
   // cells(), never matched as a whole: a single pattern with adjacent
@@ -99,12 +105,34 @@
 
   /** Text as paragraphs, lists, tables and inline marks in a DocumentFragment. */
   function markdown(text) {
+    return blocks(String(text ?? "").replace(/\r\n?/g, "\n").split("\n"), 0);
+  }
+
+  function blocks(lines, depth) {
     const fragment = document.createDocumentFragment();
     let paragraph = null;
     let list = null;
-    const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
+      if (depth < QUOTE_DEPTH && QUOTE.test(line)) {
+        paragraph = null;
+        list = null;
+        const quoted = [];
+        for (; index < lines.length; index += 1) {
+          const match = QUOTE.exec(lines[index]);
+          if (!match) break;
+          quoted.push(match[1]);
+        }
+        index -= 1;
+        fragment.append(el("blockquote", {}, blocks(quoted, depth + 1)));
+        continue;
+      }
+      if (RULE.test(line)) {
+        paragraph = null;
+        list = null;
+        fragment.append(el("hr"));
+        continue;
+      }
       const width = tableStart(line, lines[index + 1]);
       if (width) {
         paragraph = null;

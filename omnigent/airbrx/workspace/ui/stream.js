@@ -9,7 +9,7 @@
 //
 // What may reach the chat is a whitelist:
 //   message, role assistant   -> an agent line (its output_text parts)
-//   message, role user        -> history only: recognise() or a user line
+//   message, role user        -> history only: recognise(text, item) or a user line
 //   function_call             -> live only: a progress label from `doing`,
 //                                never the tool's name, never its arguments
 //   function_call_output, reasoning, anything else -> nothing, ever. They carry
@@ -102,7 +102,7 @@
         transcript.progress(label(item.name));
       } else if (item.type === "message" && item.role === "user" && !live) {
         const text = itemText(item);
-        const note = recognise(text);
+        const note = recognise(text, item);
         if (typeof note === "string" && note) transcript.add("system", note);
         else if (text.trim()) transcript.add("user", String(stripUser(text)));
       }
