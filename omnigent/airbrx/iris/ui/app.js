@@ -52,6 +52,8 @@
   // One automatic collection per page load, however often state is re-read.
   let autoCollected = false;
   let refused = ""; // why the adapter's state was not drawn, in plain words
+  // collect mode only: an out-of-date capture exists but is not drawn.
+  let heldStale = false;
   let busy = false;
   let stopWatching = null;
   let currentTab = null;
@@ -75,8 +77,8 @@
       .replace(/^./, (c) => c.toUpperCase());
   const overviewOf = (s) => (s && s.overview) || {};
   const metricsOf = (s) => overviewOf(s).metrics || {};
-  const sessionTenant = () =>
-    (readiness && readiness.tenant_id) || overviewOf(state).tenant_id || "";
+  // The tenant this session is bound to, as readiness reports it; "" unknown.
+  const sessionTenant = () => (readiness && readiness.tenant_id) || "";
 
   function when(epochSeconds) {
     if (!finite(epochSeconds)) return "";
@@ -193,6 +195,155 @@
     return el("span", { class: `badge ${kind || ""}` }, text);
   }
 
+  // ------------------------------------------------- is the capture coherent --
+  //
+  // Ported from the pinned workspace's normalize() (airbrx/iris ui/app.js),
+  // which ran on every state. A capture whose own numbers disagree is not
+  // drawn: it once rendered "80.0%" captioned "120 hits over 700 requests"
+  // beside "Requests 1,000", a confident headline over a set the product
+  // already knew was incoherent (Q19). The refusal names each mismatch.
+  //
+  // Deliberately NOT a rule: requests > 0. A week with no traffic is a
+  // measured zero, and a measured zero is shown as zero, never refused.
+
+  /** Why one metrics block cannot be drawn, as plain sentences; [] when it can. */
+  function metricsProblems(m, where) {
+    if (!m || typeof m !== "object") return [`${where} has no metrics.`];
+    const out = [];
+    const counts = [
+      "requests",
+      "cache_hits",
+      "cache_misses",
+      "hit_rate_denominator",
+      "covered_days",
+      "requested_days",
+    ].filter(
+      (key) =>
+        m[key] !== null &&
+        m[key] !== undefined &&
+        (!finite(m[key]) || m[key] < 0),
+    );
+    if (counts.length)
+      return [
+        `${where}: ${counts.join(", ")} ${counts.length === 1 ? "is not a count" : "are not counts"}.`,
+      ];
+    const has = (...keys) => keys.every((key) => finite(m[key]));
+    if (
+      m.hit_rate !== null &&
+      m.hit_rate !== undefined &&
+      (!finite(m.hit_rate) || m.hit_rate < 0 || m.hit_rate > 1)
+    )
+      out.push(`${where}: the hit rate is not between 0 and 1.`);
+    if (has("cache_hits", "requests") && m.cache_hits > m.requests)
+      out.push(`${where}: there are more hits than requests.`);
+    if (
+      has("hit_rate_denominator", "requests") &&
+      m.hit_rate_denominator !== m.requests
+    )
+      out.push(
+        `${where}: the hit rate's denominator is not the request count.`,
+      );
+    if (
+      has("cache_hits", "cache_misses", "hit_rate_denominator") &&
+      m.cache_hits + m.cache_misses !== m.hit_rate_denominator
+    )
+      out.push(
+        `${where}: hits and misses do not add up to the hit rate's denominator.`,
+      );
+    if (
+      has("hit_rate", "cache_hits", "hit_rate_denominator") &&
+      m.hit_rate_denominator > 0 &&
+      Math.abs(m.hit_rate - m.cache_hits / m.hit_rate_denominator) > 0.0005
+    )
+      out.push(
+        `${where}: the stated hit rate is not its own hits over its own denominator.`,
+      );
+    if (
+      has("covered_days", "requested_days") &&
+      m.covered_days > m.requested_days
+    )
+      out.push(`${where}: more days are covered than were requested.`);
+    if (
+      m.period_complete === true &&
+      has("covered_days", "requested_days") &&
+      m.covered_days !== m.requested_days
+    )
+      out.push(
+        `${where}: the period is marked complete, but not every requested day is covered.`,
+      );
+    const latency = m.latency && m.latency.response_time_ms;
+    if (
+      latency !== null &&
+      latency !== undefined &&
+      (!finite(latency) || latency < 0)
+    )
+      out.push(`${where}: the response time is not a duration.`);
+    return out;
+  }
+
+  /** Why a state cannot be drawn, as plain sentences; [] when it can. */
+  function captureProblems(next, boundTenant) {
+    const o = next && next.overview;
+    if (!o || typeof o !== "object") return ["The capture has no overview."];
+    const tenant = o.tenant_id;
+    if (typeof tenant !== "string" || !tenant)
+      return ["The capture does not name its tenant."];
+    const out = [];
+    if (tenant !== boundTenant)
+      out.push("The capture is for a different tenant than this session.");
+    for (const [label, report] of [
+      ["The audit", next.audit],
+      ["The investigation", next.investigation],
+      ["The proposal", next.proposal],
+    ])
+      if (
+        report &&
+        typeof report === "object" &&
+        report.tenant_id !== undefined &&
+        report.tenant_id !== tenant
+      )
+        out.push(`${label} is for a different tenant than the overview.`);
+    if (!Array.isArray(o.evidence) || !Array.isArray(o.findings))
+      out.push("The overview's evidence or findings are not lists.");
+    if (next.audit && !Array.isArray(next.audit.findings))
+      out.push("The audit's findings are not a list.");
+    if (
+      next.rules !== undefined &&
+      next.rules !== null &&
+      !Array.isArray(next.rules)
+    )
+      out.push("The rule summaries are not a list.");
+    for (const report of [o, next.audit].filter(
+      (r) => r && typeof r === "object",
+    )) {
+      for (const f of Array.isArray(report.findings) ? report.findings : [])
+        if (
+          !f ||
+          typeof f !== "object" ||
+          typeof f.id !== "string" ||
+          (f.evidence_ids !== undefined &&
+            f.evidence_ids !== null &&
+            !Array.isArray(f.evidence_ids))
+        )
+          out.push("A finding is malformed.");
+        else if (f.tenant_id !== undefined && f.tenant_id !== tenant)
+          out.push(
+            `Finding ${f.id} is for a different tenant than the overview.`,
+          );
+      for (const e of Array.isArray(report.evidence) ? report.evidence : [])
+        if (!e || typeof e !== "object")
+          out.push("An evidence row is malformed.");
+    }
+    if (
+      (Array.isArray(next.rules) ? next.rules : []).some(
+        (r) => !r || typeof r !== "object",
+      )
+    )
+      out.push("A rule summary is malformed.");
+    out.push(...metricsProblems(o.metrics, "The overview"));
+    return [...new Set(out)];
+  }
+
   // ------------------------------------------------------------- views --
 
   /** What every tab but Accounts shows while there is no capture to draw. */
@@ -210,6 +361,10 @@
       head = "Refreshing an out-of-date capture";
       body =
         "Iris is collecting a fresh overview. The old capture is not shown until she has.";
+    } else if (heldStale) {
+      head = "The last capture is out of date";
+      body =
+        "This workspace is set to show only a fresh capture, and the last collection did not produce one.";
     } else {
       head = "Iris has not collected an overview here yet";
       body =
@@ -235,7 +390,9 @@
                   disabled: busy,
                   onclick: () => void refresh(),
                 },
-                "Collect the first overview",
+                heldStale
+                  ? "Collect a fresh overview"
+                  : "Collect the first overview",
               ),
             ),
       ),
@@ -260,7 +417,9 @@
       kpi(
         "Cache hit rate",
         percent(m.hit_rate),
-        `${num(m.cache_hits)} hits over ${num(m.hit_rate_denominator)} requests`,
+        finite(m.cache_hits) || finite(m.hit_rate_denominator)
+          ? `${num(m.cache_hits)} hits over ${num(m.hit_rate_denominator)} requests`
+          : "not measured in this capture",
       ),
       kpi("Requests", num(m.requests), "observed in the period"),
       kpi(
@@ -292,7 +451,9 @@
         { class: "card-head" },
         el("div", { class: "section-title" }, "Evidence coverage"),
         badge(
-          `${num(m.covered_days)} / ${num(m.requested_days)} days`,
+          finite(m.covered_days) || finite(m.requested_days)
+            ? `${num(m.covered_days)} / ${num(m.requested_days)} days`
+            : "Coverage not measured",
           m.period_complete ? "ok" : "warn",
         ),
       ),
@@ -388,16 +549,9 @@
       full
         ? el(
             "details",
-            { class: "review" },
+            { class: "review", open: note ? true : undefined },
             el("summary", {}, note ? "Your review note" : "Add a review note"),
-            el("textarea", {
-              rows: "3",
-              maxlength: "4000",
-              "aria-label": `Review note for ${f.id}`,
-              placeholder:
-                "What should change? What freshness or table-scope limits must hold?",
-              oninput: (event) => notes.set(f.id, event.target.value),
-            }),
+            noteBox(f, note),
             el(
               "p",
               { class: "muted small" },
@@ -406,6 +560,20 @@
           )
         : null,
     );
+  }
+
+  /** A finding's note box, holding what was typed, so a redraw keeps it. */
+  function noteBox(f, note) {
+    const box = el("textarea", {
+      rows: "3",
+      maxlength: "4000",
+      "aria-label": `Review note for ${f.id}`,
+      placeholder:
+        "What should change? What freshness or table-scope limits must hold?",
+      oninput: (event) => notes.set(f.id, event.target.value),
+    });
+    box.value = note;
+    return box;
   }
 
   function exportHandoff(f) {
@@ -909,6 +1077,14 @@
         );
         return;
       }
+      if (!here)
+        container.append(
+          el(
+            "p",
+            { class: "notice" },
+            "This session's tenant could not be confirmed, so no tenant can be opened from here. Use the Iris landing page.",
+          ),
+        );
       if (accounts.error)
         container.append(
           el("p", { class: "notice error", role: "alert" }, accounts.error),
@@ -964,17 +1140,19 @@
                     {},
                     entry.tenant_id === here
                       ? el("span", { class: "badge accent" }, "This session")
-                      : entry.host_online === false
-                        ? el("span", { class: "muted small" }, "Host offline")
-                        : el(
-                            "button",
-                            {
-                              type: "button",
-                              class: "chip",
-                              onclick: () => openTenant(entry.tenant_id),
-                            },
-                            "Open in a new session",
-                          ),
+                      : !here
+                        ? el("span", { class: "muted small" }, "Not available")
+                        : entry.host_online === false
+                          ? el("span", { class: "muted small" }, "Host offline")
+                          : el(
+                              "button",
+                              {
+                                type: "button",
+                                class: "chip",
+                                onclick: () => openTenant(entry.tenant_id),
+                              },
+                              "Open in a new session",
+                            ),
                   ),
                 ),
               ),
@@ -1106,6 +1284,21 @@
     ];
     const cur = inv.current || {};
     const prev = inv.previous || {};
+    const problems = [
+      ...metricsProblems(prev, "The previous period"),
+      ...metricsProblems(cur, "The current period"),
+    ];
+    if (problems.length)
+      return el(
+        "div",
+        { class: "card" },
+        el("div", { class: "section-title" }, "Period comparison"),
+        el(
+          "p",
+          { class: "refused" },
+          `Iris's period comparison is not shown. ${problems.join(" ")}`,
+        ),
+      );
     return el(
       "div",
       { class: "card" },
@@ -1421,7 +1614,8 @@
   function renderHeader() {
     $("synthetic").hidden = !isSynthetic();
     let text;
-    if (!state) text = "Iris has not read this tenant yet";
+    if (!state && refused) text = "Iris's capture is not shown";
+    else if (!state) text = "Iris has not read this tenant yet";
     else if (finite(state.captured_at))
       text = `Iris read this tenant ${when(state.captured_at)}`;
     else if (finite(state.cache_age_seconds))
@@ -1558,12 +1752,23 @@
   }
 
   /** Draw a state from the adapter, unless it names another tenant. */
+  /**
+   * Draw a state from the adapter only when it is this session's tenant and
+   * its numbers agree with each other. The adapter refuses another tenant's
+   * report too; this is the second check, and it does not depend on readiness
+   * answering: without readiness the session's tenant is unknown, so nothing
+   * is drawn.
+   */
   function accept(next) {
-    const tenant = overviewOf(next).tenant_id;
-    if (readiness && readiness.tenant_id && tenant !== readiness.tenant_id) {
+    const bound = readiness && readiness.tenant_id;
+    const problems = bound
+      ? captureProblems(next, bound)
+      : [
+          "This session's tenant could not be confirmed, so no capture is drawn.",
+        ];
+    if (problems.length) {
       state = null;
-      refused =
-        "The adapter answered with a capture for a different tenant than this session, so none of it is shown.";
+      refused = `Iris's capture is not shown. ${problems.join(" ")}`;
       return false;
     }
     refused = "";
@@ -1656,7 +1861,7 @@
     try {
       const next = await api("refresh", {});
       await stopTurn();
-      accept(next);
+      if (accept(next)) heldStale = false;
       return true;
     } catch (error) {
       await stopTurn();
@@ -1665,7 +1870,9 @@
           "system",
           state
             ? "That collection produced no new overview. The capture shown is the earlier one, with its time."
-            : "That collection produced no overview, so there is nothing to show yet. Ask Iris in the chat what went wrong.",
+            : heldStale
+              ? "That collection produced no new overview. The last capture is out of date and is not shown here. Ask Iris in the chat what went wrong."
+              : "That collection produced no overview, so there is nothing to show yet. Ask Iris in the chat what went wrong.",
         );
       else
         transcript.add(
@@ -1730,6 +1937,7 @@
       render();
       return autoCollect("stale");
     }
+    heldStale = true;
     return autoCollect("stale");
   }
 

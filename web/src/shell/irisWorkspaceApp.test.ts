@@ -610,13 +610,19 @@ it("rule 3: with state loaded and the turn refused, no number, finding or rule f
 
 it("rule 4: host error text is never shown", async () => {
   const SENTINEL = "SENTINEL-host-secret-4f2a";
-  serve({
-    chat: () => detail(`Traceback: ${SENTINEL}`, 500),
-    readiness: () => detail(`boom ${SENTINEL}`, 500),
-  });
+  serve({ chat: () => detail(`Traceback: ${SENTINEL}`, 500) });
   await mount();
   ask("Hello");
   await waitFor(() => expect(messages().querySelector("li.error")).not.toBeNull());
+  expect(document.body.textContent).not.toContain(SENTINEL);
+
+  // Nor a readiness failure's.
+  document.body.innerHTML = "";
+  serve({ readiness: () => detail(`boom ${SENTINEL}`, 500) });
+  start();
+  await waitFor(() =>
+    expect(document.getElementById("host-status")?.textContent).toMatch(/^This host will not/),
+  );
   expect(document.body.textContent).not.toContain(SENTINEL);
 });
 
@@ -782,7 +788,10 @@ it("rule 11: when no turn has completed here, the unverified line shows", async 
 
 it("rule 11: a readiness failure says the host will not run turns, never a blank bar", async () => {
   serve({ readiness: () => detail("Iris is not bound here", 403) });
-  await mount();
+  start();
+  await waitFor(() =>
+    expect(document.getElementById("host-status")?.dataset.state).toBe("refused"),
+  );
   expect(document.getElementById("host-status")?.textContent).toMatch(
     /^This host will not run turns in this session: .+/,
   );
@@ -1029,4 +1038,206 @@ it("the host's theme message is followed; other origins are ignored", async () =
     }),
   );
   expect(document.documentElement.dataset.theme).toBe("dark");
+});
+
+// ------------------------------------------ an incoherent capture (Q19) --
+//
+// Ported from the pinned workspace's normalize(): a capture whose own numbers
+// disagree is refused, with the mismatch named, and no number from it is
+// drawn. The incident: "80.0%" captioned "120 hits over 700 requests" beside
+// "Requests 1,000".
+
+function withMetrics(changes: Record<string, unknown>) {
+  const state = makeState();
+  Object.assign(state.overview.metrics, changes);
+  return state;
+}
+
+async function refusedCapture(state: unknown, hash = "") {
+  serve({ state: () => json(state), refresh: () => json(state) });
+  start(hash);
+  await waitFor(() => expect(view().textContent).toContain("Iris's capture is not shown."));
+  await waitFor(() => expect(document.getElementById("refresh")).not.toBeDisabled());
+}
+
+it("Q19: the incident capture (80.0%, 120 hits over 700, Requests 1,000) is refused, naming each mismatch", async () => {
+  await refusedCapture(
+    withMetrics({ hit_rate: 0.8, cache_hits: 120, hit_rate_denominator: 700, requests: 1000 }),
+  );
+  const text = view().textContent ?? "";
+  expect(text).toContain("The overview: the hit rate's denominator is not the request count.");
+  expect(text).toContain(
+    "The overview: the stated hit rate is not its own hits over its own denominator.",
+  );
+  expect(text).toContain(
+    "The overview: hits and misses do not add up to the hit rate's denominator.",
+  );
+  expect(view().querySelector(".kpi")).toBeNull();
+  expect(document.getElementById("freshness")?.textContent).toBe("Iris's capture is not shown");
+  for (const label of ["Overview", "Findings", "Rules", "Evidence", "Results"]) {
+    tab(label);
+    expect(view().textContent).not.toMatch(/\d+(\.\d+)?%|1,000|\b120\b|\b700\b/);
+    expect(view().textContent).toContain("Iris's capture is not shown.");
+  }
+});
+
+it.each([
+  [
+    "more hits than requests",
+    { cache_hits: 800, cache_misses: -100 },
+    "The overview: cache_misses is not a count.",
+  ],
+  [
+    "more hits than requests",
+    { cache_hits: 900, cache_misses: 0, hit_rate_denominator: 900, requests: 700, hit_rate: 1 },
+    "The overview: there are more hits than requests.",
+  ],
+  [
+    "hits and misses not adding up",
+    { cache_misses: 100 },
+    "The overview: hits and misses do not add up to the hit rate's denominator.",
+  ],
+  [
+    "a hit rate outside 0 to 1",
+    { hit_rate: 1.2 },
+    "The overview: the hit rate is not between 0 and 1.",
+  ],
+  [
+    "a complete period with a missing day",
+    { covered_days: 6 },
+    "The overview: the period is marked complete, but not every requested day is covered.",
+  ],
+  [
+    "more covered days than requested",
+    { covered_days: 8, period_complete: false },
+    "The overview: more days are covered than were requested.",
+  ],
+  ["a negative count", { requests: -1 }, "The overview: requests is not a count."],
+  [
+    "a negative response time",
+    { latency: { response_time_ms: -5, label: "x" } },
+    "The overview: the response time is not a duration.",
+  ],
+])("Q19: a capture with %s is refused", async (_, changes, named) => {
+  await refusedCapture(withMetrics(changes));
+  expect(view().textContent).toContain(named);
+  expect(view().querySelector(".kpi")).toBeNull();
+});
+
+it("Q19: a finding or audit for another tenant, or a malformed rule summary, is refused", async () => {
+  const state = makeState();
+  state.audit.findings[0].tenant_id = "someone-else";
+  await refusedCapture(state);
+  expect(view().textContent).toContain(
+    `Finding ${FINDING} is for a different tenant than the overview.`,
+  );
+
+  document.body.innerHTML = "";
+  await refusedCapture(makeState({ audit: { ...makeState().audit, tenant_id: "someone-else" } }));
+  expect(view().textContent).toContain("The audit is for a different tenant than the overview.");
+
+  document.body.innerHTML = "";
+  await refusedCapture(makeState({ rules: [null] }), "#rules");
+  expect(view().textContent).toContain("A rule summary is malformed.");
+});
+
+it("Q19: a measured zero week is not a mismatch; it is drawn as zero", async () => {
+  serve({
+    state: () =>
+      json(
+        withMetrics({
+          requests: 0,
+          cache_hits: 0,
+          cache_misses: 0,
+          hit_rate: null,
+          hit_rate_denominator: 0,
+        }),
+      ),
+  });
+  await mount();
+  expect(view().textContent).not.toContain("not shown");
+  expect(view().querySelectorAll(".kpi")).toHaveLength(4);
+});
+
+it("Q19: an investigation whose periods disagree is not drawn on the Evidence tab", async () => {
+  const state = makeState();
+  Object.assign(state.investigation.current, { cache_hits: 120, requests: 1000 });
+  serve({ state: () => json(state) });
+  await mount("#evidence");
+  expect(view().textContent).toContain("Iris's period comparison is not shown.");
+  expect(view().textContent).toContain(
+    "The current period: hits and misses do not add up to the hit rate's denominator.",
+  );
+  expect(screen.queryByRole("table", { name: "Previous and current period" })).toBeNull();
+});
+
+// ---------------------------------------------------- review follow-ups --
+
+it("a review note survives a redraw of the page", async () => {
+  await mount("#findings");
+  const box = () => screen.getByRole("textbox", { name: `Review note for ${FINDING}` });
+  fireEvent.input(box(), { target: { value: "Keep report-cache at 60 s." } });
+  // Every turn ends in a redraw.
+  ask("Anything else?");
+  await waitFor(() => expect(messages().querySelector("li.agent")).not.toBeNull());
+  await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
+  expect(box()).toHaveValue("Keep report-cache at 60 s.");
+  expect(box().closest("details")).toHaveAttribute("open");
+});
+
+it("with readiness failing, a capture for another tenant is not drawn", async () => {
+  serve({
+    readiness: () => detail("Iris is not bound here", 403),
+    state: () =>
+      json(makeState({ overview: { ...makeState().overview, tenant_id: "someone-else" } })),
+  });
+  start();
+  await waitFor(() => expect(view().textContent).toContain("Iris's capture is not shown."));
+  expect(view().textContent).toContain("This session's tenant could not be confirmed");
+  expect(view().textContent).not.toContain("80.0%");
+  expect(view().querySelector(".kpi")).toBeNull();
+});
+
+it("with the session's tenant unknown, Accounts offers no Open and says why", async () => {
+  serve({ readiness: () => detail("Iris is not bound here", 403) });
+  start("#accounts");
+  const table = await screen.findByRole("table", { name: "Tenants in this account" });
+  expect(within(table).queryAllByRole("button")).toEqual([]);
+  expect(view().textContent).toContain("This session's tenant could not be confirmed");
+});
+
+it("collect mode: a stale capture whose refresh read nothing says so, not 'first overview'", async () => {
+  serve({ refresh: captured("first_collect_produced_nothing", "refresh") }, "stale_capture");
+  start("", "collect");
+  await waitFor(() => expect(view().textContent).toContain("The last capture is out of date"));
+  await waitFor(() => expect(document.getElementById("refresh")).not.toBeDisabled());
+  expect(screen.queryByRole("button", { name: "Collect the first overview" })).toBeNull();
+  expect(within(view()).getByRole("button", { name: "Collect a fresh overview" })).toBeVisible();
+  expect(messages().textContent).toContain(
+    "The last capture is out of date and is not shown here.",
+  );
+  expect(messages().textContent).not.toContain("nothing to show yet");
+});
+
+it("missing hit and coverage counts read as not measured, once", async () => {
+  serve({
+    state: () =>
+      json(
+        withMetrics({
+          cache_hits: null,
+          cache_misses: null,
+          hit_rate: null,
+          hit_rate_denominator: null,
+          requests: null,
+          covered_days: null,
+          requested_days: null,
+          period_complete: false,
+        }),
+      ),
+  });
+  await mount();
+  expect(view().textContent).toContain("not measured in this capture");
+  expect(view().textContent).toContain("Coverage not measured");
+  expect(view().textContent).not.toContain("Not measured hits over Not measured requests");
+  expect(view().textContent).not.toContain("Not measured / Not measured days");
 });
