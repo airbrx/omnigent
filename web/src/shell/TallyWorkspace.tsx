@@ -129,20 +129,31 @@ export function TallyWorkspace() {
     );
   if (sessionId)
     return (
-      <iframe
-        ref={frame}
-        title="Tally workspace"
-        // oxlint-disable-next-line iframe-missing-sandbox -- Same-origin host UI needs scripts and session cookies.
-        sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-top-navigation-by-user-activation"
-        className="h-full min-h-0 w-full flex-1 border-0"
-        onLoad={() =>
-          frame.current?.contentWindow?.postMessage(
-            { tallyHostTheme: mode },
-            window.location.origin,
-          )
-        }
-        src={`/v1/tally/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}`}
-      />
+      <>
+        {/* AppShell lays its ChatHeader over <main>: absolute, top-0, z-30,
+            transparent, h-14 (md:h-12). Over a framed page it takes every
+            click in that band, which is where Tally's tab bar and Refresh sit.
+            The frame starts below it instead, as Eva's and Iris's do. */}
+        <div
+          aria-hidden="true"
+          data-tally-header-clearance=""
+          className="h-14 shrink-0 bg-[#F0EFED] md:h-12 dark:bg-[#121212]"
+        />
+        <iframe
+          ref={frame}
+          title="Tally workspace"
+          // oxlint-disable-next-line iframe-missing-sandbox -- Same-origin host UI needs scripts and session cookies.
+          sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-top-navigation-by-user-activation"
+          className="h-full min-h-0 w-full flex-1 border-0"
+          onLoad={() =>
+            frame.current?.contentWindow?.postMessage(
+              { tallyHostTheme: mode },
+              window.location.origin,
+            )
+          }
+          src={`/v1/tally/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}`}
+        />
+      </>
     );
   return (
     <div
