@@ -772,3 +772,58 @@ async def test_the_window_is_decided_on_the_calls_own_clock_across_midnight():
     )
     result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
     assert result["t-hot"]["captured_at"] == midnight + 4
+
+
+# --- N1: the Accounts ranking reads the same current period on any host clock ------------
+
+
+@pytest.fixture
+def pacific_host(monkeypatch):
+    """The execution host runs in America/Los_Angeles."""
+    import time
+
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+#: 2026-09-27T00:30:00Z: 17:30 on 2026-09-26 in America/Los_Angeles.
+PACIFIC_1730 = AT + 9 * 60
+
+
+async def test_a_capture_at_1730_pacific_without_dates_is_ranked(pacific_host):
+    """A refresh at 17:30 PDT calls iris_overview with no dates; a newer comparison follows."""
+    narrowed = {
+        **metrics_of(300, period_complete=False, covered_days=3),
+        "start_date": "2026-09-20",
+        "end_date": "2026-09-22",
+    }
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={
+            "s1": dated_turn("c1", "iris_overview", "f-partial", PACIFIC_1730, {})
+            + dated_turn("c2", "iris_overview", "f-compare", PACIFIC_1730 + 60, COMPARISON)
+        },
+        reports={
+            "f-partial": {**REPORT, "metrics": narrowed},
+            "f-compare": {**REPORT, "metrics": metrics_of(12)},
+        },
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"] == {
+        "tenant_id": "t-hot",
+        "metrics": narrowed,
+        "captured_at": PACIFIC_1730,
+    }
+
+
+async def test_only_an_older_window_at_1730_pacific_is_still_never_collected(pacific_host):
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={"s1": dated_turn("c1", "iris_overview", "f-compare", PACIFIC_1730, COMPARISON)},
+        reports={"f-compare": {**REPORT, "metrics": metrics_of(12)}},
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"] is None

@@ -81,9 +81,38 @@ _ALLOWED_IN_A_TURN = TOOLS | _HARNESS_TOOLS
 #: recognises a refresh turn by it (docs/iris/WORKSPACE_V2.md, section 2), so
 #: it is kept byte-for-byte.
 REFRESH_FIRST_SENTENCE = "Call iris_overview and iris_audit for the selected tenant."
+#: The second sentence leaves the window to the tool (QA re-walk N1,
+#: 2026-09-26). Asked for "the last seven days", Iris worked the dates out from
+#: the local date her harness gives her, which from 17:00 to midnight Pacific is
+#: a day behind the UTC date that iris_overview and `reads_current_period` both
+#: count in. Her 09-19..09-26 was refused as "not the current period", and each
+#: page open collected again until the session's tool budget ran out. Called
+#: without dates, the tool resolves the current period on its own UTC clock and
+#: the adapter recognises the call as current without comparing any clocks, so
+#: the host's time zone no longer enters into it.
+REFRESH_WINDOW_SENTENCE = (
+    "Call iris_overview with no arguments: leave out start_date and end_date, and do not "
+    "work out dates yourself, because without them the tool reads the current period on "
+    "its own clock."
+)
 REFRESH_PROMPT = (
-    f"{REFRESH_FIRST_SENTENCE} "
+    f"{REFRESH_FIRST_SENTENCE} {REFRESH_WINDOW_SENTENCE} "
     "Summarize the measured denominator and coverage. Do not propose changes."
+)
+
+#: How long a refresh that read no current-period overview holds off the next
+#: one in the same session (QA re-walk N1). The page auto-collects whenever state
+#: answers 409, so after a collect that missed, every page open ran another: four
+#: opens spent the session's 60-call tool budget, and on a real tenant each is a
+#: warehouse read. A repeat inside this window is refused without a turn. A chat
+#: turn in between, or a refresh after the window, runs as usual.
+REPEAT_COLLECT_COOLDOWN_SECONDS = 600
+#: The 409 detail for that refusal. Distinct from `BUSY_DETAIL` and from both
+#: "no overview" details, so a caller can tell "not started" from "ran and missed".
+REPEAT_COLLECT_DETAIL = (
+    "The last collection in this session, under 10 minutes ago, read no current-period "
+    "overview, so another was not started; open native chat to see what Iris did, or "
+    "refresh again later."
 )
 
 #: Tools whose reports a refresh bounds by its own turn marker. A refresh calls
@@ -171,6 +200,36 @@ def completed_answer(items: list[dict]) -> dict | None:
 #: 409s of `read_state`: a reload during the first auto-collect gets it while
 #: the orphaned refresh is still running. Kept byte-for-byte; a test pins it.
 BUSY_DETAIL = "Iris is busy; cancel or wait for the current turn"
+
+
+def _user_text(item: dict) -> str | None:
+    if item.get("type") != "message" or item.get("role") != "user":
+        return None
+    return "".join(
+        c.get("text", "") for c in item.get("content") or [] if c.get("type") == "input_text"
+    )
+
+
+def missed_collect_at(items: list[dict]) -> float | None:
+    """When the session's latest turn, a refresh, read no current-period overview.
+
+    `items` in chronological order. Returns the `created_at` of that refresh's
+    message, or None when the latest user turn is not a refresh or it found the
+    current period (by `reads_current_period`, the rule `read_state` and the
+    Accounts ranking use).
+    """
+    marker = next((i for i in reversed(items) if _user_text(i) is not None), None)
+    if marker is None or not _user_text(marker).startswith(REFRESH_FIRST_SENTENCE):
+        return None
+    at = marker.get("created_at", 0)
+    for tool, _, created_at, arguments, called_at in report_calls(items):
+        if (
+            tool == "iris_overview"
+            and created_at >= at
+            and reads_current_period(arguments, called_at)
+        ):
+            return None
+    return at
 
 
 def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
@@ -382,12 +441,31 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                 )
             )
 
+    async def refuse_a_repeat_collect(session_id, session, client):
+        """409 instead of a turn when the last refresh just missed (QA re-walk N1).
+
+        A busy session is left to `turn`, so a reload during the first collect
+        still gets `BUSY_DETAIL`.
+        """
+        lock = locks.get(session_id)
+        if (lock is not None and lock.locked()) or session["status"] in {"running", "waiting"}:
+            return
+        page = await checked(
+            await client.get(
+                f"/v1/sessions/{session_id}/items", params={"limit": 1000, "order": "desc"}
+            )
+        )
+        at = missed_collect_at(list(reversed(page["data"])))
+        if at is not None and time.time() - at < REPEAT_COLLECT_COOLDOWN_SECONDS:
+            raise HTTPException(409, REPEAT_COLLECT_DETAIL)
+
     async def read_state(request: Request, session_id: str, fresh: bool = False):
         async with session_client(request) as client:
-            _, binding = await authorize(request, session_id, client)
+            session, binding = await authorize(request, session_id, client)
             params = {"limit": 1000, "order": "desc"}
             cursor = None
             if fresh:
+                await refuse_a_repeat_collect(session_id, session, client)
                 fresh_turn = await turn(
                     request,
                     session_id,
