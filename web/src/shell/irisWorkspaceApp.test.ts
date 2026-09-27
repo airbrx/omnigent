@@ -1083,7 +1083,7 @@ it("Q19: the incident capture (80.0%, 120 hits over 700, Requests 1,000) is refu
 
 it.each([
   [
-    "more hits than requests",
+    "a negative miss count",
     { cache_hits: 800, cache_misses: -100 },
     "The overview: cache_misses is not a count.",
   ],
@@ -1157,6 +1157,28 @@ it("Q19: a measured zero week is not a mismatch; it is drawn as zero", async () 
   await mount();
   expect(view().textContent).not.toContain("not shown");
   expect(view().querySelectorAll(".kpi")).toHaveLength(4);
+});
+
+it("Q19: a partial capture (3 of 7 days, period not complete) is drawn, not refused", async () => {
+  // The live tenant's shape: collect.py sets period_complete only when every
+  // requested day is covered, so covered != requested is not a mismatch here.
+  serve({
+    state: () => json(withMetrics({ covered_days: 3, requested_days: 7, period_complete: false })),
+  });
+  await mount();
+  expect(view().textContent).not.toContain("not shown");
+  const tiles = [...view().querySelectorAll(".kpi")];
+  expect(tiles).toHaveLength(4);
+  const tile = (label: string) =>
+    tiles.find((t) => t.querySelector(".label")?.textContent === label)!;
+  expect(tile("Cache hit rate").querySelector(".value")?.textContent).toBe("80.0%");
+  expect(tile("Cache hit rate").querySelector(".note")?.textContent).toBe(
+    "560 hits over 700 requests",
+  );
+  expect(tile("Requests").querySelector(".value")?.textContent).toBe("700");
+  expect(tile("Cache misses").querySelector(".value")?.textContent).toBe("140");
+  expect(view().textContent).toContain("3 / 7 days");
+  expect(view().textContent).toContain("Partial capture.");
 });
 
 it("Q19: an investigation whose periods disagree is not drawn on the Evidence tab", async () => {
