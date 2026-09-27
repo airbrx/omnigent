@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en" data-theme-source="host">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Iris · Cache workspace</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+    />
+    <link rel="stylesheet" href="kernel/brand.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <!-- data-on-stale: "show" (default, D2) shows an out-of-date capture with its
+       label and refreshes it in the background; "collect" blocks on one fresh
+       collection instead, as the pinned workspace did. -->
+  <body data-on-stale="show">
+    <header class="topbar">
+      <div class="brand">
+        <img src="assets/airbrx-logo.png" alt="airbrx" />
+        <span class="agent"
+          ><img src="assets/iris-portrait.png" alt="" /> Iris</span
+        >
+      </div>
+      <nav id="tabs" role="tablist" aria-label="Workspace"></nav>
+      <div id="actions" class="actions">
+        <span id="synthetic" class="badge warn" hidden>Synthetic fixture</span>
+        <span id="freshness" class="muted small"></span>
+        <button id="refresh" class="primary" type="button">
+          Collect a fresh overview
+        </button>
+      </div>
+    </header>
+
+    <section id="host" class="host-line" aria-label="This session">
+      <p id="host-status" class="small" role="status"></p>
+      <p id="collecting" class="small collecting" role="status" hidden></p>
+      <ul id="host-details" class="small muted" hidden></ul>
+    </section>
+
+    <div id="notice" class="notice" role="status" hidden></div>
+
+    <div id="workspace" class="workspace">
+      <section id="home" class="home" aria-live="polite">
+        <div id="view" class="content"></div>
+      </section>
+
+      <button id="dock-rail" class="dock-rail" type="button" hidden>
+        <img src="assets/iris-portrait.png" alt="" />
+        <span>Ask Iris</span>
+      </button>
+
+      <section id="chat" class="chat card" aria-label="Chat with Iris">
+        <div class="chat-head">
+          <div class="section-title">Ask Iris</div>
+          <a id="native-chat" class="link small" href="#" target="_top"
+            >Open native chat</a
+          >
+          <button
+            id="collapse"
+            type="button"
+            class="chip"
+            aria-label="Collapse chat"
+            hidden
+          >
+            Hide
+          </button>
+        </div>
+        <ol id="messages" class="messages"></ol>
+        <form id="composer">
+          <div id="context" class="context" hidden>
+            <span id="context-label" class="badge accent"></span>
+            <button id="context-remove" type="button" class="link">
+              Don't include this page
+            </button>
+          </div>
+          <textarea
+            id="input"
+            rows="3"
+            aria-label="Message Iris"
+            placeholder="Ask Iris about this tenant's cache. Enter sends, Shift+Enter adds a line."
+          ></textarea>
+          <div class="composer-row">
+            <button id="cancel" type="button" class="secondary" hidden>
+              Stop
+            </button>
+            <button id="send" type="submit" class="primary">Send</button>
+          </div>
+          <p class="small muted">Iris proposes; she never applies a rule.</p>
+        </form>
+      </section>
+    </div>
+
+    <script src="kernel/dom.js"></script>
+    <script src="kernel/theme.js"></script>
+    <script src="kernel/api.js"></script>
+    <script src="kernel/markdown.js"></script>
+    <script src="kernel/transcript.js"></script>
+    <script src="kernel/stream.js"></script>
+    <script src="kernel/dock.js"></script>
+    <script src="kernel/tabs.js"></script>
+    <script src="kernel/context.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
