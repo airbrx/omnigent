@@ -648,6 +648,80 @@ describe("the iris.openTenant handoff from the framed workspace", () => {
     post(open("live-tenant"));
     await waitFor(() => expect(posts()).toHaveLength(2));
   });
+
+  /** Answer the recent-sessions read with `answer`; everything else as served. */
+  function readsAs(answer: (init?: RequestInit) => Response | Promise<Response>) {
+    const base = vi.mocked(authenticatedFetch).getMockImplementation();
+    vi.mocked(authenticatedFetch).mockImplementation(async (input, init) =>
+      String(input).startsWith("/v1/sessions?") ? answer(init) : base!(input, init),
+    );
+  }
+  const reads = () =>
+    vi
+      .mocked(authenticatedFetch)
+      .mock.calls.filter(([url]) => String(url).startsWith("/v1/sessions?"));
+
+  it.each([
+    ["a 500", () => new Response(JSON.stringify({ detail: "down" }), { status: 500 })],
+    [
+      "a network error",
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ],
+  ])(
+    "falls back to create() when the recent-sessions read fails with %s, and releases the guard",
+    async (_, fail) => {
+      // Review of #113, nit 4: a failed read means nothing to resume, so the
+      // handoff opens a session rather than doing nothing.
+      await mounted();
+      readsAs(fail);
+      post(open("live-tenant"));
+      await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
+      expect(reads()).toHaveLength(1);
+      expect(posts()).toHaveLength(1);
+      expect(JSON.parse(posts()[0][1]?.body as string).workspace).toBe("/live");
+      // The guard was released: the next open is taken.
+      post(open("fixture"));
+      await waitFor(() => expect(posts()).toHaveLength(2));
+      expect(JSON.parse(posts()[1][1]?.body as string).workspace).toBe("/approved");
+    },
+  );
+
+  it("gives up on a recent-sessions read that never settles after about 10 s, then creates and releases the guard", async () => {
+    // Review of #113, nit 5: with no timeout, a read that never answered held
+    // the one-open-at-a-time guard for good, and every later open was ignored.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await mounted();
+      // Never answers on its own; like fetch, it gives up when its signal aborts.
+      readsAs(
+        (init) =>
+          new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+          }),
+      );
+      post(open("live-tenant"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(9_000);
+      });
+      expect(posts()).toHaveLength(0);
+      expect(routing.navigate).not.toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
+      await waitFor(() => expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session"));
+      expect(posts()).toHaveLength(1);
+      // The abandoned read was cancelled, not left running.
+      expect(reads()[0][1]?.signal?.aborted).toBe(true);
+      // And the guard is free again.
+      readsAs(() => new Response(JSON.stringify({ data: [] })));
+      post(open("fixture"));
+      await waitFor(() => expect(posts()).toHaveLength(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -713,16 +787,8 @@ it("remembers the tab per session, and only a known tab name (QA B3)", () => {
       "/v1/iris/sessions/owned-session/ui/?theme=dark",
     );
   }
-  // Storage is shared with the same-origin frame; what is read back is checked too.
-  for (const value of Object.keys(window.sessionStorage))
-    window.sessionStorage.setItem(value, "#evil");
-  window.sessionStorage.setItem("iris.tab:owned-session", '"><script>');
-  view.unmount();
-  view = show();
-  expect(screen.getByTitle("Iris workspace")).toHaveAttribute(
-    "src",
-    "/v1/iris/sessions/owned-session/ui/?theme=dark",
-  );
+  // (The read-time check has its own test below: seeding storage here, after
+  // a mount, was undone by the unmount's own save before the remount read it.)
   // Another session does not inherit this one's tab.
   frameAt("#rules");
   act(() => {
@@ -757,6 +823,111 @@ it("moving to another session in place mounts that session's own tab (QA B3)", (
   );
   // Leaving the first session in place noted its tab for its next mount.
   expect(window.sessionStorage.getItem("iris.tab:owned-session")).toBe("findings");
+});
+
+const OWNED_SRC = "/v1/iris/sessions/owned-session/ui/?theme=dark";
+const UNKNOWN_TABS = [
+  "#javascript:alert(1)",
+  "#proposals?x=1",
+  "#Findings",
+  '#"><script>',
+  "#../../v1/sessions",
+  "#",
+  "",
+];
+
+it("stores only a known tab name when the frame is left (QA B3, save-time check)", () => {
+  // Review of #113, nit 2. Storage is read directly: through the src, the
+  // read-time check would hide a bad write.
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  const view = show();
+  for (const hash of UNKNOWN_TABS) {
+    window.sessionStorage.setItem("iris.tab:owned-session", "rules");
+    frameAt(hash);
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(window.sessionStorage.getItem("iris.tab:owned-session"), hash).toBeNull();
+  }
+  frameAt("#proposals");
+  act(() => {
+    window.dispatchEvent(new Event("pagehide"));
+  });
+  expect(window.sessionStorage.getItem("iris.tab:owned-session")).toBe("proposals");
+  view.unmount();
+});
+
+it("mounts only a known tab name, whatever storage holds (QA B3, read-time check)", () => {
+  // Review of #113, nit 2. Storage is shared with the same-origin frame, so
+  // the shell checks what it reads back. Each value is seeded before that
+  // mount: an earlier mount's cleanup would otherwise rewrite it first.
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  for (const value of [...UNKNOWN_TABS, "evil", "javascript:alert(1)", '"><script>']) {
+    window.sessionStorage.setItem("iris.tab:owned-session", value);
+    const view = show();
+    expect(screen.getByTitle("Iris workspace").getAttribute("src"), value).toBe(OWNED_SRC);
+    view.unmount();
+  }
+  // A known name is honoured, so the check is not just "never restore".
+  window.sessionStorage.setItem("iris.tab:owned-session", "rules");
+  show();
+  expect(screen.getByTitle("Iris workspace")).toHaveAttribute("src", `${OWNED_SRC}#rules`);
+});
+
+it("never rebuilds the frame's src mid-session when storage changes (QA B3)", () => {
+  // Review of #113, nit 3. Rewriting src reloads the frame and loses the
+  // conversation in it, so the tab is read once per mount.
+  window.sessionStorage.setItem("iris.tab:owned-session", "rules");
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const tree = () => (
+    <QueryClientProvider client={client}>
+      <IrisWorkspace />
+    </QueryClientProvider>
+  );
+  const { rerender } = render(tree());
+  const frame = screen.getByTitle("Iris workspace");
+  expect(frame).toHaveAttribute("src", `${OWNED_SRC}#rules`);
+  window.sessionStorage.setItem("iris.tab:owned-session", "evidence");
+  rerender(tree());
+  rerender(tree());
+  expect(screen.getByTitle("Iris workspace")).toBe(frame);
+  expect(frame).toHaveAttribute("src", `${OWNED_SRC}#rules`);
+});
+
+it("gives each session its own frame, so Back after a handoff shows that session's page", () => {
+  // Review of #113, observation 6: the iframe element was reused when the
+  // route moved to another session in place, so Back after a handoff walked
+  // the frame's own history and showed A's page under B's URL.
+  routing.params = { sessionId: "owned-session" };
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response("{}"));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const tree = () => (
+    <QueryClientProvider client={client}>
+      <IrisWorkspace />
+    </QueryClientProvider>
+  );
+  const { rerender } = render(tree());
+  const a = frameAt("#findings");
+  // The handoff navigates to B.
+  routing.params = { sessionId: "other-session" };
+  rerender(tree());
+  const b = screen.getByTitle("Iris workspace");
+  expect(b).not.toBe(a);
+  expect(a.isConnected).toBe(false);
+  expect(b).toHaveAttribute("src", "/v1/iris/sessions/other-session/ui/?theme=dark");
+  // Browser Back: the route returns to A, and so does the frame.
+  routing.params = { sessionId: "owned-session" };
+  rerender(tree());
+  const back = screen.getByTitle("Iris workspace");
+  expect(back).not.toBe(b);
+  expect(b.isConnected).toBe(false);
+  expect(screen.getAllByTitle("Iris workspace")).toHaveLength(1);
+  // A comes back on the tab it was left on, read fresh for this mount.
+  expect(back).toHaveAttribute("src", `${OWNED_SRC}#findings`);
 });
 
 it("with the v2 switch off, frames the pinned UI exactly as before and its messages open nothing", async () => {

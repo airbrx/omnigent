@@ -1094,7 +1094,7 @@
       container.append(
         heading(
           "Accounts",
-          "Every tenant you can open. Each one opens in its own new session; this one stays on its tenant.",
+          "Every tenant you can open. Opening one goes back to your last session on that tenant, or starts one if there is none; this one stays on its tenant.",
         ),
       );
       if (accounts.status === "idle") void loadAccounts();
@@ -1178,7 +1178,7 @@
                                 class: "chip",
                                 onclick: () => openTenant(entry.tenant_id),
                               },
-                              "Open in a new session",
+                              "Open",
                             ),
                   ),
                 ),
@@ -1609,7 +1609,8 @@
   }
 
   /**
-   * Ask the shell to open this tenant in a new session. The frame never
+   * Ask the shell to open this tenant: it goes back to the caller's last
+   * session on that tenant, or creates one when there is none. The frame never
    * creates a session and never switches this one's tenant: a session never
    * accumulates tenants. The shell checks origin, source and binding.
    */
