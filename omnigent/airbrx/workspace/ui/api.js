@@ -67,20 +67,22 @@
    * own deadline), other 5xx and network failures. Only a 4xx `detail` is shown
    * as written, because the adapter writes those for people. Host text on a
    * 5xx is never shown: it can carry diagnostics that must not reach a screen.
+   * `host` names the server the page talks to in the sign-in, reach and 5xx
+   * sentences; it defaults to "Omnigent", which keeps today's words.
    */
-  function plainError(error, { agent = "The agent" } = {}) {
+  function plainError(error, { agent = "The agent", host = "Omnigent" } = {}) {
     const status = error && typeof error.status === "number" ? error.status : 0;
     const detail =
       error && typeof error.detail === "string" ? error.detail.trim() : "";
     if (status === 401)
-      return "Your Omnigent sign-in has expired. Reload the page to sign in again.";
+      return `Your ${host} sign-in has expired. Reload the page to sign in again.`;
     if (status === 502 || status === 503)
       return `${agent} could not be reached just now. The host may be offline or restarting.`;
     if (status === 504 || (error && error.timedOut))
       return `${agent} took too long, so the turn was stopped.`;
     if (!status)
-      return "The workspace could not reach Omnigent. Check your connection.";
-    if (status >= 500) return "Something went wrong on the Omnigent side.";
+      return `The workspace could not reach ${host}. Check your connection.`;
+    if (status >= 500) return `Something went wrong on the ${host} side.`;
     if (detail) return /[.!?]$/.test(detail) ? detail : `${detail}.`;
     return `The request was refused (HTTP ${status}).`;
   }
