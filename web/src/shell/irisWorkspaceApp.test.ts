@@ -1342,3 +1342,93 @@ it("missing hit and coverage counts read as not measured, once", async () => {
   expect(view().textContent).not.toContain("Not measured hits over Not measured requests");
   expect(view().textContent).not.toContain("Not measured / Not measured days");
 });
+
+// ------------------------------------------- QA 2026-09-26 F1 to F4 --
+
+it("F1: the readiness line follows the first collection without a reload", async () => {
+  let completed = false;
+  serve(
+    {
+      readiness: () =>
+        json({
+          ...(ADAPTER.fresh_session.readiness.body as Record<string, unknown>),
+          turn_completed_here: completed,
+        }),
+      refresh: () => {
+        completed = true;
+        return replay(ADAPTER.captured.refresh);
+      },
+    },
+    "fresh_session",
+  );
+  start();
+  await waitFor(() => expect(view().textContent).toContain("80.0%"));
+  await waitFor(() =>
+    expect(document.getElementById("host-status")?.textContent).toContain(
+      "Iris has completed a turn in this session",
+    ),
+  );
+  expect(document.getElementById("host-details")).not.toBeVisible();
+});
+
+it("F2: while the page loads it says so, and offers no first collection over a capture", async () => {
+  const held = deferred<Response>();
+  serve({ items: () => held.promise });
+  start();
+  expect(view().textContent).not.toContain("has not collected");
+  expect(screen.queryByRole("button", { name: "Collect the first overview" })).toBeNull();
+  expect(view().textContent).toContain("Reading this session");
+  expect(document.getElementById("freshness")?.textContent).not.toContain("has not read");
+  held.resolve(json({ data: [], has_more: false }));
+  await waitFor(() => expect(view().textContent).toContain("80.0%"));
+});
+
+/** An overview of the week before FULL's, as a comparison turn leaves it. */
+function earlierWindow(): State {
+  const earlier = makeState();
+  earlier.overview = {
+    ...earlier.overview,
+    metrics: {
+      ...earlier.overview.metrics,
+      ...structuredClone(FULL.investigation.previous),
+    },
+  };
+  return earlier;
+}
+
+it("F4: the coverage strip shows each day of the period once", async () => {
+  const state = makeState();
+  const summaries = state.overview.evidence.filter((e) => e.source_tool === "get_summary");
+  state.overview.evidence = [
+    ...state.overview.evidence,
+    // The same days read again later in the session, and days outside it.
+    ...structuredClone(summaries).map((e, i) => ({ ...e, id: `again-${i}` })),
+    { ...structuredClone(summaries[0]), id: "before", start_date: "2026-09-12" } as never,
+    { ...structuredClone(summaries[0]), id: "after", start_date: "2026-09-26" } as never,
+  ];
+  serve({ state: () => json(state) });
+  await mount();
+  const days = [...view().querySelectorAll(".coverage .day")].map((d) => d.textContent);
+  expect(days).toEqual(["09-19", "09-20", "09-21", "09-22", "09-23", "09-24", "09-25"]);
+  expect(view().textContent).toContain("7 / 7 days");
+});
+
+it("F4: an overview Iris read for an earlier window does not replace the current period", async () => {
+  let current = true;
+  serve({ state: () => json(current ? makeState() : earlierWindow()) });
+  await mount();
+  expect(view().textContent).toContain("2026-09-19 to 2026-09-26");
+  current = false;
+  ask("Compare with the previous week.");
+  await waitFor(() => expect(calls("state").length).toBeGreaterThanOrEqual(2));
+  await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
+  expect(view().textContent).toContain("2026-09-19 to 2026-09-26");
+  expect(view().textContent).not.toContain("2026-09-12 to 2026-09-19");
+});
+
+it("F4: on a load where the newest overview is an earlier window, it is labelled, not passed off as current", async () => {
+  serve({ state: () => json(earlierWindow()) });
+  await mount();
+  expect(view().textContent).toContain("2026-09-12 to 2026-09-19");
+  expect(view().textContent).toContain("not this tenant's current period");
+});
