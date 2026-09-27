@@ -905,3 +905,14 @@ describe("ChatHeader — title-adjacent conversation actions", () => {
     expect(screen.getByText("reviewer")).toBeInTheDocument();
   });
 });
+
+describe("header geometry framed workspaces clear", () => {
+  it("is an absolute overlay 56px tall (48px from md), the band IrisWorkspace keeps its frame out of", () => {
+    // IrisWorkspace renders an h-14 / md:h-12 clearance above its frame so this
+    // transparent overlay cannot take clicks meant for the frame's tab bar
+    // (Iris v2 QA, B1). If this height changes, change that clearance too.
+    renderHeader({ sidebarOpen: true });
+    const header = document.querySelector("header.chat-header");
+    expect(header).toHaveClass("absolute", "top-0", "z-30", "h-14", "md:h-12");
+  });
+});
