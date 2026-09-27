@@ -199,17 +199,29 @@ async def test_authenticated_mount_and_private_capture_exclusion(iris_secure_cli
     url = f"/v1/iris/sessions/{session.id}/ui/"
     page = await iris_secure_client.get(url)
     assert page.status_code == 200, page.text
-    assert 'src="host.js"' in page.text
+    # The v2 workspace with no env var set (WORKSPACE_V2.md, section 7 step 5):
+    # the pinned UI and its injected adapter are retired.
+    assert 'src="host.js"' not in page.text
+    assert 'src="app.js"' in page.text
     assert (await iris_secure_client.get(url + "iris-state.json")).status_code == 404
     # Same principle, less obvious: app.js falls back iris-state -> demo-state,
     # so serving the synthetic capture opened a fresh tenant-bound session on a
     # complete fabricated report behind a small chip, and made ask() answer from
     # it without calling the host. The app is served; captures are not.
     assert (await iris_secure_client.get(url + "demo-state.json")).status_code == 404
-    # The assets the page genuinely needs are still served, theme.js included -
-    # it is what makes the light/dark picker work.
-    for asset in ("app.js", "theme.js", "style.css", "host.js", "assets/iris-portrait.png"):
+    # The assets the page genuinely needs are served: the v2 app, the shared
+    # kernel (theme now comes from the host through kernel/theme.js) and the
+    # pinned images. The pinned app's adapter and theme picker are not.
+    for asset in (
+        "app.js",
+        "style.css",
+        "kernel/theme.js",
+        "kernel/brand.css",
+        "assets/iris-portrait.png",
+    ):
         assert (await iris_secure_client.get(url + asset)).status_code == 200, asset
+    for asset in ("host.js", "theme.js"):
+        assert (await iris_secure_client.get(url + asset)).status_code == 404, asset
     assert (await iris_secure_client.get(url + "api/state")).status_code == 409
     iris_secure_client.headers["X-Forwarded-Email"] = "other-user"
     assert (await iris_secure_client.get(url)).status_code == 404
@@ -519,10 +531,10 @@ async def test_busy_and_refresh_without_new_evidence_fail_honestly(iris_protocol
 async def test_readiness_reports_an_unrun_session_as_unverified(iris_protocol_client):
     """An unrun session must say so, not imply a working connection.
 
-    The workspace's own fallback answers a refused turn from the captured
-    report, in the assistant's voice. host.js replaces that with the host's
-    actual refusal, and this endpoint is what lets it state the standing
-    position before anyone asks a question.
+    The pinned workspace answered a refused turn from the captured report, in
+    the assistant's voice. The v2 workspace shows the host's actual refusal
+    instead, and this endpoint is what lets it state the standing position
+    before anyone asks a question.
     """
     client, path, _, mode = iris_protocol_client
     mode["answer"] = False

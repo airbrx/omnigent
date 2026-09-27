@@ -1,5 +1,5 @@
 // Iris's workspace. Framed by Omnigent at /iris/:sessionId and served per
-// session at /v1/iris/sessions/{id}/ui/ when OMNIGENT_IRIS_UI=v2. It runs on
+// session at /v1/iris/sessions/{id}/ui/ (the only workspace since W5). It runs on
 // the shared workspace kernel (window.AirbrxWorkspace, loaded from kernel/
 // before this file) and declares only what is Iris's own: her tabs, her words
 // and her honesty rules.

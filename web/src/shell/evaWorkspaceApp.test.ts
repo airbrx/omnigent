@@ -1,6 +1,6 @@
 // Eva's framed workspace (`omnigent/airbrx/eva/ui/`). It is plain DOM, not part
 // of the web bundle, so its markup and script are read from disk and run
-// against jsdom, the same way irisHostAdapter.test.tsx runs Iris's adapter.
+// against jsdom, the same way irisWorkspaceApp.test.ts runs Iris's app.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
