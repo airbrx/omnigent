@@ -126,6 +126,55 @@ tools:
 # Both refusals are also enforced server-side in the outreach tool layer, so
 # this list is defence in depth rather than the only thing standing there.
 
+  # A browser, for one job: reading the analytics of Airbrx's and the founders'
+  # own LinkedIn posts. Approved by Abram on 2026-09-26; docs/eva/RUNBOOK.md has
+  # the install and the one-time sign-in.
+  #
+  # Playwright MCP (Microsoft's @playwright/mcp, pinned 0.0.82), installed as
+  # the operator under ~/.eva-playwright on the EXECUTION HOST, driving Google
+  # Chrome headless on a dedicated profile, ~/.eva-linkedin-profile, that
+  # nothing else uses and that is signed in to LinkedIn once, by hand. It is a
+  # stdio server the runner spawns, so it lives and dies on the host that runs
+  # her turn, and its tools reach her CLI through the one `omnigent` server as
+  # `browser__<tool>`, which keeps --strict-mcp-config intact.
+  #
+  # `sh -c` only so $HOME resolves on that host: spec args are not expanded,
+  # and a path naming one operator's home would be wrong on every other.
+  #
+  # Four fences, outermost first:
+  #   1. this allow list: five read tools, no click, type, key, form, evaluate,
+  #      run code, upload, screenshot, tab, cookie or network tool;
+  #   2. tool_boundary (policy.py): navigate only to https://www.linkedin.com/,
+  #      no argument outside each tool's named few, snapshot never to a file;
+  #   3. --allowed-origins: the browser requests only linkedin.com and its
+  #      licdn.com asset hosts (Playwright says this is not a security boundary
+  #      and does not cover redirects, which is why 2 exists);
+  #   4. --no-webmcp: a page cannot register tools of its own.
+  # --sandbox puts back the Chrome sandbox Playwright turns off by default.
+  browser:
+    type: mcp
+    command: /bin/sh
+    args:
+      - -c
+      - >-
+        PATH="$PATH:/usr/local/bin:/opt/homebrew/bin"
+        exec "$HOME/.eva-playwright/node_modules/.bin/playwright-mcp"
+        --browser chrome
+        --headless
+        --sandbox
+        --user-data-dir "$HOME/.eva-linkedin-profile"
+        --output-dir "$HOME/.eva-playwright/output"
+        --output-max-size 20000000
+        --allowed-origins "https://www.linkedin.com;*.licdn.com"
+        --no-webmcp
+        --image-responses omit
+    tools:
+      - browser_navigate
+      - browser_snapshot
+      - browser_wait_for
+      - browser_navigate_back
+      - browser_close
+
 guardrails:
   policies:
     eva-tool-boundary:

@@ -233,9 +233,30 @@ def test_a_turn_with_her_own_tools_is_accepted() -> None:
     assert result["tools"] == ["ToolSearch", "list_pool"]
 
 
+def test_a_turn_with_her_browser_tools_is_accepted() -> None:
+    """Measured on the 6770 stack, 2026-09-26: without this the workspace
+    interrupted her first LinkedIn refresh right after a policy-allowed navigate."""
+    calls = [
+        {"type": "function_call", "name": f"browser__{t}"}
+        for t in (
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_wait_for",
+            "browser_navigate_back",
+            "browser_close",
+        )
+    ]
+    assert completed_answer([*calls, answer()]) is not None
+
+
 @pytest.mark.parametrize(
     "name",
     [
+        "browser__browser_click",
+        "browser__browser_type",
+        "browser__browser_evaluate",
+        "browser_navigate",
+        "playwright__browser_navigate",
         "outreach__mark_sent",
         "outreach__approve_draft",
         "mcp__claude_ai_Gmail__list_labels",
