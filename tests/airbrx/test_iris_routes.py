@@ -1209,7 +1209,9 @@ def test_page_opens_after_a_missed_collect_do_not_collect_again(monkeypatch, tmp
         answers.append(client.post(f"{API}/refresh", json={}))
     assert [a.status_code for a in answers] == [409, 409, 409, 409]
     assert len(_turns(session)) == 1
-    assert answers[1].json() == {"detail": iris_routes.REPEAT_COLLECT_DETAIL}
+    # The clock is frozen, so each refusal comes the moment after the miss.
+    assert answers[1].json() == {"detail": iris_routes.repeat_collect_detail(600)}
+    assert "about 10 minutes" in answers[1].json()["detail"]
     assert "no overview" not in iris_routes.REPEAT_COLLECT_DETAIL
     assert iris_routes.REPEAT_COLLECT_DETAIL != iris_routes.BUSY_DETAIL
 
@@ -1222,8 +1224,31 @@ def test_a_refresh_right_after_a_collect_that_read_nothing_does_not_run(monkeypa
     session = IrisSession(items, _files(), respond)
     response = _refresh(monkeypatch, tmp_path, session)
     assert response.status_code == 409
-    assert response.json() == {"detail": iris_routes.REPEAT_COLLECT_DETAIL}
+    assert response.json() == {"detail": iris_routes.repeat_collect_detail(480)}
     assert _turns(session) == []
+
+
+def test_the_repeat_collect_refusal_says_collect_when_and_how_the_hold_lifts(
+    monkeypatch, tmp_path
+):
+    """Review N1/N2 on #119: the page's buttons say "collect", and a wait needs a length."""
+    session = IrisSession(_missed_collect(NOW - 120), _files(), respond)
+    detail = _refresh(monkeypatch, tmp_path, session).json()["detail"]
+    assert "about 8 minutes" in detail  # 600 s hold, missed 120 s ago
+    assert "collect again" in detail.lower()
+    assert "ask Iris anything in chat" in detail
+    assert "refresh" not in detail.lower()
+    # The page keeps "produced no overview" for these two prefixes only.
+    assert not detail.startswith("The collection produced no overview")
+    assert not detail.startswith("The collection read no current-period overview")
+    assert _turns(session) == []
+
+
+def test_the_repeat_collect_refusal_never_says_less_than_a_minute(monkeypatch, tmp_path):
+    at = NOW - iris_routes.REPEAT_COLLECT_COOLDOWN_SECONDS + 5
+    session = IrisSession(_missed_collect(at), _files(), respond)
+    detail = _refresh(monkeypatch, tmp_path, session).json()["detail"]
+    assert "about 1 minute," in detail
 
 
 def test_a_refresh_after_the_cooldown_runs_again(monkeypatch, tmp_path):

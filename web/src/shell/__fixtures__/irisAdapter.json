@@ -2283,6 +2283,14 @@
       "status": 200
     }
   },
+  "repeat_collect_refused": {
+    "refresh": {
+      "body": {
+        "detail": "Iris did not start another collection, because the last one in this session read no current-period overview. Collect again in about 8 minutes, or ask Iris anything in chat to lift the hold now. Open native chat to see what Iris did."
+      },
+      "status": 409
+    }
+  },
   "stale_capture": {
     "refresh": {
       "body": {

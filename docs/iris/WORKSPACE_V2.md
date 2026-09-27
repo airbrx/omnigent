@@ -13,7 +13,7 @@ breaking any of Iris's rules. Background and evidence:
 | | Default | The switch | Who builds it |
 |---|---|---|---|
 | D1 | Iris's UI moves out of the pinned archive into `omnigent/airbrx/iris/ui/`. The Python package, agent bundle and `ui/assets/` (portrait, logo) stay pinned in `iris-source.zip`. | Env `OMNIGENT_IRIS_UI`, read per request in the asset route: `v2` serves the new UI plus the kernel; anything else serves the pinned UI plus `host.js`, as today. The default stays pinned until W5 flips it. | W1 (switch), W5 (flip) |
-| D2 | A stale capture (older than 300 s) is shown with Eva's label, "Iris read this tenant {when}, may be out of date", and one background refresh runs. It no longer blocks on a forced collection. The first-ever open (409) still auto-collects, as today. | `<body data-on-stale="show">` in `iris/ui/index.html`. `collect` brings back today's behaviour: block, and refresh once. | W3 |
+| D2 | A stale capture (older than 300 s) is shown with Eva's label, "Iris read this tenant {when}, may be out of date", and one background refresh runs, at most once per capture. It no longer blocks on a forced collection. An open with no capture (409) auto-collects at most once per session; after that the page offers "Collect now". | `<body data-on-stale="show">` in `iris/ui/index.html`. `collect` brings back today's behaviour: block, and refresh once. | W3 |
 | D3 | Eva's light airbrx palette (kernel `brand.css` tokens). The theme follows the host: `?theme=` at mount, then `postMessage({irisHostTheme})`. No theme picker, no `localStorage["iris.theme"]`. | `<html data-theme-source="host">`. Anything else would be a token override block in `iris/ui/style.css`, which is not built unless asked. | W2 (tokens, theme), W3 |
 
 ## 1. Lanes and file ownership
@@ -40,7 +40,21 @@ Routes are unchanged: `/v1/iris/sessions/{id}/ui/api/{chat,cancel,state,refresh,
 Shapes stay Iris's (the ones Eva copied): chat takes `{history, deadline}` and
 answers `{text, tools, failed, item_id}`; `state` is 409 until an overview
 exists; `refresh` runs one turn and answers with the state body, or 409 if the
-turn produced no overview.
+turn produced no overview or was not started.
+
+**Refresh 409 details.** Two mean a collection ran and read no overview. The
+page words these itself ("That collection produced no overview…"):
+
+- `The collection produced no overview; …`
+- `The collection read no current-period overview; …`
+
+Two mean no turn was started. The page shows their `detail` as it is, and it
+takes back its "You had Iris collect a fresh overview." line:
+
+- `BUSY_DETAIL`, `Iris is busy; cancel or wait for the current turn`: a turn is already running.
+- `REPEAT_COLLECT_DETAIL`: the session's latest turn is a refresh that read no current-period overview, under `REPEAT_COLLECT_COOLDOWN_SECONDS` (600 s) ago. It starts `Iris did not start another collection`. It says "collect", roughly how long until a retry runs ("in about 8 minutes"), and that asking Iris anything in chat lifts the hold. It never starts with either "The collection…" prefix.
+
+Any other 409 (for example `Iris turn failed; …`) is shown as its `detail`.
 
 **`GET .../state` and `POST .../refresh` body.** Examples are from the
 fixture tenant `fixture-iris`, live capture 2026-09-27T00:21Z.
@@ -66,6 +80,7 @@ W1 rules for the new keys:
 - Same tenant check as today: any report whose `tenant_id` is not the binding's gets a 403.
 - `investigation` and `proposal` are the newest of their tool in the session. The refresh marker does **not** bound them, because a refresh never calls those tools and would otherwise blank the Proposals tab. Their own `report_times` entry says how old each is. `overview` and `audit` keep today's refresh bound.
 - The refresh prompt keeps its first sentence byte-for-byte, `Call iris_overview and iris_audit for the selected tenant.`, because W3's history reload recognises it.
+- The refresh prompt asks Iris to call `iris_overview` **without dates**. A dateless `iris_overview` call reads the current period: the tool's default window on its own UTC clock. The adapter counts it as current whatever the host's timezone is. A call with explicit dates is current only when they are exactly the 7 UTC days before the call's UTC day; anything else is a comparison window, never the overview.
 
 **Evidence ids.** `findings[].evidence_ids` resolve against the union of `evidence[]` across `overview`, `audit`, `investigation` and `proposal`, keyed by `id`. No new key is needed.
 
@@ -182,8 +197,8 @@ another owner is named.
 3. **No answer from local data when the host refused.** With state loaded and chat refused, no metric, finding or rule value from state appears in the new line. `ask()` has no local path.
 4. **Host error text is never shown.** A 500 whose `detail` holds a sentinel leaves the sentinel out of the DOM. (W2 unit-tests `plainError`; W3 tests it end to end.)
 5. **Synthetic chip.** When `readiness.fixture` or `overview.mode === "synthetic fixture"`, a "Synthetic fixture" chip is in the header on every tab.
-6. **Auto-collect once per load, on the plain read only.** A 409 on the first `state` read triggers exactly one `POST api/refresh`. A failed refresh does not loop (count = 1 after re-reads). The refresh never triggers another.
-7. **Stale (D2).** With `data-on-stale="show"`, a stale 200 renders the capture with "may be out of date" plus one background refresh. With `collect`, it renders nothing until the refresh returns. Both are tested.
+6. **Auto-collect at most once per session, on the plain read only.** A 409 on the first `state` read triggers at most one `POST api/refresh` per session: none when the session's record already holds a collect turn, or this tab already started one. After that the page offers a "Collect now" button. A failed refresh does not loop (count = 1 after re-reads). The refresh never triggers another.
+7. **Stale (D2).** With `data-on-stale="show"`, a stale 200 renders the capture with "may be out of date" plus one background refresh, at most once per capture: none when a collect turn newer than the capture is already in the record. With `collect`, it renders nothing until the refresh returns. Both are tested.
 8. **Say what is happening while collecting.** "first overview" and "refreshing an out-of-date capture" are different sentences.
 9. **330 s client deadline.** Chat and refresh use `timeoutMs: 330000`, and chat sends `deadline: 300`.
 10. **The tenant must match.** A state whose `overview.tenant_id` differs from `readiness.tenant_id` is refused and not rendered. Results refuses a cross-tenant baseline.
