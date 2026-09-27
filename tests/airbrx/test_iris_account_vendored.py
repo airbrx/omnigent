@@ -33,7 +33,7 @@ def test_the_manifest_lists_the_module():
 #: `airbrx/iris` marks `ui/` dev-only, so the archive stops carrying it.
 V1_UI = frozenset({"ui/index.html", "ui/app.js", "ui/style.css", "ui/theme.js"})
 #: What the archive still ships from `ui/`: the two images the v2 route reads
-#: out of it (`routes._PINNED_IMAGES`) and their provenance note.
+#: out of it (`ui_assets.PINNED_IMAGES`) and their provenance note.
 UI_ASSETS = frozenset(
     {"ui/assets/PROVENANCE.md", "ui/assets/airbrx-logo.png", "ui/assets/iris-portrait.png"}
 )

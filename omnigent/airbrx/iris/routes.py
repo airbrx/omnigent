@@ -473,6 +473,7 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
             # Only the reports `build_state` will ask for are fetched, and a
             # failed fetch is handed to it rather than raised here, so which
             # failure wins is decided in one place, in the builder's order.
+            # All are fetched before the builder runs, so a failure path may make extra GETs.
             fetched: dict[str, object] = {}
             for file_id in report_ids(ordered, collected_after=collected_after):
                 try:

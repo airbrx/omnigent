@@ -638,6 +638,10 @@ def test_every_evidence_link_in_the_fixture_resolves(monkeypatch, tmp_path) -> N
 #: Every recorded state answer `build_state` is responsible for. The refresh
 #: refusals that come before any items are read (`busy_session`, the repeat
 #: collect) are the route's, not the builder's, so they are not listed.
+#: This pins the recorded shapes and the "no overview" wordings only. Choosing
+#: the current-period overview (comparison windows, partial and dated windows,
+#: the UTC midnight edge) is pinned by the window tests in test_iris_routes.py,
+#: which run through `build_state` too.
 BUILT = [
     ("fresh_session", "state"),
     ("first_collect_produced_nothing", "refresh"),

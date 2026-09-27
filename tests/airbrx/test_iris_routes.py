@@ -421,6 +421,13 @@ def v2_ui(tmp_path, monkeypatch):
     (root / "views" / "overview.js.bak").write_text("// a backup\n")
     (root / "old").mkdir()
     (root / "old" / "app.js").write_text("// an old copy\n")
+    # The names that must 404 are on disk, so a looser allowlist would serve them.
+    (root / "host.js").write_text("// the retired pinned adapter\n")
+    (root / "theme.js").write_text("// the pinned app's theme\n")
+    (root / "iris-state.json").write_text('{"captured": "tenant evidence"}\n')
+    (root / "demo-state.json").write_text('{"demo": "synthetic report"}\n')
+    (root / "assets").mkdir()
+    (root / "assets" / "PROVENANCE.md").write_text("not served\n")
     # The rules live in `ui_assets`, shared with the standalone viewer, so the
     # stand-in root is patched there: both hosts then serve it.
     from omnigent.airbrx.iris import ui_assets
@@ -1390,3 +1397,14 @@ def test_ui_response_is_the_one_rule_both_hosts_serve_by(v2_ui, asset, served):
     from omnigent.airbrx.iris.ui_assets import ui_response
 
     assert (ui_response(asset) is not None) is served
+
+
+def test_the_host_descriptor_is_refused_for_another_users_session(monkeypatch, tmp_path):
+    """Session-scoped like every other Iris route: someone outside the binding gets its refusal."""
+    client = make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    monkeypatch.setattr(iris_routes, "require_user", lambda request, provider: "someone-else")
+    host = client.get(f"{API}/host")
+    assert host.status_code == 403
+    assert host.status_code == client.get(f"{API}/state").status_code
+    assert host.status_code == client.get(f"{UI}/index.html").status_code
+    assert "host_label" not in host.text
