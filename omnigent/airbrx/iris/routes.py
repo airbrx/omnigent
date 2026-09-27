@@ -205,10 +205,21 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
             if not posted.get("queued") or not cursor:
                 raise HTTPException(409, "Native session did not accept the turn")
             expires = time.monotonic() + deadline
+            # The client going away is NOT a Stop. A page reload aborts this
+            # request's fetch, so the server sees a disconnect, and this loop
+            # used to answer it with an interrupt: a reload mid-chat cancelled
+            # Iris's turn, when the reloaded page means to read the answer back
+            # from history (WORKSPACE_V2.md, section 7 gate). Only `api/cancel`
+            # (the user's explicit Stop) interrupts on the user's behalf.
+            #
+            # So a disconnected caller does not end the watch either: it runs to
+            # the answer or the deadline, which keeps the tool-boundary refusal
+            # and the deadline below enforced for a turn nobody is watching.
+            # Neither is a CancelledError grounds for an interrupt: that is this
+            # task being torn down (a disconnect, on a stack that cancels
+            # handlers for it, or a server shutdown), not a user asking to stop.
             try:
                 while time.monotonic() < expires:
-                    if await request.is_disconnected():
-                        raise asyncio.CancelledError()
                     snapshot, _ = await authorize(request, session_id, client)
                     page = await checked(
                         await client.get(
@@ -231,7 +242,7 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                         return {**answer, "item_id": cursor}
                     await asyncio.sleep(0.5)
                 raise HTTPException(504, "Iris turn timed out and was cancelled")
-            except (asyncio.CancelledError, HTTPException):
+            except HTTPException:
                 await client.post(
                     f"/v1/sessions/{session_id}/events", json={"type": "interrupt", "data": {}}
                 )

@@ -620,3 +620,97 @@ def test_readiness_has_no_unverified_line_once_a_turn_completed(monkeypatch, tmp
         f"{API}/readiness"
     )
     assert body.json()["unverified"] == []
+
+
+# --- A page reload is not a Stop (WORKSPACE_V2.md, section 7 gate: "a reload mid-chat") --
+#
+# A reload aborts the page's in-flight `api/chat` fetch, so the server sees the
+# chat request's client disconnect. The turn itself runs in the native session,
+# and the reloaded page reads its answer back from history. Only the explicit
+# Stop (`api/cancel`) may interrupt it.
+
+import asyncio  # noqa: E402
+
+
+def _drive_chat_then_disconnect(app, session, *, answer_after: float):
+    """Send one chat request over raw ASGI whose client goes away as soon as it is sent.
+
+    Every `receive()` after the body answers `http.disconnect`, which is what the
+    server is handed when a browser reload aborts the fetch. `answer_after`
+    seconds later the native session records Iris's answer, as a turn that
+    carried on would.
+    """
+    body = json.dumps(
+        {"history": [{"role": "user", "content": "Why did the hit rate drop?"}], "deadline": 30}
+    ).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": f"{API}/chat",
+        "raw_path": f"{API}/chat".encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver"), (b"content-type", b"application/json")],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+    sent_body = False
+    messages = []
+
+    async def receive():
+        nonlocal sent_body
+        if not sent_body:
+            sent_body = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+
+    async def answer_later():
+        await asyncio.sleep(answer_after)
+        session.items.append(answer_item("The hit rate fell on Tuesday.", NOW, "a-late"))
+
+    async def main():
+        later = asyncio.create_task(answer_later())
+        try:
+            await asyncio.wait_for(app(scope, receive, send), timeout=20)
+        except asyncio.CancelledError:
+            # What the old adapter raised on a disconnect; the assertions say why it fails.
+            pass
+        finally:
+            later.cancel()
+
+    asyncio.run(main())
+    return messages
+
+
+def test_a_reload_mid_turn_does_not_interrupt_the_turn(monkeypatch, tmp_path):
+    session = IrisSession(captured(), FILES, lambda text, at: [])
+    client = make_client(monkeypatch, tmp_path, session)
+    _drive_chat_then_disconnect(client.app, session, answer_after=1.2)
+    kinds = [e["type"] for e in session.posted]
+    assert kinds == ["message"], f"a reload interrupted Iris's turn: native events {kinds}"
+    # The turn ran to its answer, which the reloaded page reads back from history.
+    assert any(i.get("id") == "a-late" for i in session.items)
+
+
+def test_stop_still_interrupts_the_turn(monkeypatch, tmp_path):
+    session = IrisSession(captured(), FILES)
+    response = make_client(monkeypatch, tmp_path, session).post(f"{API}/cancel", json={})
+    assert response.status_code == 200, response.text
+    assert [e["type"] for e in session.posted] == ["interrupt"]
+
+
+def test_a_turn_past_its_deadline_is_still_interrupted(monkeypatch, tmp_path):
+    """The adapter's own deadline is unchanged: it cancels the turn and says so."""
+    session = IrisSession(captured(), FILES, lambda text, at: [])
+    response = make_client(monkeypatch, tmp_path, session).post(
+        f"{API}/chat",
+        json={"history": [{"role": "user", "content": "Still there?"}], "deadline": 1},
+    )
+    assert response.status_code == 504
+    assert [e["type"] for e in session.posted] == ["message", "interrupt"]
