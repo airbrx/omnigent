@@ -815,6 +815,7 @@
     record_agent_run: "Recording her work",
     list_linkedin_posts: "Reading the LinkedIn posts",
     record_linkedin_metrics: "Recording LinkedIn post stats",
+    set_linkedin_post_url: "Recording a LinkedIn post's address",
     list_plan_items: "Reading the GTM plan",
     record_plan_actual: "Recording a plan actual",
     ToolSearch: "Getting her tools ready",
