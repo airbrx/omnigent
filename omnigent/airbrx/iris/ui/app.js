@@ -1,8 +1,10 @@
 // Iris's workspace. Framed by Omnigent at /iris/:sessionId and served per
-// session at /v1/iris/sessions/{id}/ui/ (the only workspace since W5). It runs on
-// the shared workspace kernel (window.AirbrxWorkspace, loaded from kernel/
-// before this file) and declares only what is Iris's own: her tabs, her words
-// and her honesty rules.
+// session at /v1/iris/sessions/{id}/ui/, or by the standalone viewer per saved
+// run at /t/{tenant}/{week}/ui/. The same files run on every host; the host
+// says what it can do at api/host (docs/iris/STANDALONE_VIEWER.md section 2).
+// It runs on the shared workspace kernel (window.AirbrxWorkspace, loaded from
+// kernel/ before this file) and declares only what is Iris's own: her tabs,
+// her words and her honesty rules.
 //
 // Every number on screen comes from api/state, which the adapter builds from
 // Iris's own recorded tool results. Nothing here computes an answer in her
@@ -17,9 +19,16 @@
   const AW = window.AirbrxWorkspace;
   const { el, $ } = AW;
   const AGENT = "Iris";
-  const SESSION_ID = decodeURIComponent(
-    (/\/iris\/sessions\/([^/]+)\/ui\//.exec(location.pathname) || [])[1] || "",
-  );
+  const AGENT_OFF = "Agent not connected";
+  const NO_HOST = "The workspace could not tell which host it is running in.";
+  // The host descriptor from api/host. Until it answers nothing can be asked
+  // or collected; when it cannot be read the page says so and stops.
+  let HOST = null;
+  let hostError = "";
+  // The session (framed) or saved run (standalone) this page shows.
+  let SESSION_ID = "";
+  // False when the host has no agent: no turn is ever sent (rule V1).
+  let CONNECTED = false;
   const POLL_MS = Number(document.body.dataset.pollMs) || 1500;
   // D2. "show" draws an out-of-date capture with its label and refreshes it in
   // the background; "collect" draws nothing until one fresh collection returns.
@@ -51,7 +60,7 @@
   const NOT_STARTED = /^(Iris is busy|Iris did not start another collection)/;
   // This tab's record of the automatic collection, for when the session's
   // record cannot be read or the turn never reached it.
-  const AUTO_KEY = `iris.autoCollected.${SESSION_ID}`;
+  const autoKey = () => `iris.autoCollected.${SESSION_ID}`;
 
   // ------------------------------------------------------------- state --
 
@@ -129,7 +138,10 @@
 
   /** A plainError sentence, ready to sit inside another sentence. */
   function reason(error) {
-    return AW.plainError(error, { agent: AGENT }).replace(/[.\s]+$/, "");
+    return AW.plainError(error, {
+      agent: AGENT,
+      host: (HOST && HOST.host_label) || "Omnigent",
+    }).replace(/[.\s]+$/, "");
   }
 
   function notice(text, isError) {
@@ -199,14 +211,17 @@
     );
   }
 
+  /** An ask chip. With no agent it keeps its words and is disabled. */
   function askButton(label, text) {
     return el(
       "button",
       {
         type: "button",
         class: "chip",
-        "data-busy-off": true,
-        disabled: busy,
+        "data-busy-off": CONNECTED,
+        "data-agent-off": !CONNECTED,
+        title: CONNECTED ? undefined : AGENT_OFF,
+        disabled: busy || !CONNECTED,
         onclick: () => void ask(text),
       },
       label,
@@ -372,7 +387,10 @@
   function nothingYet(container) {
     let head;
     let body;
-    if (refused) {
+    if (hostError) {
+      head = NO_HOST;
+      body = hostError;
+    } else if (refused) {
       head = "This capture is not shown";
       body = refused;
     } else if (collecting === "first") {
@@ -386,6 +404,10 @@
     } else if (!loaded) {
       head = "Reading this session";
       body = "Loading the chat and Iris's last capture of this tenant.";
+    } else if (!CONNECTED) {
+      head = "No overview in this saved run";
+      body =
+        "Iris is not connected here, so nothing can be collected. Collecting a fresh overview needs Omnigent.";
     } else if (heldStale) {
       head = "The last capture is out of date";
       body =
@@ -405,7 +427,7 @@
         { class: "card empty-state" },
         el("div", { class: "section-title" }, head),
         el("p", {}, body),
-        collecting || refused || !loaded
+        collecting || refused || !loaded || !CONNECTED
           ? null
           : el(
               "div",
@@ -1159,7 +1181,7 @@
           "Every tenant you can open. Opening one goes back to your last session on that tenant, or starts one if there is none; this one stays on its tenant.",
         ),
       );
-      if (accounts.status === "idle") void loadAccounts();
+      if (accounts.status === "idle" && HOST) void loadAccounts();
       if (accounts.status === "idle" || accounts.status === "loading") {
         container.append(
           el("p", { class: "muted", role: "status" }, "Reading the account."),
@@ -1528,13 +1550,13 @@
   }
 
   async function listDownloads(list) {
-    const session = encodeURIComponent(SESSION_ID);
+    if (!HOST) return;
+    const filesUrl = HOST.links.files;
     list.replaceChildren("Reading the session's files.");
     try {
-      const response = await fetch(
-        `/v1/sessions/${session}/resources/files?limit=100`,
-        { credentials: "same-origin" },
-      );
+      const response = await fetch(`${filesUrl}?limit=100`, {
+        credentials: "same-origin",
+      });
       if (!response.ok) {
         const error = new Error(`HTTP ${response.status}`);
         error.status = response.status;
@@ -1551,7 +1573,7 @@
                 "a",
                 {
                   class: "chip",
-                  href: `/v1/sessions/${session}/resources/files/${encodeURIComponent(f.id)}/content`,
+                  href: `${filesUrl}/${encodeURIComponent(f.id)}/content`,
                   download: f.filename,
                 },
                 f.filename,
@@ -1594,8 +1616,8 @@
   async function loadAccounts() {
     accounts = { status: "loading", tenants: [], account: null, error: "" };
     const [catalog, account] = await Promise.allSettled([
-      getJson("/v1/iris"),
-      getJson("/v1/iris/account"),
+      getJson(HOST.links.catalog),
+      getJson(HOST.links.account),
     ]);
     accounts = {
       status: "done",
@@ -1707,6 +1729,12 @@
    */
   function openTenant(tenantId) {
     if (typeof tenantId !== "string" || tenantId === sessionTenant()) return;
+    // A host with no shell around it goes to the tenant's own page.
+    if (HOST.open_tenant === "navigate") {
+      const home = fill(HOST.links.tenant_home, { tenant_id: tenantId });
+      if (home) navigate(home);
+      return;
+    }
     window.parent.postMessage(
       { type: "iris.openTenant", tenant_id: tenantId },
       location.origin,
@@ -1733,7 +1761,8 @@
   function renderHeader() {
     $("synthetic").hidden = !isSynthetic();
     let text;
-    if (!state && refused) text = "Iris's capture is not shown";
+    if (hostError) text = "";
+    else if (!state && refused) text = "Iris's capture is not shown";
     else if (!state && !loaded) text = "Reading this session…";
     else if (!state) text = "Iris has not read this tenant yet";
     else if (finite(state.captured_at))
@@ -1745,7 +1774,31 @@
     $("freshness").textContent = text;
   }
 
+  /** The host line with no agent: what this page is, and what it cannot do. */
+  function renderOffline() {
+    const tenant = (readiness && readiness.name) || HOST.data.tenant_id || "";
+    const run = weekEntry(HOST.data.week);
+    const at = when(
+      state && finite(state.captured_at)
+        ? state.captured_at
+        : run && run.captured_at,
+    );
+    $("host-status").textContent =
+      `Iris is not connected here. This is a saved run${tenant ? ` of ${tenant}` : ""}${at ? `, captured ${at}` : ""}. Asking her something or collecting a fresh overview needs Omnigent.`;
+    $("host-status").dataset.state = "offline";
+    $("host-details").hidden = true;
+    $("host-details").replaceChildren();
+    $("collecting").hidden = true;
+    $("collecting").textContent = "";
+  }
+
   function renderHost() {
+    if (hostError) {
+      $("host-status").textContent = NO_HOST;
+      $("host-status").dataset.state = "refused";
+      return;
+    }
+    if (HOST && !CONNECTED) return renderOffline();
     let status;
     if (readinessError)
       status = `This host will not run turns in this session: ${readinessError}.`;
@@ -1793,6 +1846,8 @@
     const container = $("view");
     container.replaceChildren();
     const tab = currentTab || TABS[0];
+    // With no host there is nothing to show on any tab but why.
+    if (hostError) return nothingYet(container);
     tab.render(container, state, { ask, readiness });
   }
 
@@ -1808,6 +1863,166 @@
     $("context-label").textContent = about ? `About ${tab.label}` : "";
   }
 
+  // ----------------------------------------------------------- the host --
+
+  /** A link template with its {names} filled in, each URL-encoded; "" when absent. */
+  function fill(template, values) {
+    if (typeof template !== "string" || !template) return "";
+    return template.replace(/\{([a-z_]+)\}/g, (_, name) =>
+      encodeURIComponent(String(values[name] ?? "")),
+    );
+  }
+
+  /** Go to another page of this host, as following a link would. */
+  function navigate(url) {
+    const link = el("a", { href: url, hidden: true });
+    document.body.append(link);
+    link.click();
+    link.remove();
+  }
+
+  /** The descriptor's entry for `week`, or null. */
+  function weekEntry(week) {
+    const weeks = HOST && HOST.data && HOST.data.weeks;
+    return (
+      (Array.isArray(weeks) ? weeks : []).find((w) => w && w.week === week) ||
+      null
+    );
+  }
+
+  /**
+   * Today's Omnigent, for a server from before api/host existed: the session
+   * in the path, its native record, and an agent that is connected.
+   */
+  function omnigentHost() {
+    const id = decodeURIComponent(
+      (/\/iris\/sessions\/([^/]+)\/ui\//.exec(location.pathname) || [])[1] ||
+        "",
+    );
+    const session = `/v1/sessions/${encodeURIComponent(id)}`;
+    return {
+      schema: 1,
+      host_label: "Omnigent",
+      identity: { kind: "omnigent", email: null, sign_in: null },
+      agent: { connected: true, why: null },
+      data: {
+        source: "session",
+        scope_id: id,
+        tenant_id: null,
+        week: null,
+        weeks: null,
+      },
+      links: {
+        native_chat: `/c/${encodeURIComponent(id)}`,
+        items: `${session}/items`,
+        session,
+        files: `${session}/resources/files`,
+        catalog: "/v1/iris",
+        account: "/v1/iris/account",
+        tenant_home: null,
+        week_page: null,
+      },
+      open_tenant: "postMessage",
+    };
+  }
+
+  /** A descriptor this page understands; anything else is not guessed past. */
+  function usable(host) {
+    const text = (v) => typeof v === "string" && v !== "";
+    return Boolean(
+      host &&
+      host.schema === 1 &&
+      text(host.host_label) &&
+      host.agent &&
+      typeof host.agent.connected === "boolean" &&
+      host.data &&
+      text(host.data.scope_id) &&
+      host.links &&
+      ["items", "session", "files", "catalog", "account"].every((k) =>
+        text(host.links[k]),
+      ) &&
+      (host.open_tenant === "postMessage" || host.open_tenant === "navigate"),
+    );
+  }
+
+  /**
+   * Read api/host: { host } or { why }. A 404 is a server from before the
+   * route existed, which is today's Omnigent; any other failure stops here.
+   */
+  async function readHost() {
+    let host;
+    try {
+      host = await api("host");
+    } catch (error) {
+      if (error.status === 404) return { host: omnigentHost() };
+      return { why: `${reason(error)}.` };
+    }
+    return usable(host)
+      ? { host }
+      : { why: "Its answer was not one this page understands." };
+  }
+
+  /** Label a week for the picker, newest first (section 5.2). */
+  function weekLabel(w) {
+    let text =
+      w.start_date && w.end_date
+        ? `${w.week}: ${w.start_date} to ${w.end_date}`
+        : String(w.week);
+    if (w.readable === false) return `${text}, unreadable`;
+    if (w.period_complete === false)
+      text +=
+        finite(w.covered_days) && finite(w.requested_days)
+          ? `, partial (${w.covered_days} of ${w.requested_days} days)`
+          : ", partial";
+    return text;
+  }
+
+  function renderWeeks() {
+    const picker = $("week");
+    const weeks = (Array.isArray(HOST.data.weeks) ? HOST.data.weeks : [])
+      .filter((w) => w && typeof w.week === "string" && w.week)
+      .sort((a, b) => b.week.localeCompare(a.week));
+    picker.hidden = weeks.length < 2;
+    if (picker.hidden) return picker.replaceChildren();
+    picker.replaceChildren(
+      ...weeks.map((w) =>
+        el(
+          "option",
+          {
+            value: w.week,
+            disabled: w.readable === false,
+            selected: w.week === HOST.data.week,
+          },
+          weekLabel(w),
+        ),
+      ),
+    );
+    picker.value = HOST.data.week || "";
+  }
+
+  /** Take the descriptor: who this is, what it links to, what it can do. */
+  function applyHost(host) {
+    HOST = host;
+    SESSION_ID = host.data.scope_id;
+    CONNECTED = host.agent.connected;
+    const native = host.links.native_chat;
+    $("native-chat").hidden = !native;
+    if (native) $("native-chat").setAttribute("href", native);
+    const identity = host.identity || {};
+    $("identity").hidden = !(identity.kind === "dev" && identity.email);
+    $("identity").textContent = $("identity").hidden
+      ? ""
+      : `Dev sign-in: ${identity.email}`;
+    $("agent-state").hidden = CONNECTED;
+    if (CONNECTED) $("refresh").removeAttribute("aria-describedby");
+    else $("refresh").setAttribute("aria-describedby", "agent-state");
+    $("input").disabled = !CONNECTED;
+    if (!CONNECTED) $("input").placeholder = AGENT_OFF;
+    renderWeeks();
+    setBusy(busy);
+    render();
+  }
+
   // --------------------------------------------------------- the kernel --
 
   AW.theme.init({ messageKey: "irisHostTheme" });
@@ -1816,8 +2031,12 @@
     list: $("messages"),
     agentName: AGENT,
   });
-  const stream = AW.createStream({
+  // Created once api/host has named the session's record.
+  let stream = null;
+  const streamOptions = () => ({
     sessionId: SESSION_ID,
+    itemsUrl: HOST.links.items,
+    sessionUrl: HOST.links.session,
     pollMs: POLL_MS,
     doing: DOING,
     recognise: (text, item) => {
@@ -1856,9 +2075,9 @@
 
   function setBusy(value) {
     busy = value;
-    $("send").disabled = value;
-    $("refresh").disabled = value;
-    $("cancel").hidden = !value;
+    $("send").disabled = value || !CONNECTED;
+    $("refresh").disabled = value || !CONNECTED;
+    $("cancel").hidden = !value || !CONNECTED;
     for (const button of document.querySelectorAll("button[data-busy-off]"))
       button.disabled = value;
   }
@@ -1977,7 +2196,7 @@
   }
 
   async function ask(text, withContext = true) {
-    if (busy || !String(text).trim()) return;
+    if (!CONNECTED || busy || !String(text).trim()) return;
     const tab = currentTab || TABS[0];
     const note =
       !tab.home && withContext && context.included()
@@ -2044,6 +2263,7 @@
    * back when the adapter refused to start the collection.
    */
   async function collect(pressed) {
+    if (!CONNECTED) return false;
     setBusy(true);
     await watch();
     try {
@@ -2080,7 +2300,7 @@
   }
 
   async function refresh() {
-    if (busy) return;
+    if (!CONNECTED || busy) return;
     notice("");
     await collect(
       transcript.add("system", "You had Iris collect a fresh overview."),
@@ -2099,7 +2319,7 @@
     const since = finite(capturedAt) ? capturedAt : -Infinity;
     if (lastCollectTurn > since) return false;
     try {
-      if (sessionStorage.getItem(AUTO_KEY) === String(since)) return false;
+      if (sessionStorage.getItem(autoKey()) === String(since)) return false;
     } catch {
       // Without storage the session's record still decides.
     }
@@ -2107,7 +2327,7 @@
   }
 
   async function autoCollect(kind, capture) {
-    if (autoCollected) return;
+    if (autoCollected || !CONNECTED) return;
     const capturedAt = capture && capture.captured_at;
     if (!mayAutoCollect(capturedAt)) {
       autoSkipped = kind;
@@ -2121,7 +2341,7 @@
     autoCollected = true;
     try {
       sessionStorage.setItem(
-        AUTO_KEY,
+        autoKey(),
         String(finite(capturedAt) ? capturedAt : -Infinity),
       );
     } catch {
@@ -2195,7 +2415,8 @@
       }
     }
     if (first === null) return mayCollect ? autoCollect("first") : render();
-    if (!first.stale) {
+    // With no agent a saved run is drawn as it is: nothing could replace it.
+    if (!first.stale || !CONNECTED) {
       accept(first);
       render();
       return;
@@ -2212,11 +2433,10 @@
 
   // ------------------------------------------------------------ wiring --
 
-  $("native-chat").setAttribute("href", `/c/${encodeURIComponent(SESSION_ID)}`);
   $("composer").addEventListener("submit", (event) => {
     event.preventDefault();
     // Enter still submits while Send is disabled: keep the question unsent.
-    if (busy) return;
+    if (busy || !CONNECTED) return;
     const input = $("input");
     const text = input.value;
     input.value = "";
@@ -2230,6 +2450,7 @@
   });
   $("refresh").addEventListener("click", () => void refresh());
   $("cancel").addEventListener("click", async () => {
+    if (!CONNECTED) return;
     try {
       await api("cancel", {});
     } catch (error) {
@@ -2253,7 +2474,37 @@
     fromHash: true,
   });
 
+  $("week").addEventListener("change", (event) => {
+    const week = event.target.value;
+    const page = fill(HOST.links.week_page, {
+      tenant_id: HOST.data.tenant_id,
+      week,
+    });
+    if (!page || week === HOST.data.week) return;
+    navigate(`${page}#${(currentTab || TABS[0]).id}`);
+  });
+
   (async () => {
+    const found = await readHost();
+    if (!found.host) {
+      hostError = found.why;
+      notice("");
+      render();
+      return;
+    }
+    applyHost(found.host);
+    stream = AW.createStream(streamOptions());
+    if (!CONNECTED) {
+      // A saved run: its chat is history only, and nothing is ever collected.
+      await stream.loadHistory();
+      transcript.add(
+        "system",
+        "Iris is not connected here, so this chat is read-only.",
+      );
+      await loadReadiness();
+      await firstRead({ mayCollect: false });
+      return;
+    }
     // The status is read before the history: a turn that ends after this read
     // is in the history, and one still running is followed (review N1).
     const status = await stream.sessionStatus();
