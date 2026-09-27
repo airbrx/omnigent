@@ -410,6 +410,11 @@ def v2_ui(tmp_path, monkeypatch):
     (root / "style.css").write_text("/* v2 */\n")
     (root / "views" / "overview.js").write_text("// overview view\n")
     (root / "secret.txt").write_text("not an app file\n")
+    # Files a partial match on the app names would serve.
+    (root / "app.jsx").write_text("// not the app\n")
+    (root / "views" / "overview.js.bak").write_text("// a backup\n")
+    (root / "old").mkdir()
+    (root / "old" / "app.js").write_text("// an old copy\n")
     monkeypatch.setattr(iris_routes, "UI_ROOT", root, raising=False)
 
     kernel = tmp_path / "kernel"
@@ -477,6 +482,10 @@ def test_v2_serves_the_pinned_images(v2_ui, monkeypatch, tmp_path, name):
         "assets/PROVENANCE.md",
         # Only the patterns are served, not whatever sits in the directory.
         "secret.txt",
+        # The app names are matched whole: a prefix or substring match serves these.
+        "app.jsx",
+        "views/overview.js.bak",
+        "old/app.js",
         # Encoded, so the client does not normalise the dot segment away.
         "views/..%2Fsecret.txt",
         "views/..%2F..%2Fsecret.txt",
@@ -550,3 +559,42 @@ def test_the_v2_ui_and_kernel_are_declared_package_data(package, relpath):
     from tests.airbrx.test_airbrx_package_data import _declared_globs, _matches
 
     assert _matches(_declared_globs().get(package, []), relpath)
+
+
+class _Unreadable(dict):
+    """Report files where any id not listed makes the native file route answer 500."""
+
+    def __missing__(self, file_id):
+        raise HTTPException(500, "file store unavailable")
+
+
+@pytest.mark.parametrize("tool", ["iris_investigate", "iris_propose"])
+@pytest.mark.parametrize("path", ["state", "refresh"])
+def test_an_unreadable_investigation_or_proposal_leaves_the_rest_of_state(
+    monkeypatch, tmp_path, tool, path
+):
+    """One failed fetch of an optional report nulls that report, not the whole read."""
+    items = [*worked(), *tool_run(tool, "gone", READ_AT + 20, "gone")]
+    session = IrisSession(items, FILES, respond)
+    session.files = _Unreadable(FILES)
+    client = make_client(monkeypatch, tmp_path, session)
+    response = (
+        client.get(f"{API}/state") if path == "state" else client.post(f"{API}/refresh", json={})
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    key = "investigation" if tool == "iris_investigate" else "proposal"
+    other = "proposal" if key == "investigation" else "investigation"
+    assert body[key] is None
+    assert body["report_times"][tool] is None
+    assert body[other] is not None
+    assert body["overview"] == FILES[FRESH_OVERVIEW_ID if path == "refresh" else OVERVIEW_ID]
+    assert body["audit"]["findings"]
+
+
+def test_an_unreadable_overview_still_fails_the_read(monkeypatch, tmp_path):
+    """Only the optional reports are isolated; the capture itself is not papered over."""
+    session = IrisSession(captured(), FILES)
+    session.files = _Unreadable({k: v for k, v in FILES.items() if k != OVERVIEW_ID})
+    client = make_client(monkeypatch, tmp_path, session)
+    assert client.get(f"{API}/state").status_code >= 400

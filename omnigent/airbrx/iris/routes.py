@@ -92,6 +92,12 @@ REFRESH_PROMPT = (
 #: `report_times` entry instead, which says how old it is.
 _REFRESH_BOUND = frozenset({"iris_overview", "iris_audit"})
 
+#: Reports a state read carries when it can, and leaves null when it cannot.
+#: Their fetch failing must not take the overview and audit down with it: the
+#: workspace can still show the capture, and a null already means "absent".
+#: A tenant mismatch is not a fetch failure and still refuses the whole read.
+_OPTIONAL_REPORTS = frozenset({"iris_investigate", "iris_propose"})
+
 #: Where the v2 workspace (docs/iris/WORKSPACE_V2.md, D1) lives in this package.
 UI_ROOT = HERE / "ui"
 #: The v2 app files served from `UI_ROOT`. A pattern, not a directory listing,
@@ -407,8 +413,9 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
             report_times = dict.fromkeys(sorted(TOOLS))
             cache_age = 0
             captured_at = None
+            unreadable = set()
             for tool, file_id, created_at in reversed(refs):
-                if tool in reports:
+                if tool in reports or tool in unreadable:
                     continue
                 # On a fresh collection, only this turn's overview and audit
                 # count. A refresh that returns the previous capture is worse
@@ -417,11 +424,21 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                 # see _REFRESH_BOUND.
                 if tool in _REFRESH_BOUND and created_at < collected_after:
                     continue
-                report = await checked(
-                    await client.get(
-                        f"/v1/sessions/{session_id}/resources/files/{file_id}/content"
+                try:
+                    report = await checked(
+                        await client.get(
+                            f"/v1/sessions/{session_id}/resources/files/{file_id}/content"
+                        )
                     )
-                )
+                    if not isinstance(report, dict):
+                        raise ValueError("report is not an object")
+                except (HTTPException, ValueError, httpx.HTTPError):
+                    if tool not in _OPTIONAL_REPORTS:
+                        raise
+                    # Null, as if absent, and no older report in its place:
+                    # the newest is the one the session stands behind.
+                    unreadable.add(tool)
+                    continue
                 if report.get("tenant_id") != binding.tenant_id:
                     raise HTTPException(403, "Report tenant does not match session")
                 reports[tool] = report
