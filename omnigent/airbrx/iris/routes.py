@@ -9,7 +9,6 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -22,6 +21,7 @@ from omnigent.airbrx.iris.config import bindings, session_binding
 from omnigent.airbrx.iris.package import HERE, source_root
 from omnigent.airbrx.iris.records import (
     bare_tool_name,
+    reads_current_period,
     report_calls,
     report_references,  # noqa: F401 -- re-exported; tests import it from here
 )
@@ -145,43 +145,6 @@ def kernel_file(name: str) -> Path | None:
     return path if path.is_file() else None
 
 
-#: iris_overview's default window: this many completed UTC days, ending (end
-#: exclusive) on the day it runs. `iris.config.period` in the pinned archive.
-_CURRENT_PERIOD_DAYS = 7
-
-
-def reads_current_period(arguments: dict | None, *called_at: float) -> bool:
-    """Whether an iris_overview call read the tenant's current period.
-
-    Called without dates, iris_overview reads the current period by definition:
-    the seven completed UTC days before the day it runs. Called with dates, it
-    read the current period only if the dates name exactly that window for the
-    day it ran (`called_at`, epoch seconds; any one of them matching is enough,
-    so a call recorded just before midnight UTC and answered just after is not
-    refused). Anything else, typically an older window read to compare against,
-    is not the overview.
-
-    Decided from what the tool was asked, never from what it found: a capture
-    that covered 3 of 7 days (`period_complete: false`) is still the current
-    period, and says so in its own metrics. Arguments that were recorded but
-    cannot be read are not assumed to be the default.
-    """
-    if arguments is None:
-        return False
-    start, end = arguments.get("start_date"), arguments.get("end_date")
-    if start is None and end is None:
-        return True
-    try:
-        window = (date.fromisoformat(start), date.fromisoformat(end))
-    except (TypeError, ValueError):
-        return False
-    for at in called_at:
-        day = datetime.fromtimestamp(at, timezone.utc).date()
-        if window == (day - timedelta(days=_CURRENT_PERIOD_DAYS), day):
-            return True
-    return False
-
-
 def completed_answer(items: list[dict]) -> dict | None:
     tools = [bare_tool_name(i.get("name")) for i in items if i.get("type") == "function_call"]
     if set(tools) - _ALLOWED_IN_A_TURN:
@@ -199,6 +162,15 @@ def completed_answer(items: list[dict]) -> dict | None:
         c.get("text", "") for c in answers[-1].get("content", []) if c.get("type") == "output_text"
     )
     return {"text": text, "tools": tools, "failed": None} if text.strip() else None
+
+
+#: The 409 detail when a turn is already running in the session (this adapter
+#: holds its lock, or the native session is running or waiting). The kernel's
+#: `api()` surfaces a 4xx as `status` plus this `detail` string and nothing else,
+#: so this exact string is how a caller tells "busy" from the two "no overview"
+#: 409s of `read_state`: a reload during the first auto-collect gets it while
+#: the orphaned refresh is still running. Kept byte-for-byte; a test pins it.
+BUSY_DETAIL = "Iris is busy; cancel or wait for the current turn"
 
 
 def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
@@ -226,7 +198,7 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
         session, _ = await authorize(request, session_id, client)
         lock = locks.setdefault(session_id, asyncio.Lock())
         if lock.locked() or session["status"] in {"running", "waiting"}:
-            raise HTTPException(409, "Iris is busy; cancel or wait for the current turn")
+            raise HTTPException(409, BUSY_DETAIL)
         async with lock:
             posted = await checked(
                 await client.post(
@@ -257,6 +229,9 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
             # Neither is a CancelledError grounds for an interrupt: that is this
             # task being torn down (a disconnect, on a stack that cancels
             # handlers for it, or a server shutdown), not a user asking to stop.
+            # On such a stack the watch simply ends, so the deadline below is
+            # not enforced for that turn; today's uvicorn stack does not cancel
+            # handlers on disconnect (review of #115), so it is.
             try:
                 while time.monotonic() < expires:
                     snapshot, _ = await authorize(request, session_id, client)
@@ -465,24 +440,27 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
             captured_at = None
             unreadable = set()
             other_windows = False
-            for tool, file_id, created_at, arguments in reversed(refs):
+            for tool, file_id, created_at, arguments, called_at in reversed(refs):
                 if tool in reports or tool in unreadable:
+                    continue
+                # On a fresh collection, only this turn's overview and audit
+                # count. A refresh that returns the previous capture is worse
+                # than one that admits it collected nothing. The investigation
+                # and the proposal are the newest in the session either way:
+                # see _REFRESH_BOUND. Checked before the window below, so an
+                # older comparison does not turn "produced no overview" into
+                # "read no current-period overview".
+                if tool in _REFRESH_BOUND and created_at < collected_after:
                     continue
                 # `overview` is the tenant's current period. An overview Iris
                 # read over another window mid-session (to compare against) is
                 # newer than the capture, and was being shown as the capture
                 # after a reload. It is skipped, not fetched: the contract has
                 # no slot for it, and the comparison itself is what
-                # `investigation` carries.
-                if tool == "iris_overview" and not reads_current_period(arguments, created_at):
+                # `investigation` carries. The window is judged on the day the
+                # call was made, not the day its answer was recorded.
+                if tool == "iris_overview" and not reads_current_period(arguments, called_at):
                     other_windows = True
-                    continue
-                # On a fresh collection, only this turn's overview and audit
-                # count. A refresh that returns the previous capture is worse
-                # than one that admits it collected nothing. The investigation
-                # and the proposal are the newest in the session either way:
-                # see _REFRESH_BOUND.
-                if tool in _REFRESH_BOUND and created_at < collected_after:
                     continue
                 try:
                     report = await checked(

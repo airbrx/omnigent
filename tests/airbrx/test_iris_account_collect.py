@@ -576,3 +576,199 @@ async def test_a_borrowed_call_id_still_yields_the_newest_capture_end_to_end():
         "metrics": REPORT["metrics"],
         "captured_at": 500,
     }
+
+
+# ------------------------------------------- the tenant's CURRENT period ----
+# iris_overview takes optional start_date/end_date. Without them it reads the
+# tenant's current period: the seven completed UTC days before the day it runs.
+# A mid-session comparison ("how did the week before compare?") calls it again
+# with an older window, and that report is newer than the capture. The account
+# ranking must not rank a tenant on its comparison window, which is what
+# "newest overview whatever its window" did. Same rule as the workspace state:
+# records.reads_current_period over records.report_calls.
+
+COMPARISON = {"start_date": "2026-09-12", "end_date": "2026-09-19"}
+
+
+def dated_turn(call_id, tool, file_id, created_at, arguments, called_at=None):
+    """`turn`, with the call's recorded arguments and its own clock."""
+    run = turn(call_id, tool, file_id, created_at)
+    run[0]["arguments"] = arguments if isinstance(arguments, str) else json.dumps(arguments)
+    run[0]["created_at"] = created_at if called_at is None else called_at
+    return run
+
+
+#: 2026-09-27T00:21:00Z, so the current period is 09-20 up to 09-27, end exclusive.
+AT = 1_790_468_460
+
+
+def metrics_of(requests, period_complete=True, covered_days=7):
+    return {
+        **REPORT["metrics"],
+        "requests": requests,
+        "covered_days": covered_days,
+        "period_complete": period_complete,
+    }
+
+
+async def test_a_newer_comparison_window_does_not_become_the_accounts_capture():
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={
+            "s1": turn("c1", "iris_overview", "f-current", AT)
+            + dated_turn("c2", "iris_overview", "f-compare", AT + 60, COMPARISON)
+        },
+        reports={
+            "f-current": {**REPORT, "metrics": metrics_of(700)},
+            "f-compare": {**REPORT, "metrics": metrics_of(12)},
+        },
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"] == {
+        "tenant_id": "t-hot",
+        "metrics": metrics_of(700),
+        "captured_at": AT,
+    }
+    content = [p for p, _ in api.calls if "/resources/files/" in p]
+    assert content == ["/v1/sessions/s1/resources/files/f-current/content"]
+
+
+async def test_a_comparison_in_a_newer_session_does_not_beat_the_capture_in_an_older_one():
+    api = FakeApi(
+        sessions=[session("s-new", "/w/hot"), session("s-old", "/w/hot")],
+        items={
+            "s-new": dated_turn("c2", "iris_overview", "f-compare", AT + 600, COMPARISON),
+            "s-old": turn("c1", "iris_overview", "f-current", AT),
+        },
+        reports={
+            "f-current": {**REPORT, "metrics": metrics_of(700)},
+            "f-compare": {**REPORT, "metrics": metrics_of(12)},
+        },
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"]["captured_at"] == AT
+    assert result["t-hot"]["metrics"]["requests"] == 700
+
+
+async def test_a_partial_current_capture_still_counts_as_current():
+    """3 of 7 days, period_complete false: current by what was asked, not by what was found.
+
+    `rank` then quarantines it as incomplete_period, by coverage; the collector
+    does not judge coverage.
+    """
+    partial = metrics_of(300, period_complete=False, covered_days=3)
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={
+            "s1": turn("c1", "iris_overview", "f-full", AT)
+            + turn("c2", "iris_overview", "f-partial", AT + 30)
+            + dated_turn("c3", "iris_overview", "f-compare", AT + 60, COMPARISON)
+        },
+        reports={
+            "f-full": {**REPORT, "metrics": metrics_of(700)},
+            "f-partial": {**REPORT, "metrics": partial},
+            "f-compare": {**REPORT, "metrics": metrics_of(12)},
+        },
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"] == {"tenant_id": "t-hot", "metrics": partial, "captured_at": AT + 30}
+
+
+async def test_explicit_dates_naming_the_current_period_count_as_current():
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={
+            "s1": turn("c1", "iris_overview", "f-default", AT)
+            + dated_turn(
+                "c2",
+                "iris_overview",
+                "f-explicit",
+                AT + 30,
+                {"start_date": "2026-09-20", "end_date": "2026-09-27"},
+            )
+        },
+        reports={
+            "f-default": {**REPORT, "metrics": metrics_of(700)},
+            "f-explicit": {**REPORT, "metrics": metrics_of(701)},
+        },
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"]["captured_at"] == AT + 30
+
+
+async def test_unreadable_call_arguments_are_not_the_current_period():
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={
+            "s1": turn("c1", "iris_overview", "f-current", AT)
+            + dated_turn("c2", "iris_overview", "f-garbled", AT + 60, "{not json")
+        },
+        reports={
+            "f-current": {**REPORT, "metrics": metrics_of(700)},
+            "f-garbled": {**REPORT, "metrics": metrics_of(12)},
+        },
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"]["captured_at"] == AT
+
+
+async def test_a_tenant_holding_only_comparison_windows_has_no_current_capture():
+    """None, as for a tenant that never collected: `rank` quarantines it as never_collected."""
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={"s1": dated_turn("c1", "iris_overview", "f-compare", AT, COMPARISON)},
+        reports={"f-compare": REPORT},
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result == {"t-hot": None}
+    assert not [p for p, _ in api.calls if "/resources/files/" in p]
+
+
+async def test_paging_goes_past_a_comparison_window_to_the_current_capture():
+    """The early stop is on the newest CURRENT overview, not the newest overview."""
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={
+            "s1": [
+                page(
+                    list(
+                        reversed(
+                            dated_turn("c-cmp", "iris_overview", "f-compare", AT + 60, COMPARISON)
+                        )
+                    ),
+                    has_more=True,
+                    last_id="page-1",
+                ),
+                page(list(reversed(turn("c-ov", "iris_overview", "f-current", AT)))),
+            ]
+        },
+        reports={
+            "f-current": {**REPORT, "metrics": metrics_of(700)},
+            "f-compare": {**REPORT, "metrics": metrics_of(12)},
+        },
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"]["captured_at"] == AT
+    item_calls = [p for p, _ in api.calls if p.endswith("/items")]
+    assert item_calls == ["/v1/sessions/s1/items", "/v1/sessions/s1/items"]
+
+
+async def test_the_window_is_decided_on_the_calls_own_clock_across_midnight():
+    """Called at 23:59:58 UTC on 09-26 for 09-19..09-26, answered at 00:00:04 on 09-27."""
+    midnight = AT - 21 * 60  # 2026-09-27T00:00:00Z
+    api = FakeApi(
+        sessions=[session("s1", "/w/hot")],
+        items={
+            "s1": dated_turn(
+                "c1",
+                "iris_overview",
+                "f-straddle",
+                midnight + 4,
+                {"start_date": "2026-09-19", "end_date": "2026-09-26"},
+                called_at=midnight - 2,
+            )
+        },
+        reports={"f-straddle": REPORT},
+    )
+    result = await collect_captures(api.get, agent_id="ag_iris", bindings=[HOT])
+    assert result["t-hot"]["captured_at"] == midnight + 4
