@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ResolvedThemeMode } from "@/components/theme/themeMode";
 import { useResolvedThemeMode } from "@/components/theme/useResolvedThemeMode";
 import { Button } from "@/components/ui/button";
 import { getOmnigentHostConfig } from "@/lib/host";
@@ -35,6 +36,15 @@ interface IrisSession {
 
 /** What the v2 workspace frame posts to open another tenant (WORKSPACE_V2.md, 4). */
 export const OPEN_TENANT = "iris.openTenant";
+
+/**
+ * How long the openTenant handoff waits for the recent-sessions read.
+ *
+ * Only one open runs at a time, so a read that never answered would hold that
+ * guard for good and every later open would be ignored. Past this the read is
+ * cancelled and treated like a failed one: nothing to resume, so create().
+ */
+export const HANDOFF_READ_TIMEOUT_MS = 10_000;
 
 /**
  * The newest of the caller's sessions on this tenant, or nothing.
@@ -113,27 +123,6 @@ export function IrisWorkspace() {
   const mode = useResolvedThemeMode();
   const frame = useRef<HTMLIFrameElement>(null);
   useEffect(loadInter, []);
-  // The workspace mounts with the shell's appearance in its URL and is told
-  // about later changes by message. Rewriting `src` would reload the iframe
-  // and discard the conversation inside it, which is the one thing on this
-  // page that cannot be recovered — so the mount value is captured once.
-  const [mountTheme] = useState(mode);
-  // Same for the tab: read once per session, so the src never changes under
-  // it. Per session, because the route can move to another session in place.
-  const mountTabs = useRef(new Map<string, IrisTab | undefined>());
-  if (sessionId && !mountTabs.current.has(sessionId))
-    mountTabs.current.set(sessionId, rememberedTab(sessionId));
-  const mountTab = sessionId ? mountTabs.current.get(sessionId) : undefined;
-  useLayoutEffect(() => {
-    if (!sessionId) return;
-    const save = () => rememberTab(sessionId, frame.current);
-    window.addEventListener("pagehide", save);
-    return () => {
-      window.removeEventListener("pagehide", save);
-      // Layout cleanup runs before the frame leaves the DOM, so it is still readable.
-      save();
-    };
-  }, [sessionId]);
   // next-themes resolves after first paint, so the mount value can be a guess.
   // Posting on every change (and again on load, since a message sent before
   // the document exists goes nowhere) corrects it without a reload.
@@ -176,7 +165,7 @@ export function IrisWorkspace() {
   // (resumeOrCreate below); a failure just means there is nothing to resume.
   const recentQuery = (agentId: string | null | undefined) => ({
     queryKey: ["iris-recent-sessions", agentId],
-    queryFn: async (): Promise<IrisSession[]> => {
+    queryFn: async ({ signal }: { signal?: AbortSignal }): Promise<IrisSession[]> => {
       const params = new URLSearchParams({
         agent_id: agentId ?? "",
         limit: "50",
@@ -184,7 +173,7 @@ export function IrisWorkspace() {
         visibility: "mine",
       });
       try {
-        const response = await authenticatedFetch(`/v1/sessions?${params}`);
+        const response = await authenticatedFetch(`/v1/sessions?${params}`, { signal });
         if (!response.ok) return [];
         return ((await response.json()) as { data?: IrisSession[] }).data ?? [];
       } catch {
@@ -255,8 +244,20 @@ export function IrisWorkspace() {
     // Offline refuses Resume as well as New, as on the landing; create() says why.
     if (binding.host_online === false) return create(tenantId);
     // Read at the moment of the handoff (not kept from mount), so a session
-    // opened a minute ago in another tab is found. A failed read resumes nothing.
-    const sessions = await queryClient.fetchQuery({ ...recentQuery(data.agent_id), staleTime: 0 });
+    // opened a minute ago in another tab is found. A failed read resumes
+    // nothing, and so does one that has not answered within the timeout.
+    const query = recentQuery(data.agent_id);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const gaveUp = new Promise<IrisSession[]>((resolve) => {
+      timer = setTimeout(() => {
+        void queryClient.cancelQueries({ queryKey: query.queryKey });
+        resolve([]);
+      }, HANDOFF_READ_TIMEOUT_MS);
+    });
+    const sessions = await Promise.race([
+      queryClient.fetchQuery({ ...query, staleTime: 0 }).catch((): IrisSession[] => []),
+      gaveUp,
+    ]).finally(() => clearTimeout(timer));
     const last = resumableSession(binding, sessions);
     if (!last) return create(tenantId);
     if (last.id === sessionId) return; // Already here.
@@ -334,20 +335,10 @@ export function IrisWorkspace() {
             </button>
           </div>
         ) : null}
-        <iframe
-          ref={frame}
-          title="Iris workspace"
-          // oxlint-disable-next-line iframe-missing-sandbox -- Pinned same-origin host UI needs scripts and session cookies.
-          sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-top-navigation-by-user-activation"
-          className="h-full min-h-0 w-full flex-1 border-0"
-          onLoad={() =>
-            frame.current?.contentWindow?.postMessage(
-              { irisHostTheme: mode },
-              window.location.origin,
-            )
-          }
-          src={`/v1/iris/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}${mountTab ? `#${mountTab}` : ""}`}
-        />
+        {/* One frame per session. Reusing the element when the route moves
+            to another session in place (the openTenant handoff) left the old
+            session's history in it, so Back showed A's page under B's URL. */}
+        <IrisFrame key={sessionId} sessionId={sessionId} mode={mode} frameRef={frame} />
       </>
     );
   return (
@@ -407,6 +398,54 @@ export function IrisWorkspace() {
         )}
       </main>
     </div>
+  );
+}
+
+/**
+ * The framed workspace for one session. Keyed by session id, so each session
+ * gets its own element, and with it its own frame history.
+ */
+function IrisFrame({
+  sessionId,
+  mode,
+  frameRef,
+}: {
+  sessionId: string;
+  mode: ResolvedThemeMode;
+  frameRef: RefObject<HTMLIFrameElement | null>;
+}) {
+  // The workspace mounts with the shell's appearance in its URL and is told
+  // about later changes by message. Rewriting `src` would reload the iframe
+  // and discard the conversation inside it, which is the one thing on this
+  // page that cannot be recovered — so the mount values are captured once.
+  const [mountTheme] = useState(mode);
+  // Same for the tab: read once per mount, so the src never changes under it.
+  const [mountTab] = useState(() => rememberedTab(sessionId));
+  useLayoutEffect(() => {
+    const save = () => rememberTab(sessionId, frameRef.current);
+    window.addEventListener("pagehide", save);
+    return () => {
+      window.removeEventListener("pagehide", save);
+      // This component's layout cleanup runs before its iframe's ref is
+      // detached and the iframe leaves the DOM, so the frame is still readable.
+      save();
+    };
+  }, [sessionId, frameRef]);
+  return (
+    <iframe
+      ref={frameRef}
+      title="Iris workspace"
+      // oxlint-disable-next-line iframe-missing-sandbox -- Pinned same-origin host UI needs scripts and session cookies.
+      sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-top-navigation-by-user-activation"
+      className="h-full min-h-0 w-full flex-1 border-0"
+      onLoad={() =>
+        frameRef.current?.contentWindow?.postMessage(
+          { irisHostTheme: mode },
+          window.location.origin,
+        )
+      }
+      src={`/v1/iris/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}${mountTab ? `#${mountTab}` : ""}`}
+    />
   );
 }
 

@@ -495,7 +495,13 @@ it("Accounts opens another tenant through the shell, never by creating or switch
   await mount("#accounts");
   const table = await screen.findByRole("table", { name: "Tenants in this account" });
   const other = table.querySelector('[data-tenant-id^="f65d9135"]') as HTMLElement;
-  fireEvent.click(within(other).getByRole("button", { name: "Open in a new session" }));
+  // Since #113 the shell goes back to the tenant's last session when there is
+  // one, so neither the button nor the heading promises a new session.
+  expect(screen.getByRole("heading", { name: "Accounts" }).parentElement?.textContent).not.toMatch(
+    /new session/i,
+  );
+  expect(within(other).queryByRole("button", { name: /new session/i })).toBeNull();
+  fireEvent.click(within(other).getByRole("button", { name: "Open" }));
   expect(posted).toHaveBeenCalledWith(
     { type: "iris.openTenant", tenant_id: "f65d9135-0000-4000-8000-000000000000" },
     window.location.origin,

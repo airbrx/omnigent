@@ -149,8 +149,8 @@ refresh sentence becomes "You had Iris collect a fresh overview."
 | **Results** | Baseline vs now, same tenant and complete periods only (`comparisonProblem()` ported). The baseline is pinned locally: `localStorage["iris.baseline.<tenant_id>"]` = `{tenant_id, captured_at, metrics}` | `overview.metrics`, `captured_at`, `investigation` | "What changed?" |
 | **Accounts** | Triage summary rows only, the columns of `IrisAccountView`, read-only | `GET /v1/iris/account` + `GET /v1/iris` (same-origin GETs from the frame) | none |
 
-**Accounts opens a NEW session and never switches tenant in this one.** The
-frame never calls `POST /v1/sessions`. It posts to the shell:
+**Accounts opens the tenant in its own session and never switches tenant in
+this one.** The frame never calls `POST /v1/sessions`. It posts to the shell:
 
 ```js
 window.parent.postMessage({ type: "iris.openTenant", tenant_id }, location.origin);
@@ -160,8 +160,16 @@ The shell (W4) accepts the message only when all of these hold:
 `event.origin === window.location.origin`,
 `event.source === frame.current?.contentWindow`,
 `event.data.type === "iris.openTenant"`, `tenant_id` is a string, and the
-tenant is in `data.bindings`. Then it calls the **existing** `void create(tenant_id)`.
-The row for the current session's tenant shows "This session" and has no button.
+tenant is in `data.bindings`. Then the handoff **resumes the tenant's existing
+session** via `resumableSession` (a recent session on the same `host_id` **and**
+`workspace`, the landing's Resume match), read fresh from the caller's recent
+sessions at that moment, and navigates there. It calls the **existing**
+`create(tenant_id)` only when there is none. A failed recent-sessions read, or
+one that has not answered within about 10 s (`HANDOFF_READ_TIMEOUT_MS`), counts
+as none. If the resumable session is the current one, the shell stays put.
+Only one open runs at a time.
+The row for the current session's tenant shows "This session" and has no button;
+the others show "Open".
 
 ## 5. Honesty rules: each one becomes a test
 
@@ -211,7 +219,7 @@ Also:
 1. Each lane opens its own PR to `main`, with the files in its row only, and posts it to the board. Iris CoS reviews and merges. Lanes do not merge their own PRs.
 2. W1, W2 and W4 run in parallel. W3 starts on hand-written fixtures and a stubbed `AW`, and merges after W2. It moves to W1's `irisAdapter.json` once W1 merges.
 3. Merging to `main` deploys nothing: production deploys on pushes to `omnigent-airbrx-server`. W1 keeps `OMNIGENT_IRIS_UI` defaulting to the pinned UI, so even a deploy leaves Iris as she is today.
-4. **Gate:** no push to the deploy branch until W3 and W4 are merged **and** a local QA pass is done (both tenants, `OMNIGENT_IRIS_UI=v2`, light and dark, a reload mid-chat, a refused turn, a stale capture, Accounts opening a new session). Then production runs behind the switch for live QA.
+4. **Gate:** no push to the deploy branch until W3 and W4 are merged **and** a local QA pass is done (both tenants, `OMNIGENT_IRIS_UI=v2`, light and dark, a reload mid-chat, a refused turn, a stale capture, Accounts resuming the tenant's existing session and creating one only when there is none). Then production runs behind the switch for live QA.
 5. **W5 last:** flip the default, stop serving and injecting `host.js`, delete it and its test, update `docs/iris/`, and mark `iris:ui/` dev-only. The vendor.py allowlist change (stop shipping the pinned `ui/*.html/js/css`) needs a merge commit on iris main and a re-vendor.
 6. Later, and separate: Eva moves onto the kernel (W6), guarded by `evaWorkspaceApp.test.ts`.
 
