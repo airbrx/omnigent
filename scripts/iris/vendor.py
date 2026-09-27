@@ -1,4 +1,4 @@
-"""Snapshot only reviewed, tracked Iris package/bundle/public UI files."""
+"""Snapshot only reviewed, tracked Iris package/bundle files and the UI images."""
 
 import argparse
 import hashlib
@@ -55,18 +55,14 @@ files = subprocess.check_output(
 # the next person to write a serving path does not inherit the trap. The file
 # stays in the repository — the local development bridge serves `ui/` straight
 # from a checkout and its demo is useful there. It just does not travel.
+#
+# The rest of the pinned app (`ui/index.html`, `app.js`, `style.css`,
+# `theme.js`) is out too. v2 is the only workspace since the cutover (W5), the
+# host never serves the pinned app, and `airbrx/iris` marks `ui/` dev-only. From
+# `ui/` only the images the v2 route reads out of the archive travel, with
+# their provenance note (`routes._PINNED_IMAGES`).
 allowed = [
-    p
-    for p in files
-    if p.startswith(("iris/", "omnigent/", "ui/assets/"))
-    or p
-    in {
-        "ui/index.html",
-        "ui/app.js",
-        "ui/style.css",
-        "ui/theme.js",
-        "pyproject.toml",
-    }
+    p for p in files if p.startswith(("iris/", "omnigent/", "ui/assets/")) or p == "pyproject.toml"
 ]
 stream = io.BytesIO()
 with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
