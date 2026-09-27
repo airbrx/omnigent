@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
+import os
+import re
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -70,6 +74,67 @@ _HARNESS_TOOLS = frozenset({"ToolSearch"})
 
 #: Everything a recorded turn is allowed to contain.
 _ALLOWED_IN_A_TURN = TOOLS | _HARNESS_TOOLS
+
+#: The first sentence of the refresh prompt. The workspace's history reload
+#: recognises a refresh turn by it (docs/iris/WORKSPACE_V2.md, section 2), so
+#: it is kept byte-for-byte.
+REFRESH_FIRST_SENTENCE = "Call iris_overview and iris_audit for the selected tenant."
+REFRESH_PROMPT = (
+    f"{REFRESH_FIRST_SENTENCE} "
+    "Summarize the measured denominator and coverage. Do not propose changes."
+)
+
+#: Tools whose reports a refresh bounds by its own turn marker. A refresh calls
+#: exactly these, so an older report of either is the previous capture and must
+#: not be passed off as the fresh one. `iris_investigate` and `iris_propose` are
+#: deliberately absent: a refresh never calls them, so bounding them would blank
+#: the investigation and the proposal on every refresh. Each carries its own
+#: `report_times` entry instead, which says how old it is.
+_REFRESH_BOUND = frozenset({"iris_overview", "iris_audit"})
+
+#: Where the v2 workspace (docs/iris/WORKSPACE_V2.md, D1) lives in this package.
+UI_ROOT = HERE / "ui"
+#: The v2 app files served from `UI_ROOT`. A pattern, not a directory listing,
+#: so nothing else placed under `ui/` becomes reachable, and `views/` cannot be
+#: escaped with `..` or a nested path.
+_V2_APP_FILES = re.compile(r"(?:app\.js|style\.css|views/[A-Za-z0-9_-]+\.js)")
+#: The two images still read from the pinned archive under either UI.
+_PINNED_IMAGES = frozenset({"assets/iris-portrait.png", "assets/airbrx-logo.png"})
+
+
+def ui_version() -> str:
+    """Which workspace the asset route serves, read on every request.
+
+    `OMNIGENT_IRIS_UI=v2` serves the new UI plus the shared kernel. Anything
+    else, including unset, serves the pinned UI with `host.js` injected, as
+    before, so production is unchanged until the default is flipped (W5).
+    """
+    return "v2" if os.environ.get("OMNIGENT_IRIS_UI") == "v2" else "pinned"
+
+
+def kernel_file(name: str) -> Path | None:
+    """The shared workspace kernel file `name`, or None when it is not served.
+
+    The kernel (`omnigent.airbrx.workspace`) owns its allowlist; this only
+    refuses anything outside it. Imported here rather than at module load so a
+    host without the kernel still serves the pinned UI.
+    """
+    try:
+        # By name: the kernel lands in its own change (W2), and this module
+        # must import, type-check and serve the pinned UI without it.
+        kernel = importlib.import_module("omnigent.airbrx.workspace.assets")
+    except ImportError:
+        return None
+    if name not in getattr(kernel, "KERNEL_ASSETS", ()):
+        return None
+    try:
+        path = kernel.kernel_asset(name)
+    except (KeyError, ValueError, OSError):
+        return None
+    if path is None:
+        return None
+    path = Path(path)
+    return path if path.is_file() else None
 
 
 def completed_answer(items: list[dict]) -> dict | None:
@@ -296,10 +361,7 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                     request,
                     session_id,
                     client,
-                    (
-                        "Call iris_overview and iris_audit for the selected tenant. "
-                        "Summarize the measured denominator and coverage. Do not propose changes."
-                    ),
+                    REFRESH_PROMPT,
                 )
                 # Deliberately NOT `params["after"] = fresh_turn["item_id"]`.
                 #
@@ -342,14 +404,18 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                 collected_after = marker.get("created_at", 0)
             refs = report_references(ordered)
             reports = {}
+            report_times = dict.fromkeys(sorted(TOOLS))
             cache_age = 0
+            captured_at = None
             for tool, file_id, created_at in reversed(refs):
                 if tool in reports:
                     continue
-                # On a fresh collection, only this turn's reports count. A
-                # refresh that returns the previous capture is worse than one
-                # that admits it collected nothing.
-                if created_at < collected_after:
+                # On a fresh collection, only this turn's overview and audit
+                # count. A refresh that returns the previous capture is worse
+                # than one that admits it collected nothing. The investigation
+                # and the proposal are the newest in the session either way:
+                # see _REFRESH_BOUND.
+                if tool in _REFRESH_BOUND and created_at < collected_after:
                     continue
                 report = await checked(
                     await client.get(
@@ -359,7 +425,9 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                 if report.get("tenant_id") != binding.tenant_id:
                     raise HTTPException(403, "Report tenant does not match session")
                 reports[tool] = report
+                report_times[tool] = float(created_at)
                 if tool == "iris_overview":
+                    captured_at = float(created_at)
                     cache_age = max(0, time.time() - created_at)
             if "iris_overview" not in reports:
                 # Two different situations; the wording used to send both to
@@ -385,6 +453,12 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                 "stale": cache_age > 300,
                 "cache_age_seconds": round(cache_age),
                 "monitoring": None,
+                # The clock `cache_age_seconds` is measured on: when the item
+                # carrying the overview report was recorded.
+                "captured_at": captured_at,
+                "investigation": reports.get("iris_investigate"),
+                "proposal": reports.get("iris_propose"),
+                "report_times": report_times,
             }
 
     @router.get("/iris/sessions/{session_id}/ui/api/readiness")
@@ -468,10 +542,43 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
     async def refresh(request: Request, session_id: str):
         return await read_state(request, session_id, fresh=True)
 
+    def v2_asset(asset: str):
+        """The v2 workspace (WORKSPACE_V2.md, section 2, "Assets"). Everything else is 404.
+
+        No `host.js`, no injection, and none of the pinned app's files: v2 is
+        the new UI and the kernel, plus the two pinned images. `iris-state.json`
+        and `demo-state.json` stay 404 for the reason given in `asset` below.
+        """
+        if not asset or asset == "index.html":
+            if not (UI_ROOT / "index.html").is_file():
+                raise HTTPException(404)
+            return FileResponse(
+                UI_ROOT / "index.html",
+                media_type="text/html",
+                headers={"Cache-Control": "no-store", "X-Frame-Options": "SAMEORIGIN"},
+            )
+        if _V2_APP_FILES.fullmatch(asset):
+            path = UI_ROOT / asset
+            if path.is_file():
+                return FileResponse(path, headers={"Cache-Control": "no-store"})
+            raise HTTPException(404)
+        if asset.startswith("kernel/"):
+            path = kernel_file(asset.removeprefix("kernel/"))
+            if path is None:
+                raise HTTPException(404)
+            return FileResponse(path, headers={"Cache-Control": "no-store"})
+        if asset in _PINNED_IMAGES:
+            return FileResponse(
+                source_root() / "ui" / asset, headers={"Cache-Control": "private, max-age=3600"}
+            )
+        raise HTTPException(404)
+
     @router.get("/iris/sessions/{session_id}/ui/{asset:path}", include_in_schema=False)
     async def asset(request: Request, session_id: str, asset: str):
         async with session_client(request) as client:
             await authorize(request, session_id, client)
+        if ui_version() == "v2":
+            return v2_asset(asset)
         if not asset or asset == "index.html":
             html = (source_root() / "ui/index.html").read_text()
             html = html.replace(

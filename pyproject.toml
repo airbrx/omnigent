@@ -456,7 +456,10 @@ where = ["."]
 include = ["omnigent*"]
 
 [tool.setuptools.package-data]
-"omnigent.airbrx.iris" = ["*.zip", "*.json", "*.js"]
+"omnigent.airbrx.iris" = ["*.zip", "*.json", "*.js", "ui/**/*"]
+# The shared workspace kernel (docs/iris/WORKSPACE_V2.md, section 3): plain
+# browser scripts and brand.css served to the Iris v2 workspace.
+"omnigent.airbrx.workspace" = ["ui/**/*"]
 # Eva's bundle is config.yaml and AGENTS.md under a plain directory, not a
 # package, so packages.find does not see it and a wheel shipped without this
 # line has her Python modules and no bundle. bundle_root() then raises and a
