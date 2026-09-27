@@ -176,3 +176,27 @@ the fallback and is exactly what the workflow automates. CI also runs
 immediately reinstalls psycopg — added after a missing `zstandard` dep
 crash-looped the 2026-07-13 deploy — so dependency-changing pushes deploy
 hands-off.
+
+### Integration tests are opt-in (since 2026-09-27)
+
+Before the deploy job runs, a `test` matrix gates it: `airbrx-and-routes`,
+`server-root` and `runtime-host-spec` always run, and a red one blocks the
+deploy. The fourth shard, `tests/server/integration` (about 40 minutes on CI),
+is **off by default**. A small `plan` job decides whether to add it to the
+matrix. When it is off, it is left out of the matrix rather than skipped,
+so the deploy proceeds once the three always-on shards pass.
+
+Any one of these turns it on for a run, and then it gates that deploy like the
+others:
+
+| Switch | How |
+|---|---|
+| Manual run | Actions, "Deploy omnigent.airbrx.ai", Run workflow, tick `run_integration`. Or `gh workflow run deploy-omnigent-airbrx.yml -R airbrx/omnigent --ref omnigent-airbrx-server -f run_integration=true` (this deploys) |
+| Promote PR label | Add the label `run-integration` to the PR into `omnigent-airbrx-server` before merging it |
+| Commit marker | Put `[run-integration]` in the promote PR's title (the merge commit message includes it) or in the pushed head commit's message |
+| Standing override | Repository variable `RUN_INTEGRATION` = `true` (exact, lower case). Settings, Secrets and variables, Actions, Variables. Delete it to go back to opt-in |
+
+The run summary of each deploy says whether the integration shard ran or was
+skipped, and which switch caused it. The label lookup reads the PR at push
+time. If that API call fails, the run logs a warning and treats the label as
+absent. The other switches still work.
