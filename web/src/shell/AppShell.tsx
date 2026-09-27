@@ -2283,9 +2283,9 @@ export function AppShell() {
                 onClose={handleCloseAgents}
                 onSelectAgent={(agent) => {
                   setAgentDrawerOpen(false);
-                  // Iris and Eva start through their workspace landing, which
-                  // creates the session on the host their binding names.
-                  if (agent.name === "iris" || agent.name === "eva") {
+                  // Iris, Eva and Tally start through their workspace landing,
+                  // which creates the session on the host their binding names.
+                  if (agent.name === "iris" || agent.name === "eva" || agent.name === "tally") {
                     navigate(`/${agent.name}?mode=chat`);
                     return;
                   }

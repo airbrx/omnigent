@@ -17,6 +17,7 @@ the e2e suite and requires API keys.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 from unittest.mock import patch
 
@@ -644,3 +645,200 @@ def test_the_launch_drops_the_skill_tool_for_eva_and_iris_only(
 
     assert captured["disallowed_tools"] == disallowed
     assert "ToolSearch" not in (captured["disallowed_tools"] or [])
+
+
+# --------------------------------------------------------------------------
+# Tally: the same protections as Eva, by name, and no one else's change
+# --------------------------------------------------------------------------
+
+
+def test_tally_is_recognised_by_name_and_nobody_else_is():
+    from omnigent.inner.claude_sdk_harness import (
+        _is_eva_agent,
+        _is_iris_agent,
+        _is_tally_agent,
+    )
+
+    assert _is_tally_agent("tally") is True
+    assert _is_tally_agent("tally (fork of tally)") is True
+    assert _is_tally_agent("tallyho") is False
+    assert _is_tally_agent("eva") is False
+    assert _is_tally_agent("iris") is False
+    assert _is_tally_agent(None) is False
+    assert _is_tally_agent("") is False
+    # Neither of the other helpers claims her.
+    assert _is_eva_agent("tally") is False
+    assert _is_iris_agent("tally") is False
+
+
+@pytest.mark.parametrize(
+    ("agent_name", "strict", "disallowed"),
+    [
+        ("tally", True, ["Skill"]),
+        ("tally (fork of tally)", True, ["Skill"]),
+        ("eva", True, ["Skill"]),
+        ("iris", True, ["Skill"]),
+        ("tallyho", False, None),
+        ("hello_world", False, None),
+        ("cache cow", False, None),
+    ],
+)
+def test_the_launch_carries_tallys_protections_and_changes_no_other_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_name: str,
+    strict: bool,
+    disallowed: list[str] | None,
+) -> None:
+    monkeypatch.setenv("HARNESS_CLAUDE_SDK_AGENT_NAME", agent_name)
+    captured: dict[str, Any] = {}
+
+    def _fake_init(self: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    with patch(
+        "omnigent.inner.claude_sdk_harness.ClaudeSDKExecutor.__init__",
+        _fake_init,
+    ):
+        claude_sdk_harness._build_claude_sdk_executor()
+
+    assert captured["strict_mcp_config"] is strict
+    assert captured["disallowed_tools"] == disallowed
+    assert "ToolSearch" not in (captured["disallowed_tools"] or [])
+
+
+#: One of Tally's tools as the runner hands it to the harness, so the executor
+#: builds its in-process ``omnigent`` MCP server the way a real turn does.
+_TALLY_TOOL = {
+    "name": "portal__get_health",
+    "description": "Read the portal's health.",
+    "parameters": {"type": "object", "properties": {}},
+}
+
+
+async def _tally_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
+    """The real ``ClaudeAgentOptions`` the harness builds for one Tally turn.
+
+    Built by the harness's own factory and the executor's own ``run_turn``,
+    with only the SDK client swapped for one that records its options and
+    never starts a CLI.
+    """
+    import claude_agent_sdk
+
+    from omnigent.inner import claude_sdk_executor
+
+    monkeypatch.setenv("HARNESS_CLAUDE_SDK_AGENT_NAME", "tally")
+    # What the runner sets for a `skills: none` spec.
+    monkeypatch.setenv("HARNESS_CLAUDE_SDK_SKILLS_FILTER", '"none"')
+    monkeypatch.setenv("HARNESS_CLAUDE_SDK_CWD", str(tmp_path))
+    monkeypatch.delenv("HARNESS_CLAUDE_SDK_GATEWAY", raising=False)
+    captured: list[Any] = []
+
+    class _RecordingClient:
+        def __init__(self, options: Any) -> None:
+            captured.append(options)
+
+        async def connect(self) -> None:
+            return None
+
+        async def query(self, prompt: Any, session_id: str = "default") -> None:
+            return None
+
+        async def receive_response(self) -> Any:
+            if False:
+                yield None
+
+        async def disconnect(self) -> None:
+            return None
+
+    class _SDK:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(claude_agent_sdk, name)
+
+        ClaudeSDKClient = _RecordingClient
+
+    executor = claude_sdk_harness._build_claude_sdk_executor()
+    with patch.object(claude_sdk_executor, "_ensure_sdk", return_value=_SDK()):
+        async for _ in executor.run_turn(
+            [{"role": "user", "content": "Is the portal healthy?"}], [_TALLY_TOOL], ""
+        ):
+            pass
+    assert captured, "the executor never built a client"
+    return captured[0]
+
+
+async def test_tallys_real_options_carry_strict_mcp_no_settings_and_no_skill(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """The strongest check short of running the CLI: the real options object
+    and the real command line the SDK would run for it.
+
+    ``strict_mcp_config`` keeps the operator's claude.ai connectors out,
+    ``setting_sources=[]`` keeps user and project settings (and their skills)
+    out, and ``Skill`` is removed from the tool set outright.
+    """
+    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+
+    options = await _tally_options(monkeypatch, tmp_path)
+    assert options.strict_mcp_config is True
+    assert options.setting_sources == []
+    assert options.disallowed_tools == ["Skill"]
+    assert options.skills == []
+    assert list(options.mcp_servers) == ["omnigent"]
+
+    options.cli_path = "/nonexistent/claude"
+    argv = SubprocessCLITransport(prompt="hi", options=options)._build_command()
+    assert "--strict-mcp-config" in argv
+    assert argv[argv.index("--disallowedTools") + 1] == "Skill"
+    # Empty: the CLI loads no user or project settings, and no skills from them.
+    assert "--setting-sources=" in argv
+
+
+@pytest.mark.skipif(
+    os.environ.get("OMNIGENT_REAL_CLAUDE_CLI_TESTS") != "1",
+    reason=(
+        "Launches the real `claude` CLI with the operator's own login. Opt in with "
+        "OMNIGENT_REAL_CLAUDE_CLI_TESTS=1 on a machine where `claude` is installed "
+        "and signed in; CI has neither."
+    ),
+)
+async def test_the_real_cli_lists_only_the_omnigent_server_for_tally(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Start the real CLI with Tally's options and read its ``init`` message.
+
+    The CLI reports every MCP server it loaded in ``init``, before the model
+    is asked anything. For Tally that list must be exactly ``omnigent``: no
+    claude.ai connector (Gmail, Slack, Drive) from the operator's account.
+    The session is closed as soon as ``init`` arrives.
+    """
+    import shutil
+
+    import claude_agent_sdk
+
+    cli = shutil.which("claude")
+    if cli is None:
+        pytest.skip("the `claude` CLI is not installed on this machine")
+    options = await _tally_options(monkeypatch, tmp_path)
+    options.cli_path = cli
+    options.max_turns = 1
+    # Running under Claude Code sets this; the executor unsets it the same way.
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+
+    init: dict[str, Any] | None = None
+    client = claude_agent_sdk.ClaudeSDKClient(options)
+    await client.connect()
+    try:
+        await client.query("Reply with the single word OK.")
+        async for message in client.receive_messages():
+            if isinstance(message, claude_agent_sdk.SystemMessage) and message.subtype == "init":
+                init = message.data
+                break
+    finally:
+        await client.disconnect()
+
+    assert init is not None, "the CLI never sent its init message"
+    servers = [s.get("name") for s in init.get("mcp_servers", [])]
+    assert servers == ["omnigent"], servers
+    tools = init.get("tools", [])
+    assert "Skill" not in tools
+    assert not [t for t in tools if t.startswith("mcp__") and not t.startswith("mcp__omnigent__")]

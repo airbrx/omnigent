@@ -2841,6 +2841,16 @@ def create_app(
     # The co-located outreach app at /eva/app, with a signed identity. Answers
     # 503 until OUTREACH_IDENTITY_SECRET is set. See docs/eva/WORKSPACE.md.
     app.include_router(create_eva_app_router(auth_provider=auth_provider), tags=["eva"])
+    # Tally, the read-only control-plane agent: catalog, readiness and her
+    # workspace adapter, shaped like Eva's and inert with no bindings. Her tabs
+    # frame the portal through the gateway proxy mounted below.
+    from omnigent.airbrx.tally.routes import create_tally_router
+
+    app.include_router(
+        create_tally_router(auth_provider=auth_provider, agent_store=agent_store),
+        prefix="/v1",
+        tags=["tally"],
+    )
     from omnigent.airbrx.gateway.proxy import create_gateway_app_router
 
     app.include_router(create_gateway_app_router(auth_provider=auth_provider), tags=["gateway"])
