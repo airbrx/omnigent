@@ -53,8 +53,7 @@
   let busy = false;
   const history = [];
   const SESSION_ID = decodeURIComponent(
-    (/\/tally\/sessions\/([^/]+)\/ui\//.exec(location.pathname) || [])[1] ||
-      "",
+    (/\/tally\/sessions\/([^/]+)\/ui\//.exec(location.pathname) || [])[1] || "",
   );
   const POLL_MS = Number(document.body.dataset.pollMs) || 1500;
 
@@ -215,7 +214,8 @@
     const rows = [];
     const nested = [];
     for (const [key, value] of Object.entries(data)) {
-      if (value !== null && typeof value === "object") nested.push([key, value]);
+      if (value !== null && typeof value === "object")
+        nested.push([key, value]);
       else rows.push([key, value]);
     }
     const out = [];
@@ -253,7 +253,9 @@
           : el("p", { class: "muted small" }, "Ask Tally for the detail."),
       );
     }
-    return out.length ? el("div", {}, out) : el("p", { class: "muted small" }, "Empty.");
+    return out.length
+      ? el("div", {}, out)
+      : el("p", { class: "muted small" }, "Empty.");
   }
 
   function readCard(title, read, missing) {
@@ -587,10 +589,7 @@
 
   /** A person's own message as they wrote it: without the page note the dock adds. */
   function userText(text) {
-    return text.replace(
-      /\n\n\(I am looking at [\s\S]* in the portal\.\)$/,
-      "",
-    );
+    return text.replace(/\n\n\(I am looking at [\s\S]* in the portal\.\)$/, "");
   }
 
   function showProgress(text) {
@@ -747,7 +746,8 @@
       const reply = await api("chat", { history });
       await stopWatching();
       history.push({ role: "assistant", content: reply.text });
-      if (!shown.has((reply.text || "").trim())) addMessage("tally", reply.text);
+      if (!shown.has((reply.text || "").trim()))
+        addMessage("tally", reply.text);
       // A turn can change what Tally has read; the answer does not carry state.
       loadState()
         .then((next) => {

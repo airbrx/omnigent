@@ -1,5 +1,6 @@
 import { EvaWorkspace } from "@/shell/EvaWorkspace";
 import { IrisWorkspace } from "@/shell/IrisWorkspace";
+import { TallyWorkspace } from "@/shell/TallyWorkspace";
 import { lazy, Suspense, type ComponentType, type ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { ChatPage as ChatPageImpl } from "@/pages/ChatPage";
@@ -187,6 +188,8 @@ function App({ basename }: AppProps = {}) {
           <Route path={`${prefix}/iris/:sessionId`} element={<IrisWorkspace />} />
           <Route path={`${prefix}/eva`} element={<EvaWorkspace />} />
           <Route path={`${prefix}/eva/:sessionId`} element={<EvaWorkspace />} />
+          <Route path={`${prefix}/tally`} element={<TallyWorkspace />} />
+          <Route path={`${prefix}/tally/:sessionId`} element={<TallyWorkspace />} />
           <Route path={`${prefix}/inbox`} element={<InboxPage />} />
           <Route
             path={`${prefix}/canvas`}

@@ -220,8 +220,8 @@ function AvatarControls({ name, hasStoredAvatar }: { name: string; hasStoredAvat
   );
 }
 
-/** Agents with a workspace of their own, served by the host: `/iris`, `/eva`. */
-const WORKSPACE_AGENTS: Record<string, string> = { iris: "Iris", eva: "Eva" };
+/** Agents with a workspace of their own, served by the host: `/iris`, `/eva`, `/tally`. */
+const WORKSPACE_AGENTS: Record<string, string> = { iris: "Iris", eva: "Eva", tally: "Tally" };
 
 export function AgentDrawer({ open, onClose, onSelectAgent, onOpenWorkspace }: AgentDrawerProps) {
   const { data: agents } = useAvailableAgents();
@@ -382,7 +382,9 @@ export function AgentDrawer({ open, onClose, onSelectAgent, onOpenWorkspace }: A
                             ? "/v1/iris/portrait"
                             : agent.name === "eva"
                               ? "/v1/eva/portrait"
-                              : undefined)
+                              : agent.name === "tally"
+                                ? "/v1/tally/portrait"
+                                : undefined)
                         }
                       />
                       <span className="min-w-0">

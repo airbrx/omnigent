@@ -154,6 +154,26 @@ it("gives Eva her own workspace action and her packaged portrait", () => {
   expect(screen.queryByRole("button", { name: /Open Researcher workspace/ })).toBeNull();
 });
 
+it("gives Tally her own workspace action and her packaged portrait", () => {
+  vi.mocked(useAvailableAgents).mockReturnValue({
+    data: [
+      { id: "tally-id", name: "tally", display_name: "Tally", description: "Reads the portal" },
+      { id: "a1", name: "researcher", display_name: "Researcher", description: "Reads things" },
+    ],
+  } as never);
+  const workspace = vi.fn();
+  const client = new QueryClient();
+  render(
+    <QueryClientProvider client={client}>
+      <AgentDrawer open onClose={vi.fn()} onSelectAgent={vi.fn()} onOpenWorkspace={workspace} />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open Tally workspace" }));
+  expect(workspace).toHaveBeenCalledWith("tally");
+  expect(screen.getByAltText("tally")).toHaveAttribute("src", "/v1/tally/portrait");
+  expect(screen.queryByRole("button", { name: /Open Researcher workspace/ })).toBeNull();
+});
+
 it("opens with focus on the way out, and traps Tab inside the drawer", () => {
   renderDrawer();
   // Opening on Close, not on the header's first control: the drawer is a
