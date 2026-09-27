@@ -303,179 +303,94 @@ const kernelSources = REAL_KERNEL
 
 // ------------------------------------------------------------ the adapter --
 //
-// What the adapter answers, shaped exactly as the contract's section 2 table
-// (fixture tenant `fixture-iris`, live capture 2026-09-27T00:21Z). When W1's
-// captured web/src/shell/__fixtures__/irisAdapter.json lands, it replaces
-// these hand-written bodies.
+// What the adapter's real handlers answer, captured by W1's
+// tests/airbrx/test_iris_workspace_fixtures.py, which fails when they drift.
+// Hand-written bodies are kept only for what the fixture cannot hold: the
+// native session record the dock streams from, the session's files, the
+// account surface (`/v1/iris`, `/v1/iris/account`), a baseline this browser
+// pinned, and failures the adapter has no captured case for.
 
-const TENANT = "fixture-iris";
-const CAPTURED = Date.UTC(2026, 8, 27, 0, 21) / 1000;
-const OPPORTUNITY = "8e884fb5959440d8a32e7f823425ee1c";
-const RULES_EVIDENCE = "32151338598b4a26a2aed9d75860ae6a";
-const FINDING = "unknown_sensitivity:report-cache";
+interface Captured {
+  status: number;
+  body: unknown;
+}
+const ADAPTER = JSON.parse(
+  readFileSync(join(HERE, "__fixtures__/irisAdapter.json"), "utf8"),
+) as Record<string, Record<string, Captured>>;
+type Scenario = keyof typeof ADAPTER;
+const replay = ({ status, body }: Captured) => Response.json(body, { status });
 
-const day = (i: number) => {
-  const from = `2026-09-${String(19 + i).padStart(2, "0")}`;
-  const to = `2026-09-${String(20 + i).padStart(2, "0")}`;
-  return {
-    id: `summary${i}`,
-    source_tool: "get_summary",
-    start_date: from,
-    end_date: to,
-    status: "complete",
-    data: { requests: 100 },
-    limitations: [],
-  };
-};
+interface Metrics {
+  requests: number;
+  cache_hits: number;
+  cache_misses: number;
+  hit_rate: number | null;
+  hit_rate_denominator: number;
+  start_date: string;
+  end_date: string;
+  [key: string]: unknown;
+}
+interface Finding {
+  id: string;
+  evidence_ids: string[];
+  [key: string]: unknown;
+}
+interface Report {
+  tenant_id: string;
+  mode: string;
+  metrics: Metrics;
+  evidence: { id: string; source_tool: string }[];
+  findings: Finding[];
+  [key: string]: unknown;
+}
+interface State {
+  overview: Report;
+  audit: Report;
+  investigation: { current: Metrics; previous: Metrics } & Record<string, unknown>;
+  proposal: Record<string, unknown> | null;
+  captured_at: number;
+  [key: string]: unknown;
+}
 
-const METRICS = {
-  requests: 700,
-  cache_hits: 560,
-  cache_misses: 140,
-  hit_rate: 0.8,
-  hit_rate_denominator: 700,
-  start_date: "2026-09-19",
-  end_date: "2026-09-26",
-  covered_days: 7,
-  requested_days: 7,
-  period_complete: true,
-  latency: { response_time_ms: null, label: "Response time is not measured in this capture" },
-};
-const PREVIOUS = {
-  ...METRICS,
+// The fullest capture: overview, audit, an investigation and a proposal.
+const FULL = ADAPTER.investigated_and_proposed.state.body as State;
+const TENANT = FULL.overview.tenant_id;
+const CAPTURED = FULL.captured_at;
+const METRICS = FULL.overview.metrics;
+const OPPORTUNITY = FULL.overview.evidence.find(
+  (e) => e.source_tool === "get_cache_opportunities",
+)!.id;
+const FINDING = FULL.audit.findings[0].id;
+const RULES_EVIDENCE = FULL.audit.findings[0].evidence_ids[0];
+const PROPOSAL_HASH = String(
+  (FULL.proposal!.proposal_view as { baseline_hash: string }).baseline_hash,
+);
+const READINESS = ADAPTER.captured.readiness.body as Record<string, unknown>;
+const ANSWER = (ADAPTER.captured.chat.body as { text: string }).text;
+// A baseline this browser pinned a week earlier. Pins live in localStorage,
+// not in the adapter, so this one is written here: the previous period's
+// dates from the fixture, with fewer hits, so the comparison has a change.
+const PREVIOUS: Metrics = {
+  ...structuredClone(FULL.investigation.previous),
   requests: 600,
   cache_hits: 420,
   cache_misses: 180,
   hit_rate: 0.7,
   hit_rate_denominator: 600,
-  start_date: "2026-09-12",
-  end_date: "2026-09-19",
 };
 
-function makeState(overrides: Record<string, unknown> = {}) {
-  return {
-    overview: {
-      tenant_id: TENANT,
-      mode: "synthetic fixture",
-      generatedAt: "2026-09-27T00:21:00Z",
-      metrics: { ...METRICS },
-      evidence: [
-        {
-          id: OPPORTUNITY,
-          source_tool: "get_cache_opportunities",
-          start_date: "2026-09-19",
-          end_date: "2026-09-26",
-          status: "complete",
-          data: { opportunities: [{ query_hash: "q1", misses: 40 }] },
-          limitations: ["Top 10 only"],
-        },
-        ...Array.from({ length: 7 }, (_, i) => day(i)),
-      ],
-      findings: [
-        {
-          id: "repeated_misses:q1",
-          kind: "repeated_misses",
-          severity: "info",
-          confidence: "medium",
-          rule_id: null,
-          explanation: "One query shape missed 40 times.",
-          next_step: "Look at why q1 is not cached.",
-          evidence_ids: [OPPORTUNITY],
-        },
-      ],
-      limitations: [],
-    },
-    audit: {
-      tenant_id: TENANT,
-      findings: [
-        {
-          id: FINDING,
-          kind: "unknown_sensitivity",
-          severity: "warning",
-          confidence: "low",
-          rule_id: "report-cache",
-          explanation: "The sensitivity of the tables report-cache reads is unknown.",
-          next_step: "Confirm whether report-cache reads sensitive tables.",
-          evidence_ids: [RULES_EVIDENCE],
-        },
-        {
-          // The same finding as the overview's: shown once.
-          id: "repeated_misses:q1",
-          kind: "repeated_misses",
-          severity: "info",
-          confidence: "medium",
-          rule_id: null,
-          explanation: "One query shape missed 40 times.",
-          next_step: "Look at why q1 is not cached.",
-          evidence_ids: [OPPORTUNITY],
-        },
-      ],
-      evidence: [
-        {
-          id: RULES_EVIDENCE,
-          source_tool: "get_rules",
-          start_date: null,
-          end_date: null,
-          status: "complete",
-          data: { rule_count: 1 },
-          limitations: [],
-        },
-      ],
-    },
-    rules: [{ ruleId: "report-cache", cacheHits: 80, cacheMisses: 20, totalExecutions: 100 }],
-    rule_effectiveness_meta: { year: null, generatedAt: null, totalQueries: null },
-    stale: false,
-    cache_age_seconds: 28,
-    monitoring: null,
-    captured_at: CAPTURED,
-    investigation: {
-      tenant_id: TENANT,
-      current: { ...METRICS },
-      previous: { ...PREVIOUS },
-      findings: [],
-      evidence: [],
-      limitations: [],
-      message: "Hit rate rose from the previous week.",
-      mode: "synthetic fixture",
-    },
-    proposal: {
-      tenant_id: TENANT,
-      proposal_status: "validated",
-      proposal_view: {
-        rule_id: "report-cache",
-        baseline_hash: "f21cb3ff00aa",
-        diff: "--- baseline\n+++ candidate\n report-cache ttlSeconds 60 → 120",
-        validation: { valid: true, errors: [], warnings: ["TTL doubled"] },
-        preview: { written: false },
-      },
-      message: "Validated proposal. Proposal not applied. It needs external approval.",
-      evidence: [],
-    },
-    report_times: {
-      iris_overview: CAPTURED,
-      iris_audit: CAPTURED,
-      iris_investigate: CAPTURED,
-      iris_propose: CAPTURED,
-    },
-    ...overrides,
-  };
+/** The fullest captured state, with top-level keys replaced. */
+function makeState(overrides: Record<string, unknown> = {}): State {
+  return { ...structuredClone(FULL), ...overrides } as State;
 }
-
-const READINESS = {
-  tenant_id: TENANT,
-  name: "Fixture tenant",
-  fixture: true,
-  session_status: "idle",
-  turn_completed_here: true,
-  last_task_failed: false,
-  verified: ["Iris is a registered agent on this host"],
-  unverified: [],
-};
-const ANSWER = "Your hit rate is **80%** over 700 requests.";
 
 type Route = (init?: RequestInit) => Response | Promise<Response>;
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const detail = (text: string, status: number) => json({ detail: text }, status);
+const captured =
+  (scenario: Scenario, route: string): Route =>
+  () =>
+    replay(ADAPTER[scenario][route]);
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let items: unknown[] = [];
@@ -488,8 +403,15 @@ function pathOf(input: unknown) {
   return raw.replace(/^https?:\/\/[^/]+/, "").replace(/^\/v1\/iris\/sessions\/s1\/ui\//, "");
 }
 
-/** Answer the app's calls. `overrides` win over the read-session defaults. */
-function serve(overrides: Record<string, Route> = {}) {
+/**
+ * Answer the app's calls from one captured scenario. A route the scenario did
+ * not capture falls back to `investigated_and_proposed`, then `captured`; the
+ * `overrides` win over both.
+ */
+function serve(
+  overrides: Record<string, Route> = {},
+  scenario: Scenario = "investigated_and_proposed",
+) {
   fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
     const raw = pathOf(input);
     const path = raw.startsWith("/v1/sessions/s1/items")
@@ -498,17 +420,12 @@ function serve(overrides: Record<string, Route> = {}) {
         ? "files"
         : raw.replace(/^api\//, "");
     if (path in overrides) return overrides[path](init);
+    const recorded =
+      ADAPTER[scenario][path] ?? ADAPTER.investigated_and_proposed[path] ?? ADAPTER.captured[path];
+    if (recorded) return replay(recorded);
     switch (path) {
       case "items":
         return json({ data: items.slice().reverse(), has_more: false });
-      case "readiness":
-        return json(READINESS);
-      case "state":
-        return json(makeState());
-      case "refresh":
-        return json(makeState());
-      case "chat":
-        return json({ text: ANSWER, tools: [], failed: false, item_id: "a1" });
       case "cancel":
         return json({});
       case "files":
@@ -517,7 +434,7 @@ function serve(overrides: Record<string, Route> = {}) {
         return json({
           agent_id: "agent",
           bindings: [
-            { tenant_id: TENANT, name: "Fixture tenant", fixture: true, host_online: true },
+            { tenant_id: TENANT, name: "Iris fixture tenant", fixture: true, host_online: true },
             {
               tenant_id: "f65d9135-0000-4000-8000-000000000000",
               name: "Production",
@@ -634,7 +551,7 @@ const TABS: [string, string, RegExp][] = [
   ["Overview", "overview", /Cache hit rate/],
   ["Findings", "findings", /Unknown sensitivity/],
   ["Rules", "rules", /Rule effectiveness/],
-  ["Proposals", "proposals", /f21cb3ff00aa/],
+  ["Proposals", "proposals", new RegExp(PROPOSAL_HASH)],
   ["Evidence", "evidence", new RegExp(OPPORTUNITY)],
   ["Results", "results", /Baseline and now/],
   ["Accounts", "accounts", /Tenants|Every tenant you can open/],
@@ -672,13 +589,13 @@ it("Overview shows every KPI from state with its denominator, coverage, focus an
   expect(text).toContain("80.0%");
   expect(text).toContain("560 hits over 700 requests");
   expect(text).toContain("140");
-  expect(text).toContain("Response time is not measured in this capture");
+  expect(text).toContain(String((METRICS.latency as { label: string }).label));
   expect(text).toContain("7 / 7 days");
   expect(text).toContain("Monitoring is unavailable");
   expect(text).toContain("2026-09-19 to 2026-09-26");
   expect(text).toContain(`tenant ${TENANT}`);
   expect(view().querySelectorAll(".coverage .day")).toHaveLength(7);
-  // Top two findings, deduplicated.
+  // The overview's finding and the audit's: the top two.
   expect(view().querySelectorAll("[data-finding-id]")).toHaveLength(2);
 });
 
@@ -712,16 +629,35 @@ it("a measured zero is shown as 0, never as missing", async () => {
   expect(tile("Cache hit rate").querySelector(".value")?.textContent).toBe("Not measured");
 });
 
-it("Findings lists each finding once, with severity, confidence, rule and next step", async () => {
+it("Findings lists every finding with severity, confidence, rule and next step", async () => {
   await mount("#findings");
   const cards = view().querySelectorAll("[data-finding-id]");
-  expect(cards).toHaveLength(2);
+  expect(cards).toHaveLength(FULL.overview.findings.length + FULL.audit.findings.length);
   const text = view().textContent ?? "";
-  expect(text).toContain("warning");
-  expect(text).toContain("low confidence");
-  expect(text).toContain("Rule report-cache");
-  expect(text).toContain("Tenant-wide");
-  expect(text).toContain("Next: Confirm whether report-cache reads sensitive tables.");
+  for (const f of [...FULL.overview.findings, ...FULL.audit.findings]) {
+    expect(text).toContain(String(f.severity));
+    expect(text).toContain(`${String(f.confidence)} confidence`);
+    expect(text).toContain(`Rule ${String(f.rule_id)}`);
+    expect(text).toContain(`Next: ${String(f.next_step)}`);
+  }
+});
+
+it("a finding in both the overview and the audit is listed once", async () => {
+  const state = makeState();
+  state.audit.findings.push(structuredClone(state.overview.findings[0]));
+  serve({ state: () => json(state) });
+  await mount("#findings");
+  expect(view().querySelectorAll("[data-finding-id]")).toHaveLength(2);
+});
+
+it("a finding with no rule is tenant-wide", async () => {
+  const state = makeState();
+  state.audit.findings[0].rule_id = null;
+  serve({ state: () => json(state) });
+  await mount("#findings");
+  expect(view().querySelector(`[data-finding-id="${FINDING}"]`)?.textContent).toContain(
+    "Tenant-wide",
+  );
 });
 
 it("Investigate asks Iris in the chat, naming the finding", async () => {
@@ -761,8 +697,24 @@ it("Rules shows the annual window apart from the period, and configuration findi
 it("Evidence shows the investigation's current and previous periods", async () => {
   await mount("#evidence");
   const table = screen.getByRole("table", { name: "Previous and current period" });
-  expect(table.textContent).toContain("70.0% (420 over 600)");
-  expect(table.textContent).toContain("80.0% (560 over 700)");
+  const rows = [...table.querySelectorAll("tbody tr")].map((tr) =>
+    [...tr.querySelectorAll("td")].map((td) => td.textContent),
+  );
+  expect(rows[0]).toEqual([
+    "Period",
+    "2026-09-12 to 2026-09-19 (UTC, end exclusive)",
+    "2026-09-19 to 2026-09-26 (UTC, end exclusive)",
+  ]);
+  expect(rows[1]).toEqual(["Cache hit rate", "80.0% (560 over 700)", "80.0% (560 over 700)"]);
+});
+
+it("Evidence lists the fixture's rows by id, and an investigation's absence is said", async () => {
+  await mount("#evidence");
+  expect(view().querySelector(`[data-evidence-id="${OPPORTUNITY}"]`)).not.toBeNull();
+  document.body.innerHTML = "";
+  serve({}, "captured");
+  await mount("#evidence");
+  expect(view().textContent).toContain("Iris has not compared periods in this session.");
 });
 
 it("Results compares a pinned baseline of the same tenant with this capture", async () => {
@@ -856,16 +808,13 @@ it("sends a question and shows Iris's answer", async () => {
   await mount();
   ask("How is the cache?");
   await waitFor(() => expect(messages().querySelector("li.agent")).not.toBeNull());
-  expect(messages().querySelector("li.agent strong")?.textContent).toBe("80%");
+  expect(messages().querySelector("li.agent strong")?.textContent).toBe("80.0%");
 });
 
 // ------------------------------------------------------ the honesty rules --
 
 it("rule 1: no synthetic data; with state 409 Iris says she has not collected, and shows no numbers", async () => {
-  serve({
-    state: () => detail("No session overview yet", 409),
-    refresh: () => detail("The turn produced no overview", 409),
-  });
+  serve({ refresh: captured("first_collect_produced_nothing", "refresh") }, "fresh_session");
   start();
   await waitFor(() =>
     expect(view().textContent).toContain("Iris has not collected an overview here yet"),
@@ -876,7 +825,7 @@ it("rule 1: no synthetic data; with state 409 Iris says she has not collected, a
 });
 
 it.each([
-  ["409", () => detail("Iris is busy; cancel or wait for the current turn", 409)],
+  ["409", captured("busy_session", "chat")],
   ["502", () => detail("native session operation failed", 502)],
   ["504", () => detail("timed out", 504)],
   [
@@ -917,13 +866,12 @@ it("rule 3: with state loaded and the turn refused, no number, finding or rule f
   const text = messages().textContent ?? "";
   for (const fromState of [
     "80.0%",
-    "80%",
     "560",
     "700",
     "140",
     "report-cache",
     "sensitivity",
-    "q1",
+    "per-request",
   ])
     expect(text).not.toContain(fromState);
 });
@@ -965,10 +913,7 @@ it("rule 5: no chip for a live tenant", async () => {
 });
 
 it("rule 6: a 409 on the first read collects exactly once, and a failed collection does not loop", async () => {
-  serve({
-    state: () => detail("No session overview yet", 409),
-    refresh: () => detail("The turn produced no overview", 409),
-  });
+  serve({ refresh: captured("first_collect_produced_nothing", "refresh") }, "fresh_session");
   start();
   await waitFor(() =>
     expect(view().textContent).toContain("Iris has not collected an overview here yet"),
@@ -982,7 +927,7 @@ it("rule 6: a 409 on the first read collects exactly once, and a failed collecti
 });
 
 it("rule 6: a successful collection does not trigger another", async () => {
-  serve({ state: () => detail("No session overview yet", 409) });
+  serve({}, "fresh_session");
   start();
   await waitFor(() => expect(view().textContent).toContain("80.0%"));
   expect(calls("refresh")).toHaveLength(1);
@@ -991,10 +936,7 @@ it("rule 6: a successful collection does not trigger another", async () => {
 it("rule 7 (show, the default): a stale capture is drawn labelled, with one background refresh", async () => {
   expect(DEFAULT_ON_STALE).toBe("show");
   const held = deferred<Response>();
-  serve({
-    state: () => json(makeState({ stale: true, cache_age_seconds: 1186 })),
-    refresh: () => held.promise,
-  });
+  serve({ refresh: () => held.promise }, "stale_capture");
   start();
   // Drawn while the refresh is still running.
   await waitFor(() => expect(view().textContent).toContain("80.0%"));
@@ -1002,7 +944,7 @@ it("rule 7 (show, the default): a stale capture is drawn labelled, with one back
     /Iris read this tenant .+, may be out of date$/,
   );
   await waitFor(() => expect(calls("refresh")).toHaveLength(1));
-  held.resolve(json(makeState({ stale: false, captured_at: CAPTURED + 3600 })));
+  held.resolve(replay(ADAPTER.stale_capture.refresh));
   await waitFor(() =>
     expect(document.getElementById("freshness")?.textContent).not.toContain("may be out of date"),
   );
@@ -1011,15 +953,12 @@ it("rule 7 (show, the default): a stale capture is drawn labelled, with one back
 
 it("rule 7 (collect): a stale capture draws nothing until the one refresh returns", async () => {
   const held = deferred<Response>();
-  serve({
-    state: () => json(makeState({ stale: true, cache_age_seconds: 1186 })),
-    refresh: () => held.promise,
-  });
+  serve({ refresh: () => held.promise }, "stale_capture");
   start("", "collect");
   await waitFor(() => expect(calls("refresh")).toHaveLength(1));
   expect(view().textContent).not.toContain("80.0%");
   expect(view().querySelector(".kpi")).toBeNull();
-  held.resolve(json(makeState()));
+  held.resolve(replay(ADAPTER.stale_capture.refresh));
   await waitFor(() => expect(view().textContent).toContain("80.0%"));
   expect(document.getElementById("freshness")?.textContent).not.toContain("may be out of date");
   expect(calls("refresh")).toHaveLength(1);
@@ -1027,24 +966,38 @@ it("rule 7 (collect): a stale capture draws nothing until the one refresh return
 
 it("rule 8: a first collection and a stale refresh say different things", async () => {
   const first = deferred<Response>();
-  serve({ state: () => detail("No session overview yet", 409), refresh: () => first.promise });
+  serve({ refresh: () => first.promise }, "fresh_session");
   start();
   await waitFor(() => expect(document.getElementById("collecting")).toBeVisible());
   const firstText = document.getElementById("collecting")?.textContent ?? "";
   expect(firstText).toContain("first overview");
-  first.resolve(json(makeState()));
+  first.resolve(replay(ADAPTER.captured.refresh));
   await waitFor(() => expect(document.getElementById("collecting")).not.toBeVisible());
 
   document.body.innerHTML = "";
   const stale = deferred<Response>();
-  serve({ state: () => json(makeState({ stale: true })), refresh: () => stale.promise });
+  serve({ refresh: () => stale.promise }, "stale_capture");
   start();
   await waitFor(() => expect(document.getElementById("collecting")).toBeVisible());
   const staleText = document.getElementById("collecting")?.textContent ?? "";
   expect(staleText).toContain("out-of-date capture");
   expect(staleText).not.toContain("first overview");
-  stale.resolve(json(makeState()));
+  stale.resolve(replay(ADAPTER.stale_capture.refresh));
   await waitFor(() => expect(document.getElementById("collecting")).not.toBeVisible());
+});
+
+it("a collection that produced nothing new keeps the capture, with its time, and the chat", async () => {
+  serve({}, "refresh_read_nothing");
+  await mount();
+  ask("How is the cache?");
+  await waitFor(() => expect(messages().querySelector("li.agent")).not.toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "Collect a fresh overview" }));
+  await waitFor(() =>
+    expect(messages().textContent).toContain("That collection produced no new overview."),
+  );
+  expect(view().textContent).toContain("80.0%");
+  expect(document.getElementById("freshness")?.textContent).toMatch(/^Iris read this tenant /);
+  expect(within(messages()).getByText("How is the cache?")).toBeInTheDocument();
 });
 
 it("rule 9: chat and refresh run on a 330 s client deadline, and chat sends deadline 300", async () => {
@@ -1084,23 +1037,14 @@ it("rule 10: Results refuses a baseline from another tenant", async () => {
 });
 
 it("rule 11: when no turn has completed here, the unverified line shows", async () => {
-  serve({
-    readiness: () =>
-      json({
-        ...READINESS,
-        turn_completed_here: false,
-        unverified: [
-          "no turn has completed in this session, so whether the execution host can reach the model is unknown",
-        ],
-      }),
-  });
+  serve({}, "fresh_session");
   await mount();
   expect(document.getElementById("host-status")?.textContent).toContain(
     "Iris has not completed a turn in this session yet",
   );
   expect(document.getElementById("host-details")).toBeVisible();
   expect(document.getElementById("host-details")?.textContent).toContain(
-    "Not verified: no turn has completed",
+    "Not verified: no model turn has completed",
   );
 });
 
@@ -1120,7 +1064,7 @@ it("rule 12: a refresh keeps the chat", async () => {
   await waitFor(() => expect(calls("refresh")).toHaveLength(1));
   await waitFor(() => expect(document.getElementById("refresh")).not.toBeDisabled());
   expect(within(messages()).getByText("How is the cache?")).toBeInTheDocument();
-  expect(messages().querySelector("li.agent strong")?.textContent).toBe("80%");
+  expect(messages().querySelector("li.agent strong")?.textContent).toBe("80.0%");
 });
 
 it("rule 12: a reload rebuilds the chat from the session, and names a refresh turn", async () => {
