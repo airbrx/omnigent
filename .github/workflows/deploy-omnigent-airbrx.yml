@@ -16,7 +16,12 @@ name: Deploy omnigent.airbrx.ai
 on:
   push:
     branches: [omnigent-airbrx-server]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        description: "Also run the ~40-minute tests/server/integration shard before deploying"
+        type: boolean
+        default: false
 
 # One deploy at a time; queue (don't cancel) so every pushed sha lands.
 concurrency:
@@ -56,21 +61,117 @@ jobs:
   # the AgentCache race test (PR #59) and the launch-env tests (#78, #80)
   # were never gated before a deploy. Same sync line and flags as the others;
   # nothing in those folders needs env the gate does not already set.
+  #
+  # The integration shard is OPT-IN since 2026-09-27 (Abram's decision). It
+  # took ~40 minutes on CI and set the wait for every deploy, while the other
+  # three shards finish in ~10. It now runs only when one of these is true:
+  #   (a) workflow_dispatch with run_integration: true
+  #   (b) the promote PR merged into this branch carries the `run-integration`
+  #       label, or the pushed head commit's message contains
+  #       `[run-integration]` (a PR merge commit's message includes the PR
+  #       title, so putting the marker in the title works too)
+  #   (c) the repository variable RUN_INTEGRATION is exactly 'true' (a
+  #       standing override)
+  # Otherwise the `plan` job leaves it out of the matrix entirely, so there is
+  # no skipped or failed entry for `deploy` to wait on: the three remaining
+  # shards gate the deploy exactly as before. The run summary says which way
+  # it went and why. Runbook: deploy/omnigent-ec2/native/README.md, "CI/CD".
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # read the promote PR's labels
+    outputs:
+      matrix: ${{ steps.decide.outputs.matrix }}
+      integration: ${{ steps.decide.outputs.integration }}
+    steps:
+      - name: Decide whether the integration shard runs
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          INPUT_RUN: ${{ inputs.run_integration }}
+          VAR_RUN: ${{ vars.RUN_INTEGRATION }}
+          # Passed through env, never interpolated into the script, so a
+          # commit message cannot inject shell.
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          reasons=()
+
+          if [ "${EVENT}" = "workflow_dispatch" ] && [ "${INPUT_RUN}" = "true" ]; then
+            reasons+=("workflow_dispatch input run_integration=true")
+          fi
+
+          if [ "${VAR_RUN}" = "true" ]; then
+            reasons+=("repository variable RUN_INTEGRATION=true")
+          fi
+
+          if printf '%s' "${HEAD_MESSAGE}" | grep -qF '[run-integration]'; then
+            reasons+=("head commit message contains [run-integration]")
+          fi
+
+          # The promote PR is the merged PR into this branch whose merge commit
+          # is the pushed sha. A lookup failure is reported, not fatal: the
+          # default is off, and the other opt-ins still work.
+          if prs=$(gh api "repos/${REPO}/commits/${SHA}/pulls" 2>/dev/null); then
+            labelled=$(printf '%s' "${prs}" | jq -r --arg b "${GITHUB_REF_NAME}" \
+              '[.[] | select(.base.ref == $b and .merged_at != null)
+                    | select(any(.labels[]?; .name == "run-integration"))
+                    | "#\(.number)"] | join(", ")')
+            if [ -n "${labelled}" ]; then
+              reasons+=("promote PR ${labelled} has label run-integration")
+            fi
+          else
+            echo "::warning::Could not look up the PR for ${SHA}; the run-integration label was not checked."
+          fi
+
+          shards='[
+            {"name": "airbrx-and-routes", "paths": "tests/airbrx tests/server/routes tests/server/scheduled"},
+            {"name": "server-root",       "paths": "tests/server/*.py"},
+            {"name": "runtime-host-spec", "paths": "tests/runtime tests/host tests/spec"}
+          ]'
+          integration='{"name": "integration", "paths": "tests/server/integration"}'
+
+          if [ "${#reasons[@]}" -gt 0 ]; then
+            run=true
+            shards=$(jq -c --argjson i "${integration}" '. + [$i]' <<<"${shards}")
+          else
+            run=false
+            shards=$(jq -c . <<<"${shards}")
+          fi
+
+          echo "integration=${run}" >> "${GITHUB_OUTPUT}"
+          echo "matrix={\"shard\":${shards}}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "## Integration tests (tests/server/integration)"
+            echo
+            if [ "${run}" = "true" ]; then
+              echo "**RAN** (gating this deploy), because:"
+              for r in "${reasons[@]}"; do echo "- ${r}"; done
+            else
+              echo "**SKIPPED**: the shard is opt-in and no switch was set."
+              echo
+              echo "To opt in: dispatch this workflow with \`run_integration: true\`,"
+              echo "label the promote PR \`run-integration\` (or put \`[run-integration]\`"
+              echo "in its title / the merge commit message), or set the repository"
+              echo "variable \`RUN_INTEGRATION\` to \`true\`."
+            fi
+            echo
+            echo "Shards gating this deploy: $(jq -r '[.[].name] | join(", ")' <<<"${shards}")"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   test:
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix:
-        shard:
-          - name: airbrx-and-routes
-            paths: tests/airbrx tests/server/routes tests/server/scheduled
-          - name: server-root
-            paths: tests/server/*.py
-          - name: integration
-            paths: tests/server/integration
-          - name: runtime-host-spec
-            paths: tests/runtime tests/host tests/spec
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -106,7 +207,10 @@ jobs:
         run: uv run pytest ${{ matrix.shard.paths }} -q -p no:randomly --timeout=300
 
   deploy:
-    needs: test
+    # Both must succeed. `plan` failing fails closed (no deploy). When the
+    # integration shard is off it is absent from the matrix rather than
+    # skipped, so `test` succeeds on the three shards that did run.
+    needs: [plan, test]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
