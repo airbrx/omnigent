@@ -9,6 +9,7 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -21,7 +22,8 @@ from omnigent.airbrx.iris.config import bindings, session_binding
 from omnigent.airbrx.iris.package import HERE, source_root
 from omnigent.airbrx.iris.records import (
     bare_tool_name,
-    report_references,
+    report_calls,
+    report_references,  # noqa: F401 -- re-exported; tests import it from here
 )
 from omnigent.airbrx.iris.runtime import TOOLS
 from omnigent.server.routes._auth_helpers import require_user
@@ -143,6 +145,43 @@ def kernel_file(name: str) -> Path | None:
     return path if path.is_file() else None
 
 
+#: iris_overview's default window: this many completed UTC days, ending (end
+#: exclusive) on the day it runs. `iris.config.period` in the pinned archive.
+_CURRENT_PERIOD_DAYS = 7
+
+
+def reads_current_period(arguments: dict | None, *called_at: float) -> bool:
+    """Whether an iris_overview call read the tenant's current period.
+
+    Called without dates, iris_overview reads the current period by definition:
+    the seven completed UTC days before the day it runs. Called with dates, it
+    read the current period only if the dates name exactly that window for the
+    day it ran (`called_at`, epoch seconds; any one of them matching is enough,
+    so a call recorded just before midnight UTC and answered just after is not
+    refused). Anything else, typically an older window read to compare against,
+    is not the overview.
+
+    Decided from what the tool was asked, never from what it found: a capture
+    that covered 3 of 7 days (`period_complete: false`) is still the current
+    period, and says so in its own metrics. Arguments that were recorded but
+    cannot be read are not assumed to be the default.
+    """
+    if arguments is None:
+        return False
+    start, end = arguments.get("start_date"), arguments.get("end_date")
+    if start is None and end is None:
+        return True
+    try:
+        window = (date.fromisoformat(start), date.fromisoformat(end))
+    except (TypeError, ValueError):
+        return False
+    for at in called_at:
+        day = datetime.fromtimestamp(at, timezone.utc).date()
+        if window == (day - timedelta(days=_CURRENT_PERIOD_DAYS), day):
+            return True
+    return False
+
+
 def completed_answer(items: list[dict]) -> dict | None:
     tools = [bare_tool_name(i.get("name")) for i in items if i.get("type") == "function_call"]
     if set(tools) - _ALLOWED_IN_A_TURN:
@@ -205,10 +244,21 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
             if not posted.get("queued") or not cursor:
                 raise HTTPException(409, "Native session did not accept the turn")
             expires = time.monotonic() + deadline
+            # The client going away is NOT a Stop. A page reload aborts this
+            # request's fetch, so the server sees a disconnect, and this loop
+            # used to answer it with an interrupt: a reload mid-chat cancelled
+            # Iris's turn, when the reloaded page means to read the answer back
+            # from history (WORKSPACE_V2.md, section 7 gate). Only `api/cancel`
+            # (the user's explicit Stop) interrupts on the user's behalf.
+            #
+            # So a disconnected caller does not end the watch either: it runs to
+            # the answer or the deadline, which keeps the tool-boundary refusal
+            # and the deadline below enforced for a turn nobody is watching.
+            # Neither is a CancelledError grounds for an interrupt: that is this
+            # task being torn down (a disconnect, on a stack that cancels
+            # handlers for it, or a server shutdown), not a user asking to stop.
             try:
                 while time.monotonic() < expires:
-                    if await request.is_disconnected():
-                        raise asyncio.CancelledError()
                     snapshot, _ = await authorize(request, session_id, client)
                     page = await checked(
                         await client.get(
@@ -231,7 +281,7 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                         return {**answer, "item_id": cursor}
                     await asyncio.sleep(0.5)
                 raise HTTPException(504, "Iris turn timed out and was cancelled")
-            except (asyncio.CancelledError, HTTPException):
+            except HTTPException:
                 await client.post(
                     f"/v1/sessions/{session_id}/events", json={"type": "interrupt", "data": {}}
                 )
@@ -408,14 +458,24 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                         "established; open native chat to review the turn.",
                     )
                 collected_after = marker.get("created_at", 0)
-            refs = report_references(ordered)
+            refs = report_calls(ordered)
             reports = {}
             report_times = dict.fromkeys(sorted(TOOLS))
             cache_age = 0
             captured_at = None
             unreadable = set()
-            for tool, file_id, created_at in reversed(refs):
+            other_windows = False
+            for tool, file_id, created_at, arguments in reversed(refs):
                 if tool in reports or tool in unreadable:
+                    continue
+                # `overview` is the tenant's current period. An overview Iris
+                # read over another window mid-session (to compare against) is
+                # newer than the capture, and was being shown as the capture
+                # after a reload. It is skipped, not fetched: the contract has
+                # no slot for it, and the comparison itself is what
+                # `investigation` carries.
+                if tool == "iris_overview" and not reads_current_period(arguments, created_at):
+                    other_windows = True
                     continue
                 # On a fresh collection, only this turn's overview and audit
                 # count. A refresh that returns the previous capture is worse
@@ -450,6 +510,14 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                 # Two different situations; the wording used to send both to
                 # "use Refresh from host", which on the fresh path pointed at
                 # the button that had just run.
+                if other_windows:
+                    raise HTTPException(
+                        409,
+                        "The collection read no current-period overview; open native chat to "
+                        "see what Iris did."
+                        if fresh
+                        else "No current-period overview yet; use Refresh from host",
+                    )
                 raise HTTPException(
                     409,
                     "The collection produced no overview; open native chat to see what Iris did."

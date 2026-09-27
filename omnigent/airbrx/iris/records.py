@@ -66,18 +66,23 @@ def paired(items):
     :param items: Session items in chronological order.
     :returns: Pairs of (function_call_output item, bare tool name).
     """
+    return [(output, name) for output, name, _ in _paired_calls(items)]
+
+
+def _paired_calls(items):
+    """`paired`, keeping the function_call item each output was matched to."""
     calls, outputs = {}, {}
     for i in items:
         if i.get("type") == "function_call":
-            calls.setdefault(i.get("call_id"), []).append(bare_tool_name(i.get("name")))
+            calls.setdefault(i.get("call_id"), []).append(i)
         elif i.get("type") == "function_call_output":
             outputs.setdefault(i.get("call_id"), []).append(i)
     pairs = []
-    for call_id, names in calls.items():
+    for call_id, recorded in calls.items():
         # strict=False: a cancelled or still-running turn leaves a call with no
         # output yet, and the pairing should stop at the shorter side.
-        for name, output in zip(names, outputs.get(call_id, []), strict=False):
-            pairs.append((output, name))
+        for call, output in zip(recorded, outputs.get(call_id, []), strict=False):
+            pairs.append((output, bare_tool_name(call.get("name")), call))
     # Chronological, because callers pick the newest reference per tool.
     pairs.sort(key=lambda pair: pair[0].get("created_at", 0))
     return pairs
@@ -120,8 +125,23 @@ def report_references(items):
     `items` in chronological order. `created_at` is epoch seconds on the
     function_call_output item that carried the report.
     """
+    return [(tool, file_id, created_at) for tool, file_id, created_at, _ in report_calls(items)]
+
+
+#: No arguments recorded, spelled the ways a host records "none".
+_NO_ARGUMENTS = (None, "", "{}")
+
+
+def report_calls(items):
+    """`report_references`, each with the arguments the tool was called with.
+
+    (tool, file_id, created_at, arguments). `arguments` is the call's recorded
+    arguments as a dict (`{}` when none were recorded), or None when they were
+    recorded but cannot be read as a JSON object, so a caller can tell "called
+    with no arguments" from "called with arguments nobody can read".
+    """
     references = []
-    for item, tool in paired(items):
+    for item, tool, call in _paired_calls(items):
         if tool not in TOOLS:
             continue
         try:
@@ -129,7 +149,22 @@ def report_references(items):
         except (ValueError, TypeError):
             continue
         if isinstance(result, dict) and not result.get("error") and not result.get("error_code"):
+            arguments = _arguments(call.get("arguments"))
             for download in result.get("downloads", []):
                 if download.get("filename") == "report.json":
-                    references.append((tool, download["file_id"], item.get("created_at", 0)))
+                    references.append(
+                        (tool, download["file_id"], item.get("created_at", 0), arguments)
+                    )
     return references
+
+
+def _arguments(recorded):
+    if recorded in _NO_ARGUMENTS:
+        return {}
+    if isinstance(recorded, dict):
+        return recorded
+    try:
+        parsed = json.loads(recorded)
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
