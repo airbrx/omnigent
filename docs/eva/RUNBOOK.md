@@ -163,9 +163,19 @@ LinkedIn wants a sign-in.
 
 **Known limits.** One profile means one browser at a time: two Eva sessions
 opening the browser at once on the same host, the second one fails to launch
-and falls back to paste-in. The coordinator never spawns the stdio server for a
-host-bound session; if a harness ever resolves MCP schemas server-side, the
-browser shows as a failed server there and nothing else changes.
+and falls back to paste-in. On a coordinator that has no install (production
+EC2), anything that resolves her MCP schemas server-side sees the browser as a
+failed server; her turns run on the execution host, where it is installed.
+
+**Measured on the local 6770 stack, 2026-09-26, profile not yet signed in.**
+"Refresh stats with Eva" from the LinkedIn tab: her CLI `init` listed the one
+`omnigent` server with exactly the five `browser__` tools beside her outreach
+tools (strict MCP config held); she read the posts, navigated to
+`https://www.linkedin.com/in/me/recent-activity/all/`, landed on the sign-up
+wall, closed the browser and said LinkedIn needs a sign-in, recorded nothing
+and offered the paste-in route. No click, type or sign-in attempt. The first
+run found that the workspace's own turn check rejected any `browser__` call
+and interrupted her; fixed in the same PR.
 
 ## Operator configuration
 
