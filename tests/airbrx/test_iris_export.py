@@ -8,11 +8,13 @@ committed fixture. Nothing here touches the local stack on 6768 or
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import subprocess
 import threading
 import urllib.parse
+import urllib.request
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -51,6 +53,8 @@ class Store:
         self.files: dict[str, dict[str, bytes]] = {}
         self.broken_items: set[str] = set()
         self.broken_files: set[str] = set()
+        #: Path to the Location a 302 sends it to, for the redirect refusal.
+        self.redirects: dict[str, str] = {}
         self.requests: list[tuple[str, dict[str, str]]] = []
 
     def bind(self, tenant: str, name: str, *, fixture: bool = True) -> None:
@@ -122,6 +126,12 @@ def handler_for(store: Store) -> type[BaseHTTPRequestHandler]:
             query = dict(urllib.parse.parse_qsl(url.query))
             store.requests.append((url.path, dict(self.headers)))
             parts = url.path.strip("/").split("/")
+            if url.path in store.redirects:
+                self.send_response(302)
+                self.send_header("Location", store.redirects[url.path])
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return None
             if url.path == "/api/version":
                 return self.answer(200, b'{"version": "0.14.0", "commit": "a2cbdeef2a9bcdc6"}')
             if url.path == "/v1/iris":
@@ -153,8 +163,8 @@ def store() -> Store:
     return Store.synthetic()
 
 
-@pytest.fixture
-def server(store: Store) -> Iterator[str]:
+@contextlib.contextmanager
+def serving(store: Store) -> Iterator[str]:
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(store))
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -163,6 +173,24 @@ def server(store: Store) -> Iterator[str]:
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+@pytest.fixture
+def server(store: Store) -> Iterator[str]:
+    with serving(store) as url:
+        yield url
+
+
+@pytest.fixture
+def elsewhere() -> Iterator[tuple[Store, str]]:
+    """A second server: another origin a proxy or a redirect would send the exporter to.
+
+    It answers like a store with no tenants, so anything it serves would be
+    exported as if it came from the local stack.
+    """
+    other = Store()
+    with serving(other) as url:
+        yield other, url
 
 
 @pytest.fixture(autouse=True)
@@ -360,6 +388,7 @@ def test_a_non_loopback_server_is_refused_before_any_request(
         raise AssertionError("the exporter reached for the network")
 
     monkeypatch.setattr(export.urllib.request, "urlopen", no_network)
+    monkeypatch.setattr(export.urllib.request.OpenerDirector, "open", no_network)
     with pytest.raises(SystemExit) as refused:
         export.main(["--server", remote, "--out", str(tmp_path / "runs")])
     assert "local Omnigent stack only" in str(refused.value) or "http URL" in str(refused.value)
@@ -381,6 +410,72 @@ def test_no_credential_is_sent_even_when_one_is_in_the_environment(
     assert store.requests
     for _path, headers in store.requests:
         assert not {h.lower() for h in headers} & {"authorization", "cookie"}
+
+
+@pytest.mark.parametrize("variable", ["http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"])
+def test_a_proxy_in_the_environment_is_never_used(
+    variable: str,
+    store: Store,
+    server: str,
+    elsewhere: tuple[Store, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loopback is enforced on the connection: tenant data never round-trips through a proxy."""
+    proxy, proxy_url = elsewhere
+    for name in ("no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, proxy_url)
+    # urllib caches its global opener, and with it the proxies of whenever it
+    # was first built; clear it so this test cannot pass on an earlier test's cache.
+    monkeypatch.setattr(urllib.request, "_opener", None)
+    assert export_to(server, tmp_path / "runs") == 0
+    assert proxy.requests == [], "a request went through the proxy"
+    assert store.requests, "the local store was not read directly"
+    assert len(runs.scan(tmp_path / "runs")) == 2
+
+
+@pytest.mark.parametrize("path", ["/v1/iris", "/v1/sessions", "/api/version"])
+def test_a_redirect_is_refused_and_the_export_fails(
+    path: str,
+    store: Store,
+    server: str,
+    elsewhere: tuple[Store, str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    other, other_url = elsewhere
+    store.redirects[path] = other_url + path
+    assert export_to(server, tmp_path / "runs") != 0
+    assert other.requests == [], "the exporter followed a redirect off the local stack"
+    assert not (tmp_path / "runs").exists()
+    assert "redirect" in capsys.readouterr().err
+
+
+def test_a_same_origin_redirect_is_refused_too(
+    store: Store, server: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store.redirects["/v1/iris"] = server + "/v1/iris/"
+    assert export_to(server, tmp_path / "runs") != 0
+    assert "redirect" in capsys.readouterr().err
+
+
+def test_a_symlinked_tenant_directory_into_a_repository_is_refused(
+    store: Store, server: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reviewer's repro: --out is outside any repo, but <out>/<tenant> points into one."""
+    for binding in store.bindings:
+        binding["fixture"] = False
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    planted = repo / "sub/planted"
+    planted.mkdir(parents=True)
+    out = tmp_path / "runs"
+    out.mkdir()
+    (out / "fixture-iris").symlink_to(planted)
+    assert export_to(server, out) == 2
+    assert not any(planted.iterdir()), "files landed inside the git repository"
+    assert "fixture-iris" in capsys.readouterr().err
 
 
 def test_an_output_inside_a_git_worktree_is_refused(

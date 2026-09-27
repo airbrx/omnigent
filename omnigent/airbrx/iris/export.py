@@ -36,8 +36,9 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from datetime import date, datetime, timezone
+from http.client import HTTPMessage
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from omnigent.airbrx.iris.records import bare_tool_name, reads_current_period, report_calls
 from omnigent.airbrx.iris.runs import (
@@ -266,12 +267,43 @@ def loopback_server(server: str) -> str:
     return server.rstrip("/")
 
 
+class RedirectRefused(Exception):
+    """The server answered with a redirect. Never followed: it could leave the local stack."""
+
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],  # noqa: ARG002
+        code: int,
+        msg: str,  # noqa: ARG002
+        headers: HTTPMessage,  # noqa: ARG002
+        newurl: str,  # noqa: ARG002
+    ) -> urllib.request.Request | None:
+        raise RedirectRefused(
+            f"{urllib.parse.urlsplit(req.full_url).path} answered a redirect (HTTP {code}); "
+            "the exporter reads the local stack directly and follows no redirect"
+        )
+
+
+def loopback_opener() -> urllib.request.OpenerDirector:
+    """An opener that keeps the connection on the URL's own host.
+
+    `ProxyHandler({})` ignores every `*_proxy` variable, so tenant data never
+    round-trips through a proxy, and every redirect is refused. With the
+    loopback check on the URL, that keeps the transport on loopback (D-2 a).
+    """
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _RefuseRedirects())
+
+
 class Omnigent:
     """The few native routes the exporter reads. No credential is ever sent."""
 
     def __init__(self, server: str, timeout: float = 30.0) -> None:
         self.server = loopback_server(server)
         self.timeout = timeout
+        self.opener = loopback_opener()
 
     def get(self, path: str, params: dict | None = None) -> bytes:
         url = self.server + path
@@ -279,7 +311,7 @@ class Omnigent:
             url += "?" + urllib.parse.urlencode(params)
         request = urllib.request.Request(url, headers={"Accept": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with self.opener.open(request, timeout=self.timeout) as response:
                 return response.read()
         except urllib.error.HTTPError as exc:
             raise ExportError(f"{path} answered HTTP {exc.code}") from None
@@ -435,7 +467,7 @@ def main(argv: list[str] | None = None, *, now: Callable[[], float] = time.time)
             sessions=set(args.session) if args.session else None,
             since=args.since,
         )
-    except ExportError as exc:
+    except (ExportError, RedirectRefused) as exc:
         print(f"export: {exc}", file=sys.stderr)
         return 1
     exported_at = now()

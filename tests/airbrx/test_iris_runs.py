@@ -254,7 +254,7 @@ def test_build_state_over_the_seeded_items_is_the_saved_state(tenant: str, week:
 
 @pytest.mark.parametrize(
     "tenant",
-    ["fixture-iris", "fixture-a", "f65d9135-0ba1-4c2d-9e3f-0123456789ab", "a", "abc-123"],
+    ["fixture-iris", "fixture-a", "00000000-0000-4000-8000-000000000001", "a", "abc-123"],
 )
 def test_tenant_ids_the_layout_accepts(tenant: str) -> None:
     assert runs.valid_tenant(tenant)
@@ -271,6 +271,12 @@ def test_tenant_ids_the_layout_refuses(tenant: object) -> None:
 @pytest.mark.parametrize("week", ["2026-W38", "2027-W01"])
 def test_weeks_the_layout_accepts(week: str) -> None:
     assert runs.valid_week(week)
+
+
+def test_a_trailing_newline_is_not_a_valid_path_part() -> None:
+    assert not runs.valid_tenant("fixture-iris\n")
+    assert not runs.valid_week("2026-W38\n")
+    assert not runs.valid_file_id("file_ab\n")
 
 
 @pytest.mark.parametrize("week", ["2026-38", "2026-W3", "../2026-W38", "2026-W38/", "2026-w38"])
@@ -401,6 +407,49 @@ def test_a_tampered_run_is_listed_unreadable_and_never_served(tmp_path: Path, ta
         listed.state()
 
 
+def test_a_symlink_to_identical_bytes_is_still_unreadable(tmp_path: Path) -> None:
+    """The checksum alone would pass it; the symlink rule is what refuses it (rule V3)."""
+    saved = written(tmp_path)
+    original = saved.path / "files/file_abc"
+    copy = tmp_path / "outside-copy"
+    copy.write_bytes(original.read_bytes())
+    original.unlink()
+    original.symlink_to(copy)
+    with pytest.raises(RunUnreadable, match="symlink"):
+        runs.load_run(tmp_path, "fixture-iris", "2026-W38")
+
+
+@pytest.mark.parametrize(
+    "index",
+    [b"not json", b'{"data": [1]}', b'{"data": "x"}', b"[]", b'{"data": [{"id": null}]}'],
+    ids=["not-json", "row-not-object", "data-not-list", "not-object", "id-null"],
+)
+def test_a_malformed_index_with_a_good_checksum_is_unreadable_not_a_crash(
+    tmp_path: Path, index: bytes
+) -> None:
+    saved = written(tmp_path)
+    (saved.path / "files/index.json").write_bytes(index)
+    manifest = json.loads((saved.path / "manifest.json").read_text())
+    manifest["files"]["files/index.json"] = runs.sha256(index)
+    (saved.path / "manifest.json").write_text(json.dumps(manifest))
+    [tenant] = runs.scan(tmp_path)
+    [listed] = tenant.runs
+    assert listed.readable is False and listed.problem
+    # And the next export replaces it rather than crashing on it.
+    assert runs.write_run(tmp_path, a_run(), name="F", fixture=True, exported_at=9.0) == "replaced"
+
+
+def test_a_finder_ds_store_does_not_make_a_run_unreadable(tmp_path: Path) -> None:
+    """Abram browses runs in Finder, which drops .DS_Store files; they are not run content."""
+    saved = written(tmp_path)
+    (saved.path / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+    (saved.path / "files/.DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+    again = runs.load_run(tmp_path, "fixture-iris", "2026-W38")
+    assert again.readable
+    with pytest.raises(RunUnreadable):
+        again.read(".DS_Store")
+
+
 def test_a_file_changed_after_loading_is_refused_on_read(tmp_path: Path) -> None:
     saved = written(tmp_path)
     (saved.path / "files/file_abc").write_bytes(b"changed after the check")
@@ -468,7 +517,7 @@ def git_repo(path: Path) -> Path:
 def test_a_real_run_is_refused_inside_a_git_worktree(tmp_path: Path) -> None:
     """Rule V4: real tenant evidence never lands in a repository, whoever calls the writer."""
     repo = git_repo(tmp_path / "repo")
-    real = a_run(tenant="f65d9135-0ba1-4c2d-9e3f-0123456789ab", kind="omnigent-session")
+    real = a_run(tenant="00000000-0000-4000-8000-000000000001", kind="omnigent-session")
     with pytest.raises(runs.RefusedOutput):
         runs.write_run(repo / "deep/runs", real, name="T", fixture=False, exported_at=1.0)
     # A synthetic run marked non-fixture is refused too; only the fixture may be committed.
@@ -482,6 +531,83 @@ def test_a_real_run_is_refused_inside_a_git_worktree(tmp_path: Path) -> None:
     (tmp_path / "elsewhere").symlink_to(repo)
     with pytest.raises(runs.RefusedOutput):
         runs.write_run(tmp_path / "elsewhere/runs", real, name="T", fixture=False, exported_at=1.0)
+
+
+def test_a_symlinked_tenant_directory_is_refused(tmp_path: Path) -> None:
+    """The reviewer's repro: <out>/<tenant> is a symlink into a git repository (rule V4)."""
+    repo = git_repo(tmp_path / "repo")
+    planted = repo / "sub/planted"
+    planted.mkdir(parents=True)
+    out = tmp_path / "runs"
+    out.mkdir()
+    (out / "fixture-iris").symlink_to(planted)
+    real = a_run(kind="omnigent-session")
+    with pytest.raises(runs.RefusedOutput):
+        runs.write_run(out, real, name="T", fixture=False, exported_at=1.0)
+    assert not any(planted.iterdir())
+    # A symlinked tenant directory is refused wherever it points, even for the fixture.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (out / "fixture-iris").unlink()
+    (out / "fixture-iris").symlink_to(elsewhere)
+    with pytest.raises(runs.RefusedOutput):
+        runs.write_run(out, a_run(), name="T", fixture=True, exported_at=1.0)
+    assert not any(elsewhere.iterdir())
+
+
+@pytest.mark.parametrize("repo_at", ["fixture-iris", "fixture-iris/2026-W38"])
+def test_a_tenant_or_run_directory_that_is_itself_a_repository_is_refused(
+    tmp_path: Path, repo_at: str
+) -> None:
+    """The root is outside any repo, but a directory below it is a git checkout (rule V4)."""
+    out = tmp_path / "runs"
+    git_repo(out / repo_at)
+    real = a_run(kind="omnigent-session")
+    with pytest.raises(runs.RefusedOutput, match="git worktree"):
+        runs.write_run(out, real, name="T", fixture=False, exported_at=1.0)
+    assert sorted(p.name for p in (out / repo_at).iterdir()) == [".git"]
+
+
+def test_a_symlinked_run_directory_is_refused(tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "runs/fixture-iris").mkdir(parents=True)
+    (tmp_path / "runs/fixture-iris/2026-W38").symlink_to(elsewhere)
+    with pytest.raises(runs.RefusedOutput):
+        runs.write_run(tmp_path / "runs", a_run(), name="T", fixture=True, exported_at=1.0)
+    assert not any(elsewhere.iterdir())
+
+
+def test_the_in_repository_exemption_is_for_fixture_tenants_only(tmp_path: Path) -> None:
+    """A synthetic run marked fixture but named like a real tenant is still refused in a repo."""
+    repo = git_repo(tmp_path / "repo")
+    uuid_tenant = a_run(tenant="00000000-0000-4000-8000-000000000001")
+    with pytest.raises(runs.RefusedOutput):
+        runs.write_run(repo / "runs", uuid_tenant, name="T", fixture=True, exported_at=1.0)
+    assert not (repo / "runs").exists()
+    assert runs.write_run(repo / "runs", a_run(), name="F", fixture=True, exported_at=1.0) == (
+        "wrote"
+    )
+
+
+def test_a_failed_first_write_leaves_no_tenant_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_write = Path.write_bytes
+    calls = {"n": 0}
+
+    def failing(self: Path, data: bytes) -> int:
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise OSError("disk full")
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", failing)
+    with pytest.raises(OSError):
+        runs.write_run(tmp_path, a_run(), name="F", fixture=True, exported_at=1.0)
+    monkeypatch.undo()
+    assert runs.scan(tmp_path) == []
+    assert not (tmp_path / "fixture-iris").exists()
 
 
 def test_the_writer_refuses_what_the_layout_cannot_hold(tmp_path: Path) -> None:

@@ -69,15 +69,15 @@ class RefusedOutput(Exception):
 
 
 def valid_tenant(tenant_id: object) -> bool:
-    return isinstance(tenant_id, str) and bool(TENANT_RE.match(tenant_id))
+    return isinstance(tenant_id, str) and bool(TENANT_RE.fullmatch(tenant_id))
 
 
 def valid_week(week: object) -> bool:
-    return isinstance(week, str) and bool(WEEK_RE.match(week))
+    return isinstance(week, str) and bool(WEEK_RE.fullmatch(week))
 
 
 def valid_file_id(file_id: object) -> bool:
-    return isinstance(file_id, str) and bool(FILE_ID_RE.match(file_id))
+    return isinstance(file_id, str) and bool(FILE_ID_RE.fullmatch(file_id))
 
 
 def iso_week(epoch_seconds: float) -> str:
@@ -217,7 +217,7 @@ def check_run(run: Run) -> None:
 
 def write_tenant(root: Path, tenant_id: str, *, name: str, fixture: bool) -> None:
     tenant_dir = Path(root) / tenant_id
-    tenant_dir.mkdir(parents=True, exist_ok=True)
+    tenant_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     body = dump_json({"tenant_id": tenant_id, "name": name, "fixture": fixture})
     path = tenant_dir / TENANT
     if path.exists() and path.read_bytes() == body:
@@ -237,50 +237,75 @@ def write_run(
     exported_at: float,
     force: bool = False,
 ) -> str:
-    """Write one run atomically. Returns "wrote", "replaced" or "kept".
+    """Write one run. Returns "wrote", "replaced" or "kept".
 
     An existing run is replaced only when this capture is newer, or with
-    `force`. A run from a real session is refused inside a git worktree, so
-    real tenant evidence never lands in a repository (rule V4); only a
-    synthetic run may be written there (the committed fixture).
+    `force`. Nothing of a real run is written inside a git worktree, checked
+    for the root, the tenant directory and the run directory, so real tenant
+    evidence never lands in a repository (rule V4). Only a synthetic fixture
+    run (`fixture-` tenant) is exempt: the committed fixture. A symlinked
+    tenant or run directory is refused for every run.
+
+    A new run is staged and renamed into place in one step. Replacing a run
+    takes two renames (the old run aside, then the new one in), so a reader
+    in that instant sees no run, and a crash between them leaves the old run
+    under `.<week>-old-*/run`. Acceptable for a laptop exporter.
     """
     check_run(run)
     root = Path(os.path.expanduser(root))
-    if run.source.get("kind") != "synthetic" or not fixture:
-        worktree = git_worktree(root)
-        if worktree is not None:
-            raise RefusedOutput(
-                f"{root} is inside the git worktree {worktree}; real tenant runs are "
-                "never written into a repository"
-            )
-    target = root / run.tenant_id / run.week
+    exempt = (
+        run.source.get("kind") == "synthetic" and fixture and run.tenant_id.startswith("fixture-")
+    )
+    tenant_dir = root / run.tenant_id
+    target = tenant_dir / run.week
+    for path in (tenant_dir, target):
+        if path.is_symlink():
+            raise RefusedOutput(f"{path} is a symlink; runs are written to plain directories")
+        if path.exists() and not path.is_dir():
+            raise RefusedOutput(f"{path} exists and is not a directory")
+    if not exempt:
+        for path in (root, tenant_dir, target):
+            worktree = git_worktree(path)
+            if worktree is not None:
+                raise RefusedOutput(
+                    f"{path} is inside the git worktree {worktree}; real tenant runs are "
+                    "never written into a repository"
+                )
     action = "wrote"
     if target.exists():
         try:
             existing = load_run(root, run.tenant_id, run.week).manifest
             newer = run.captured_at > float(existing["captured_at"])
-        except RunUnreadable:
+        except (RunUnreadable, KeyError, TypeError, ValueError):
             newer = True
         if not newer and not force:
             return "kept"
         action = "replaced"
-    write_tenant(root, run.tenant_id, name=name, fixture=fixture)
     contents = run.contents()
     manifest = run.manifest(contents, exported_at)
-    staging = Path(tempfile.mkdtemp(dir=target.parent, prefix=f".{run.week}-"))
+    new_tenant = not tenant_dir.exists()
+    staging = None
     try:
+        tenant_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(dir=tenant_dir, prefix=f".{run.week}-"))
         (staging / "files").mkdir()
         for path, data in {**contents, MANIFEST: dump_json(manifest)}.items():
             (staging / path).write_bytes(data)
         if target.exists():
-            retired = Path(tempfile.mkdtemp(dir=target.parent, prefix=f".{run.week}-old-"))
+            retired = Path(tempfile.mkdtemp(dir=tenant_dir, prefix=f".{run.week}-old-"))
             os.replace(target, retired / "run")
             os.replace(staging, target)
             shutil.rmtree(retired, ignore_errors=True)
         else:
             os.replace(staging, target)
+        # Last, so a failed first write leaves no tenant that has no runs.
+        write_tenant(root, run.tenant_id, name=name, fixture=fixture)
+    except BaseException:
+        if new_tenant:
+            shutil.rmtree(tenant_dir, ignore_errors=True)
+        raise
     finally:
-        if staging.exists():
+        if staging is not None and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
     return action
 
@@ -353,9 +378,16 @@ class SavedRun:
         }
 
 
+#: Files the OS drops into folders a person opens (Finder on macOS). Not run
+#: content: ignored when checking a run, and never served.
+IGNORED_NAMES = frozenset({".DS_Store"})
+
+
 def _run_files(run_dir: Path) -> set[str]:
     found = set()
     for path in run_dir.rglob("*"):
+        if path.name in IGNORED_NAMES and path.is_file() and not path.is_symlink():
+            continue
         if path.is_symlink():
             raise RunUnreadable(f"{path.relative_to(run_dir)} is a symlink")
         if path.is_file():
@@ -386,10 +418,15 @@ def _verify(saved: SavedRun) -> None:
     for relpath, expected in files.items():
         if sha256((run_dir / relpath).read_bytes()) != expected:
             raise RunUnreadable(f"{relpath} does not match its checksum")
-    index = json.loads((run_dir / INDEX).read_bytes())
-    listed = {f"files/{row.get('id')}" for row in index.get("data", [])}
-    if any(not valid_file_id(row.get("id")) for row in index.get("data", [])):
+    try:
+        rows = json.loads((run_dir / INDEX).read_bytes())["data"]
+    except (ValueError, KeyError, TypeError):
+        raise RunUnreadable("files/index.json is not a file list") from None
+    if not isinstance(rows, list) or not all(
+        isinstance(row, dict) and valid_file_id(row.get("id")) for row in rows
+    ):
         raise RunUnreadable("files/index.json lists an invalid file id")
+    listed = {f"files/{row['id']}" for row in rows}
     if listed != set(files) - {STATE, ITEMS, INDEX}:
         raise RunUnreadable("files/index.json does not match the run's files")
 
