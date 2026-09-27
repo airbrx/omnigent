@@ -18,6 +18,7 @@ from omnigent.airbrx.eva.package import bundle_root, is_eva
 from omnigent.airbrx.eva.policy import (
     BROWSER_SERVER,
     BROWSER_TOOLS,
+    DISCOVERY_TOOLS,
     EVA_TOOLS,
     WITHHELD,
     linkedin_url_ok,
@@ -191,6 +192,32 @@ def _call(target: str, arguments: object = None) -> dict:
     return tool_boundary(
         {"type": "tool_call", "target": target, "data": {"name": target, "arguments": arguments}}
     )
+
+
+def _framework_tool_names() -> list[str]:
+    """The always-on tools ``ToolManager`` registers for her real spec.
+
+    ``tools.builtins: []`` does not remove these, and the embedded browser's
+    bare ``browser_navigate``/``browser_click``/``browser_type`` are among
+    them. Hers arrive only as ``browser__<tool>``. MCP tools are registered
+    only by ``start()``, so an unstarted manager lists exactly the framework set.
+    """
+    from omnigent.tools.manager import ToolManager
+
+    names = {schema["function"]["name"] for schema in ToolManager(_spec()).get_tool_schemas()}
+    hers = EVA_TOOLS | DISCOVERY_TOOLS | {f"{BROWSER_SERVER}__{t}" for t in BROWSER_TOOLS}
+    return sorted(names - hers)
+
+
+def test_every_framework_tool_is_denied() -> None:
+    """Carrying a linkedin.com URL too, so the embedded browser gets no pass."""
+    names = _framework_tool_names()
+    assert names
+    assert {"sys_add_policy", "sys_scheduled_task_create"} <= set(names)
+    for name in names:
+        for target in (name, f"mcp__omnigent__{name}"):
+            assert _call(target)["result"] == "DENY", target
+            assert _call(target, {"url": _LINKEDIN})["result"] == "DENY", target
 
 
 @pytest.mark.parametrize("name", NOT_HERS)
