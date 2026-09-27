@@ -28,7 +28,17 @@ def test_the_allowlist_is_exactly_the_kernel_files() -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["", "nope.js", "../assets.py", "../__init__.py", "ui/dom.js", "/etc/passwd", "dom.js/", "DOM.JS", "..%2Fassets.py"],
+    [
+        "",
+        "nope.js",
+        "../assets.py",
+        "../__init__.py",
+        "ui/dom.js",
+        "/etc/passwd",
+        "dom.js/",
+        "DOM.JS",
+        "..%2Fassets.py",
+    ],
 )
 def test_anything_else_is_not_an_asset(name: str) -> None:
     assert kernel_asset(name) is None
@@ -45,7 +55,16 @@ def test_no_em_dash(path) -> None:
 @pytest.mark.parametrize("path", [p for p in SOURCES if p.suffix == ".js"], ids=lambda p: p.name)
 def test_data_is_never_rendered_as_markup(path) -> None:
     source = path.read_text(encoding="utf-8")
-    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "DOMParser", "createContextualFragment", "eval("):
+    sinks = (
+        "innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "DOMParser",
+        "createContextualFragment",
+        "eval(",
+    )
+    for sink in sinks:
         assert sink not in source, sink
 
 

@@ -9,7 +9,10 @@ import { fileURLToPath } from "node:url";
 import { fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const KERNEL = join(dirname(fileURLToPath(import.meta.url)), "../../../omnigent/airbrx/workspace/ui");
+const KERNEL = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../omnigent/airbrx/workspace/ui",
+);
 const FILES = [
   "dom.js",
   "theme.js",
@@ -69,7 +72,9 @@ function shape(root: Element) {
   const elements = [...root.querySelectorAll("*")];
   return {
     tags: [...new Set(elements.map((e) => e.tagName.toLowerCase()))],
-    attrs: elements.flatMap((e) => [...e.attributes].map((a) => `${e.tagName.toLowerCase()}[${a.name}]`)),
+    attrs: elements.flatMap((e) =>
+      [...e.attributes].map((a) => `${e.tagName.toLowerCase()}[${a.name}]`),
+    ),
   };
 }
 
@@ -80,7 +85,9 @@ const SAFE_TAGS = ["p", "br", "strong", "em", "code", "ul", "ol", "li"];
 describe("markdown", () => {
   it("renders the subset: bold, italics, code, lists, headings as bold paragraphs", () => {
     const root = holder(
-      AW.markdown("# Title\n**bold** and *em* and `code`\nsecond line\n\n- one\n- two\n\n3. three\n4. four"),
+      AW.markdown(
+        "# Title\n**bold** and *em* and `code`\nsecond line\n\n- one\n- two\n\n3. three\n4. four",
+      ),
     );
     expect(root.querySelector("p > strong")?.textContent).toBe("Title");
     expect(root.querySelectorAll("strong")[1].textContent).toBe("bold");
@@ -93,19 +100,19 @@ describe("markdown", () => {
   });
 
   it.each([
-    ["a script tag", "<script>window.__pwned = 1</script>"],
-    ["an image with a handler", '<img src="x" onerror="window.__pwned = 1">'],
-    ["an iframe", '<iframe src="javascript:window.__pwned=1"></iframe>'],
-    ["markup inside bold", '**<b onclick="window.__pwned=1">hi</b>**'],
-    ["markup inside a list", "- <a href=\"javascript:window.__pwned=1\">x</a>"],
-    ["markup inside a heading", "## <svg onload=\"window.__pwned=1\"></svg>"],
+    ["a script tag", "<script>window.pwned = 1</script>"],
+    ["an image with a handler", '<img src="x" onerror="window.pwned = 1">'],
+    ["an iframe", '<iframe src="javascript:window.pwned=1"></iframe>'],
+    ["markup inside bold", '**<b onclick="window.pwned=1">hi</b>**'],
+    ["markup inside a list", '- <a href="javascript:window.pwned=1">x</a>'],
+    ["markup inside a heading", '## <svg onload="window.pwned=1"></svg>'],
   ])("shows %s as the characters it is", (_name, text) => {
     const root = holder(AW.markdown(text));
     const { tags, attrs } = shape(root);
     for (const tag of tags) expect(SAFE_TAGS).toContain(tag);
     expect(attrs).toEqual([]);
     expect(root.textContent).toContain("<");
-    expect((window as any).__pwned).toBeUndefined();
+    expect((window as any).pwned).toBeUndefined();
   });
 
   it.each([
@@ -134,7 +141,14 @@ describe("markdown", () => {
   it("inline returns nodes only", () => {
     const nodes = AW.inline("a **b** <i>c</i>");
     for (const node of nodes) expect(node).toBeInstanceOf(Node);
-    expect(holder(nodes.reduce((f: DocumentFragment, n: Node) => (f.append(n), f), document.createDocumentFragment())).querySelector("i")).toBeNull();
+    expect(
+      holder(
+        nodes.reduce(
+          (f: DocumentFragment, n: Node) => (f.append(n), f),
+          document.createDocumentFragment(),
+        ),
+      ).querySelector("i"),
+    ).toBeNull();
   });
 
   it("el drops script URLs and string handlers", () => {
@@ -214,10 +228,15 @@ let items: Item[] = [];
 let hasMore = false;
 let itemsStatus = 200;
 let fetchMock: ReturnType<typeof vi.fn>;
+// While set, item reads wait on it: lets a test stop a turn mid-poll.
+let gate: Promise<void> | null = null;
 
 function serveItems() {
+  gate = null;
   fetchMock = vi.fn(async (input: string) => {
-    if (!String(input).startsWith("/v1/sessions/s1/items")) throw new Error(`unexpected fetch ${input}`);
+    if (!String(input).startsWith("/v1/sessions/s1/items"))
+      throw new Error(`unexpected fetch ${input}`);
+    if (gate) await gate;
     if (itemsStatus !== 200) return Response.json({ detail: "no" }, { status: itemsStatus });
     // The API answers newest first (order=desc).
     return Response.json({ data: items.slice().reverse(), has_more: hasMore });
@@ -225,7 +244,8 @@ function serveItems() {
   window.fetch = fetchMock as never;
 }
 
-const itemReads = () => fetchMock.mock.calls.filter(([url]) => String(url).includes("/items")).length;
+const itemReads = () =>
+  fetchMock.mock.calls.filter(([url]) => String(url).includes("/items")).length;
 
 const REFRESH = "Call iris_overview and iris_audit for the selected tenant.";
 
@@ -235,7 +255,8 @@ function streamFixture() {
     sessionId: "s1",
     pollMs: 10,
     doing: { iris_overview: "Reading the tenant's traffic", ToolSearch: "Getting her tools ready" },
-    recognise: (text: string) => (text.startsWith(REFRESH) ? "You had Iris collect a fresh overview." : null),
+    recognise: (text: string) =>
+      text.startsWith(REFRESH) ? "You had Iris collect a fresh overview." : null,
     stripUser: (text: string) => text.replace(/\n\n\(context\)$/, ""),
     transcript,
   });
@@ -298,6 +319,20 @@ describe("stream", () => {
     expect(list.children).toHaveLength(0);
   });
 
+  /** Hold item reads, and wait until one is in flight. Returns the release. */
+  async function holdAPoll() {
+    let release!: () => void;
+    gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const before = itemReads();
+    await waitFor(() => expect(itemReads()).toBeGreaterThan(before));
+    return () => {
+      gate = null;
+      release();
+    };
+  }
+
   /** The app's turn, as Eva runs it: mark, watch, await the answer, stop. */
   async function turn(stream: AW, transcript: AW, chat: Promise<{ text: string }>) {
     const shown = new Set<string>();
@@ -317,41 +352,72 @@ describe("stream", () => {
     items = [user("old", "earlier"), assistant("olda", "earlier answer")];
     const { list, stream, transcript } = streamFixture();
     let answer!: (value: { text: string }) => void;
-    const done = turn(stream, transcript, new Promise((resolve) => (answer = resolve)));
-    await waitFor(() => expect(list.querySelector("[role=status]")?.textContent).toBe("Iris is working…"));
-    items.push(user("u1", "question"), { id: "f1", type: "function_call", name: "iris__iris_overview", arguments: "{}" });
+    const done = turn(
+      stream,
+      transcript,
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+    );
     await waitFor(() =>
-      expect(list.querySelector("[role=status]")?.textContent).toBe("Reading the tenant's traffic…"),
+      expect(list.querySelector("[role=status]")?.textContent).toBe("Iris is working…"),
+    );
+    items.push(user("u1", "question"), {
+      id: "f1",
+      type: "function_call",
+      name: "iris__iris_overview",
+      arguments: "{}",
+    });
+    await waitFor(() =>
+      expect(list.querySelector("[role=status]")?.textContent).toBe(
+        "Reading the tenant's traffic…",
+      ),
     );
     items.push(assistant("a1", "Half"));
     await waitFor(() => expect(list.querySelector("li.agent")?.textContent).toBe("Half"));
     items[items.length - 1] = assistant("a1", "Half and whole");
+    // The turn ends while a poll is in flight: that poll must not reschedule.
+    const release = await holdAPoll();
     answer({ text: "Half and whole" });
+    release();
     await done;
     // Grown in place, not added twice; nothing from before the turn replayed.
     expect(lines(list)).toEqual([["agent", "Half and whole"]]);
     expect(list.querySelector("[role=status]")).toBeNull();
     const reads = itemReads();
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await new Promise((resolve) => {
+      setTimeout(resolve, 80);
+    });
     expect(itemReads()).toBe(reads);
   });
 
   it("watchTurn stops polling when the turn fails, and clears the progress line", async () => {
     const { list, stream, transcript } = streamFixture();
     let fail!: (error: Error) => void;
-    const done = turn(stream, transcript, new Promise((_resolve, reject) => (fail = reject)));
+    const done = turn(
+      stream,
+      transcript,
+      new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
     await waitFor(() => expect(itemReads()).toBeGreaterThan(2));
     // Polls that fail are harmless; the watch keeps going until stopped.
     itemsStatus = 502;
     const before = itemReads();
     await waitFor(() => expect(itemReads()).toBeGreaterThan(before + 1));
+    itemsStatus = 200;
+    const release = await holdAPoll();
     fail(Object.assign(new Error("HTTP 504"), { status: 504 }));
+    release();
     await done;
     expect(list.querySelector("[role=status]")).toBeNull();
     expect(list.querySelector("li.agent")).toBeNull();
     expect(lines(list)).toEqual([["error", "Iris did not answer."]]);
     const reads = itemReads();
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await new Promise((resolve) => {
+      setTimeout(resolve, 80);
+    });
     expect(itemReads()).toBe(reads);
   });
 
@@ -390,8 +456,17 @@ describe("what the stream may put in the chat", () => {
       summary: [{ type: "summary_text", text: SENTINEL }],
       content: [{ type: "output_text", text: SENTINEL }],
     },
-    { id: `x-${suffix}`, type: "mcp_list_tools", content: [{ type: "output_text", text: SENTINEL }] },
-    { id: `t-${suffix}`, type: "message", role: "tool", content: [{ type: "output_text", text: SENTINEL }] },
+    {
+      id: `x-${suffix}`,
+      type: "mcp_list_tools",
+      content: [{ type: "output_text", text: SENTINEL }],
+    },
+    {
+      id: `t-${suffix}`,
+      type: "message",
+      role: "tool",
+      content: [{ type: "output_text", text: SENTINEL }],
+    },
     {
       id: `s-${suffix}`,
       type: "message",
@@ -429,6 +504,10 @@ describe("what the stream may put in the chat", () => {
     expect(inDom()).not.toContain(SENTINEL);
     expect(inDom()).not.toContain("secret_tool");
     items.push({ id: "f2", type: "function_call", name: "constructor", arguments: SENTINEL });
+    const reads = itemReads();
+    await waitFor(() => expect(itemReads()).toBeGreaterThan(reads + 1));
+    // A name the map does not list, even one every object has, is "Working".
+    expect(list.querySelector("[role=status]")?.textContent).toBe("Working\u2026");
     items.push({ id: "f3", type: "function_call", name: "iris__ToolSearch", arguments: SENTINEL });
     await waitFor(() =>
       expect(list.querySelector("[role=status]")?.textContent).toBe("Getting her tools ready…"),
@@ -524,7 +603,9 @@ describe("tabs", () => {
   }
 
   const selected = () =>
-    [...document.querySelectorAll("[role=tab]")].filter((t) => t.getAttribute("aria-selected") === "true").map((t) => t.textContent);
+    [...document.querySelectorAll("[role=tab]")]
+      .filter((t) => t.getAttribute("aria-selected") === "true")
+      .map((t) => t.textContent);
 
   it("switches tabs, keeps the tab in the hash, and tells the app", () => {
     const { tabs, onShow } = tabsFixture();
@@ -586,9 +667,11 @@ describe("api", () => {
     vi.useFakeTimers();
     window.fetch = vi.fn(
       (_url: string, init: RequestInit) =>
-        new Promise((_resolve, reject) =>
-          init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
-        ),
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        }),
     ) as never;
     const pending = AW.createApi()("chat", {}).catch((e: unknown) => e);
     await vi.advanceTimersByTimeAsync(329_999);
@@ -600,7 +683,9 @@ describe("api", () => {
     const error = await pending;
     expect(error.status).toBe(504);
     expect(error.timedOut).toBe(true);
-    expect(AW.plainError(error, { agent: "Iris" })).toBe("Iris took too long, so the turn was stopped.");
+    expect(AW.plainError(error, { agent: "Iris" })).toBe(
+      "Iris took too long, so the turn was stopped.",
+    );
   });
 
   it("throws status and detail; plainError never shows host text on a 5xx", async () => {
@@ -617,7 +702,10 @@ describe("api", () => {
     expect(AW.plainError(boom, { agent: "Iris" })).not.toContain("SENTINEL");
     const refused = await api("state").catch((e: unknown) => e);
     expect(AW.plainError(refused)).toBe("Iris has not collected an overview here yet.");
-    for (const status of [502, 503]) expect(AW.plainError({ status, detail: SENTINEL }, { agent: "Iris" })).toContain("Iris could not be reached");
+    for (const status of [502, 503])
+      expect(AW.plainError({ status, detail: SENTINEL }, { agent: "Iris" })).toContain(
+        "Iris could not be reached",
+      );
     expect(AW.plainError({ status: 401 })).toMatch(/sign-in has expired/);
     expect(AW.plainError({ status: 504, detail: SENTINEL })).not.toContain("SENTINEL");
   });
@@ -628,7 +716,9 @@ describe("api", () => {
     }) as never;
     const error = await AW.createApi()("state").catch((e: unknown) => e);
     expect(error.status).toBe(0);
-    expect(AW.plainError(error)).toBe("The workspace could not reach Omnigent. Check your connection.");
+    expect(AW.plainError(error)).toBe(
+      "The workspace could not reach Omnigent. Check your connection.",
+    );
   });
 });
 
@@ -639,13 +729,24 @@ describe("theme", () => {
     window.history.replaceState(null, "", "/v1/iris/sessions/s1/ui/?theme=dark");
     AW.theme.init({ messageKey: "irisHostTheme" });
     expect(document.documentElement.dataset.theme).toBe("dark");
-    window.dispatchEvent(new MessageEvent("message", { origin: "https://evil.example", data: { irisHostTheme: "light" } }));
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        origin: "https://evil.example",
+        data: { irisHostTheme: "light" },
+      }),
+    );
     expect(document.documentElement.dataset.theme).toBe("dark");
-    window.dispatchEvent(new MessageEvent("message", { origin: location.origin, data: { otherKey: "light" } }));
+    window.dispatchEvent(
+      new MessageEvent("message", { origin: location.origin, data: { otherKey: "light" } }),
+    );
     expect(document.documentElement.dataset.theme).toBe("dark");
-    window.dispatchEvent(new MessageEvent("message", { origin: location.origin, data: { irisHostTheme: "light" } }));
+    window.dispatchEvent(
+      new MessageEvent("message", { origin: location.origin, data: { irisHostTheme: "light" } }),
+    );
     expect(document.documentElement.dataset.theme).toBe("light");
-    window.dispatchEvent(new MessageEvent("message", { origin: location.origin, data: { irisHostTheme: "red" } }));
+    window.dispatchEvent(
+      new MessageEvent("message", { origin: location.origin, data: { irisHostTheme: "red" } }),
+    );
     expect(document.documentElement.dataset.theme).toBe("light");
   });
 });
