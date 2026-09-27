@@ -78,7 +78,22 @@ function shape(root: Element) {
   };
 }
 
-const SAFE_TAGS = ["p", "br", "strong", "em", "code", "ul", "ol", "li"];
+const SAFE_TAGS = [
+  "p",
+  "br",
+  "strong",
+  "em",
+  "code",
+  "ul",
+  "ol",
+  "li",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+];
 
 // ------------------------------------------------------------ markdown safety
 
@@ -97,6 +112,52 @@ describe("markdown", () => {
     expect([...root.querySelectorAll("ul li")].map((li) => li.textContent)).toEqual(["one", "two"]);
     expect(root.querySelector("ol")?.getAttribute("start")).toBe("3");
     expect(AW.markdown("x")).toBeInstanceOf(DocumentFragment);
+  });
+
+  // QA 2026-09-26 F3: Iris answers in markdown tables, and they showed as pipes.
+  it("renders a pipe table with a header row, inline marks in cells, and nothing else", () => {
+    const root = holder(
+      AW.markdown(
+        "Here:\n\n| Rule | Hit rate |\n|:-----|-----:|\n| **report-cache** | 80% |\n| `adhoc` | 5% \\| low |\n\nDone.",
+      ),
+    );
+    const table = root.querySelector("table")!;
+    expect(table).not.toBeNull();
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual([
+      "Rule",
+      "Hit rate",
+    ]);
+    expect(
+      [...table.querySelectorAll("tbody tr")].map((tr) =>
+        [...tr.querySelectorAll("td")].map((td) => td.textContent),
+      ),
+    ).toEqual([
+      ["report-cache", "80%"],
+      ["adhoc", "5% | low"],
+    ]);
+    expect(table.querySelector("td strong")?.textContent).toBe("report-cache");
+    expect(table.querySelector("td code")?.textContent).toBe("adhoc");
+    expect([...root.querySelectorAll("p")].map((p) => p.textContent)).toEqual(["Here:", "Done."]);
+    expect(shape(root).attrs).toEqual([]);
+  });
+
+  it("pipes without a separator row stay as written", () => {
+    const root = holder(AW.markdown("| a | b |\n| c | d |"));
+    expect(root.querySelector("table")).toBeNull();
+    expect(root.textContent).toBe("| a | b || c | d |");
+  });
+
+  it("markup in a table cell stays text", () => {
+    const root = holder(
+      AW.markdown(
+        '| a | b |\n|---|---|\n| <img src=x onerror="window.pwned=1"> | <script>x</script> |',
+      ),
+    );
+    const { tags, attrs } = shape(root);
+    for (const tag of tags) expect(SAFE_TAGS).toContain(tag);
+    expect(attrs).toEqual([]);
+    expect(root.querySelector("td")?.textContent).toContain("<img");
+    expect((window as any).pwned).toBeUndefined();
   });
 
   it.each([

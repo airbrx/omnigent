@@ -509,6 +509,29 @@ td strong {
 .messages li.agent li + li {
   margin-top: 2px;
 }
+#messages li.agent table,
+.messages li.agent table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+#messages li.agent th,
+#messages li.agent td,
+.messages li.agent th,
+.messages li.agent td {
+  border: 1px solid var(--border);
+  padding: 3px 6px;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: normal;
+}
+#messages li.agent th,
+.messages li.agent th {
+  font-weight: 600;
+  background: var(--bg);
+}
 #messages li.agent code,
 .messages li.agent code {
   font-family: var(--mono);

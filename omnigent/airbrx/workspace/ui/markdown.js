@@ -1,7 +1,8 @@
 // Airbrx workspace kernel: the safe markdown subset agents write in chat.
 //
-// Bold, italics, inline code, bullet and numbered lists, and line breaks;
-// headings render as bold paragraphs. No links, no images, no HTML. Every
+// Bold, italics, inline code, bullet and numbered lists, pipe tables (a
+// header row, a separator row, then body rows; alignment is ignored) and line
+// breaks; headings render as bold paragraphs. No links, no images, no HTML. Every
 // piece is built as DOM nodes with text content, so any markup in the text
 // (which can quote customer data) shows as the characters it is and never
 // becomes an element. Anything outside the subset shows as written.
@@ -42,12 +43,73 @@
   const NUMBERED = /^\s*(\d{1,9})[.)]\s+(.*)$/;
   const HEADING = /^\s*#{1,6}\s+(.*)$/;
 
-  /** Text as paragraphs, lists and inline marks in a DocumentFragment. */
+  const SEPARATOR = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
+
+  /** A table row's cells: outer pipes dropped, `\|` is a literal pipe. */
+  function cells(line) {
+    let rest = line.trim();
+    if (rest.startsWith("|")) rest = rest.slice(1);
+    if (rest.endsWith("|") && !rest.endsWith("\\|")) rest = rest.slice(0, -1);
+    const out = [];
+    let cell = "";
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === "\\" && rest[i + 1] === "|") {
+        cell += "|";
+        i += 1;
+      } else if (rest[i] === "|") {
+        out.push(cell.trim());
+        cell = "";
+      } else cell += rest[i];
+    }
+    out.push(cell.trim());
+    return out;
+  }
+
+  /** A header line and a separator line with as many columns start a table. */
+  function tableStart(line, next) {
+    if (!line.includes("|") || next === undefined || !next.includes("|")) return 0;
+    if (!SEPARATOR.test(next)) return 0;
+    const width = cells(line).length;
+    return width > 0 && cells(next).length === width ? width : 0;
+  }
+
+  /** The table whose header is lines[start], and the index after its last row. */
+  function table(lines, start, width) {
+    const row = (tag, line) => {
+      const values = cells(line).slice(0, width);
+      while (values.length < width) values.push("");
+      return el("tr", {}, values.map((value) => el(tag, {}, inline(value))));
+    };
+    const body = el("tbody");
+    let end = start + 2;
+    for (; end < lines.length; end += 1) {
+      const line = lines[end];
+      if (!line.trim() || !line.includes("|")) break;
+      body.append(row("td", line));
+    }
+    return {
+      node: el("table", {}, el("thead", {}, row("th", lines[start])), body),
+      end,
+    };
+  }
+
+  /** Text as paragraphs, lists, tables and inline marks in a DocumentFragment. */
   function markdown(text) {
     const fragment = document.createDocumentFragment();
     let paragraph = null;
     let list = null;
-    for (const line of String(text ?? "").replace(/\r\n?/g, "\n").split("\n")) {
+    const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const width = tableStart(line, lines[index + 1]);
+      if (width) {
+        paragraph = null;
+        list = null;
+        const { node, end } = table(lines, index, width);
+        fragment.append(node);
+        index = end - 1;
+        continue;
+      }
       const bullet = BULLET.exec(line);
       const numbered = !bullet && NUMBERED.exec(line);
       if (bullet || numbered) {
