@@ -78,7 +78,22 @@ function shape(root: Element) {
   };
 }
 
-const SAFE_TAGS = ["p", "br", "strong", "em", "code", "ul", "ol", "li"];
+const SAFE_TAGS = [
+  "p",
+  "br",
+  "strong",
+  "em",
+  "code",
+  "ul",
+  "ol",
+  "li",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+];
 
 // ------------------------------------------------------------ markdown safety
 
@@ -97,6 +112,64 @@ describe("markdown", () => {
     expect([...root.querySelectorAll("ul li")].map((li) => li.textContent)).toEqual(["one", "two"]);
     expect(root.querySelector("ol")?.getAttribute("start")).toBe("3");
     expect(AW.markdown("x")).toBeInstanceOf(DocumentFragment);
+  });
+
+  // QA 2026-09-26 F3: Iris answers in markdown tables, and they showed as pipes.
+  it("renders a pipe table with a header row, inline marks in cells, and nothing else", () => {
+    const root = holder(
+      AW.markdown(
+        "Here:\n\n| Rule | Hit rate |\n|:-----|-----:|\n| **report-cache** | 80% |\n| `adhoc` | 5% \\| low |\n\nDone.",
+      ),
+    );
+    const table = root.querySelector("table")!;
+    expect(table).not.toBeNull();
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual([
+      "Rule",
+      "Hit rate",
+    ]);
+    expect(
+      [...table.querySelectorAll("tbody tr")].map((tr) =>
+        [...tr.querySelectorAll("td")].map((td) => td.textContent),
+      ),
+    ).toEqual([
+      ["report-cache", "80%"],
+      ["adhoc", "5% | low"],
+    ]);
+    expect(table.querySelector("td strong")?.textContent).toBe("report-cache");
+    expect(table.querySelector("td code")?.textContent).toBe("adhoc");
+    expect([...root.querySelectorAll("p")].map((p) => p.textContent)).toEqual(["Here:", "Done."]);
+    expect(shape(root).attrs).toEqual([]);
+  });
+
+  it("pipes without a separator row stay as written", () => {
+    const root = holder(AW.markdown("| a | b |\n| c | d |"));
+    expect(root.querySelector("table")).toBeNull();
+    expect(root.textContent).toBe("| a | b || c | d |");
+  });
+
+  // Review N3: the separator test was quadratic on long runs of spaces
+  // (about 3.5 s for 30,000). Agent text is untrusted input to this parser.
+  it("a long run of spaces in a would-be separator row is handled in linear time", () => {
+    const spaces = " ".repeat(30000);
+    const started = performance.now();
+    const broken = holder(AW.markdown(`| a |\n|-${spaces}x`));
+    const padded = holder(AW.markdown(`| a |\n|---${spaces}|\n| 1 |`));
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(broken.querySelector("table")).toBeNull();
+    expect(padded.querySelector("td")?.textContent).toBe("1");
+  });
+
+  it("markup in a table cell stays text", () => {
+    const root = holder(
+      AW.markdown(
+        '| a | b |\n|---|---|\n| <img src=x onerror="window.pwned=1"> | <script>x</script> |',
+      ),
+    );
+    const { tags, attrs } = shape(root);
+    for (const tag of tags) expect(SAFE_TAGS).toContain(tag);
+    expect(attrs).toEqual([]);
+    expect(root.querySelector("td")?.textContent).toContain("<img");
+    expect((window as any).pwned).toBeUndefined();
   });
 
   it.each([
@@ -259,6 +332,8 @@ const user = (id: string, text: string): Item => ({
 let items: Item[] = [];
 let hasMore = false;
 let itemsStatus = 200;
+// The native session's status, as GET /v1/sessions/s1 reports it.
+let sessionStatus = "idle";
 let fetchMock: ReturnType<typeof vi.fn>;
 // While set, item reads wait on it: lets a test stop a turn mid-poll.
 let gate: Promise<void> | null = null;
@@ -266,6 +341,12 @@ let gate: Promise<void> | null = null;
 function serveItems() {
   gate = null;
   fetchMock = vi.fn(async (input: string) => {
+    if (String(input) === "/v1/sessions/s1")
+      return Response.json({
+        id: "s1",
+        status: sessionStatus,
+        active_response_id: sessionStatus === "running" ? "resp_1" : null,
+      });
     if (!String(input).startsWith("/v1/sessions/s1/items"))
       throw new Error(`unexpected fetch ${input}`);
     if (gate) await gate;
@@ -302,6 +383,7 @@ describe("stream", () => {
     items = [];
     hasMore = false;
     itemsStatus = 200;
+    sessionStatus = "idle";
     serveItems();
   });
 
@@ -451,6 +533,59 @@ describe("stream", () => {
       setTimeout(resolve, 80);
     });
     expect(itemReads()).toBe(reads);
+  });
+
+  // QA 2026-09-26 B4: a reload while Iris was answering showed the question
+  // and never the answer. loadHistory reads the record once; nothing watched
+  // the turn that was still running, so its answer waited for another reload.
+  it("resumeTurn follows a turn that was running at load until it ends", async () => {
+    items = [user("u1", "How is the cache?")];
+    sessionStatus = "running";
+    const { list, stream } = streamFixture();
+    await stream.loadHistory();
+    expect(lines(list)).toEqual([["user", "How is the cache?"]]);
+    const done = stream.resumeTurn();
+    await waitFor(() =>
+      expect(list.querySelector("[role=status]")?.textContent).toBe("Iris is working…"),
+    );
+    items.push({ id: "f1", type: "function_call", name: "iris__iris_overview", arguments: "{}" });
+    await waitFor(() =>
+      expect(list.querySelector("[role=status]")?.textContent).toBe(
+        "Reading the tenant's traffic…",
+      ),
+    );
+    items.push(
+      { id: "o1", type: "function_call_output", output: "SECRET-EVIDENCE" },
+      assistant("a1", "Hit rate is 80%.\n\nMisses are mostly one rule."),
+    );
+    sessionStatus = "idle";
+    await expect(done).resolves.toEqual({ resumed: true, status: "idle" });
+    expect(lines(list)).toEqual([
+      ["user", "How is the cache?"],
+      ["agent", "Hit rate is 80%.Misses are mostly one rule."],
+    ]);
+    expect(list.querySelectorAll("li.agent > p")).toHaveLength(2);
+    expect(list.textContent).not.toContain("SECRET-EVIDENCE");
+    expect(list.querySelector("[role=status]")).toBeNull();
+    const reads = fetchMock.mock.calls.length;
+    await new Promise((resolve) => {
+      setTimeout(resolve, 80);
+    });
+    expect(fetchMock.mock.calls.length).toBe(reads);
+  });
+
+  it("resumeTurn does nothing when no turn is running, or the session cannot be read", async () => {
+    items = [user("u1", "hi"), assistant("a1", "hello")];
+    const { list, stream } = streamFixture();
+    await stream.loadHistory();
+    await expect(stream.resumeTurn()).resolves.toEqual({ resumed: false, status: "idle" });
+    fetchMock.mockImplementation(async () => Response.json({ detail: "no" }, { status: 502 }));
+    await expect(stream.resumeTurn()).resolves.toEqual({ resumed: false, status: "" });
+    expect(list.querySelector("[role=status]")).toBeNull();
+    expect(lines(list)).toEqual([
+      ["user", "hi"],
+      ["agent", "hello"],
+    ]);
   });
 
   it("stop() is idempotent", async () => {
@@ -807,5 +942,52 @@ describe("context", () => {
     toggle.reset();
     expect(toggle.included()).toBe(true);
     expect(AW.$("context")).toBeVisible();
+  });
+});
+
+// ------------------------------------------------------------ brand.css (B2)
+//
+// QA 2026-09-26 B2: brand.css styled the header's agent label as `.agent`
+// (a bold flex row). Chat answers are `li.agent`, so every answer was bold and
+// a multi-paragraph answer laid its paragraphs side by side, each a few pixels
+// wide. The header label is `.brand-agent` now; nothing in brand.css may style
+// a bare `.agent`.
+
+describe("brand.css and the chat's agent lines", () => {
+  const BRAND = readFileSync(join(KERNEL, "brand.css"), "utf8");
+
+  it("no rule styles a bare .agent class, which chat answers also carry", () => {
+    const bare = BRAND.replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("}")
+      .map((rule) => rule.split("{")[0])
+      .flatMap((selectors) => selectors.split(","))
+      .map((selector) => selector.trim())
+      .filter((selector) => /(^|[\s>+~])\.agent\b(?!-)/.test(selector));
+    expect(bare).toEqual([]);
+  });
+
+  it("a two-paragraph answer renders as block paragraphs, not bold", () => {
+    const style = document.createElement("style");
+    style.textContent = BRAND;
+    document.head.append(style);
+    try {
+      const list = document.createElement("ol");
+      list.id = "messages";
+      list.className = "messages";
+      document.body.append(list);
+      const transcript = AW.createTranscript({ list, agentName: "Iris" });
+      const li = transcript.add("agent", "First paragraph.\n\nSecond paragraph.");
+      const paragraphs = [...li.querySelectorAll(":scope > p")];
+      expect(paragraphs.map((p) => p.textContent)).toEqual([
+        "First paragraph.",
+        "Second paragraph.",
+      ]);
+      const computed = getComputedStyle(li);
+      expect(computed.display).not.toMatch(/flex|grid/);
+      expect(["700", "bold", "bolder"]).not.toContain(computed.fontWeight);
+      for (const p of paragraphs) expect(getComputedStyle(p).display).toBe("block");
+    } finally {
+      style.remove();
+    }
   });
 });

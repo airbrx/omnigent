@@ -4,7 +4,8 @@
 // be minutes. While it runs, the dock reads the native session's items (the
 // same record native chat shows) and puts the agent's interim messages and what
 // it is doing into the chat as they arrive. The same read rebuilds the chat on
-// load, so a reload does not lose the conversation.
+// load, so a reload does not lose the conversation, and resumeTurn follows a
+// turn that was still running when the page reloaded until its answer lands.
 //
 // What may reach the chat is a whitelist:
 //   message, role assistant   -> an agent line (its output_text parts)
@@ -171,7 +172,71 @@
       }
     }
 
-    return { sessionItems, markExisting, watchTurn, loadHistory };
+    /** The native session's status ("idle", "running", ...), or "" unread. */
+    async function sessionStatus() {
+      if (!sessionId) return "";
+      try {
+        const response = await fetch(
+          `/v1/sessions/${encodeURIComponent(sessionId)}`,
+          { credentials: "same-origin" },
+        );
+        if (!response.ok) return "";
+        const session = await response.json();
+        const status =
+          session && typeof session.status === "string" ? session.status : "";
+        // A response still open is a running turn whatever the label says.
+        return session && session.active_response_id && status === "idle"
+          ? "running"
+          : status;
+      } catch {
+        return "";
+      }
+    }
+
+    const running = (status) => status === "running" || status === "waiting";
+
+    /**
+     * Follow a turn that was already running when the page loaded (a reload
+     * mid-turn): stream it like watchTurn until the session stops running,
+     * then apply one last read so its answer shows without another reload.
+     * Call after loadHistory, which marks what was already there as shown.
+     * Resolves { resumed, status }: resumed is false when no turn was
+     * running, or the session could not be read. It gives up after
+     * `timeoutMs` (the adapter's 300 s turn deadline plus room), with status
+     * "timeout". Pass `running: true` when the caller already saw the turn
+     * running: it is then followed without a fresh check, so a turn that
+     * ended in between still gets its last read and its answer shows.
+     */
+    async function resumeTurn({ timeoutMs = 330000, running: seen = false } = {}) {
+      let status = seen ? "running" : await sessionStatus();
+      if (!running(status)) return { resumed: false, status };
+      const stop = watchTurn(null);
+      const until = Date.now() + timeoutMs;
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+        const now = await sessionStatus();
+        // A missed read keeps following; the next one catches up.
+        if (now && !running(now)) {
+          status = now;
+          break;
+        }
+        if (Date.now() >= until) {
+          status = "timeout";
+          break;
+        }
+      }
+      await stop();
+      return { resumed: true, status };
+    }
+
+    return {
+      sessionItems,
+      markExisting,
+      watchTurn,
+      loadHistory,
+      sessionStatus,
+      resumeTurn,
+    };
   }
 
   AW.createStream = createStream;

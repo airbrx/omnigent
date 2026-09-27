@@ -55,6 +55,9 @@
   // collect mode only: an out-of-date capture exists but is not drawn.
   let heldStale = false;
   let busy = false;
+  // False until this load's first read of state has answered: until then the
+  // page says it is reading, never "not collected yet" over a capture.
+  let loaded = false;
   let stopWatching = null;
   let currentTab = null;
   let accounts = { status: "idle", tenants: [], account: null, error: "" };
@@ -361,6 +364,9 @@
       head = "Refreshing an out-of-date capture";
       body =
         "Iris is collecting a fresh overview. The old capture is not shown until she has.";
+    } else if (!loaded) {
+      head = "Reading this session";
+      body = "Loading the chat and Iris's last capture of this tenant.";
     } else if (heldStale) {
       head = "The last capture is out of date";
       body =
@@ -376,7 +382,7 @@
         { class: "card empty-state" },
         el("div", { class: "section-title" }, head),
         el("p", {}, body),
-        collecting || refused
+        collecting || refused || !loaded
           ? null
           : el(
               "div",
@@ -438,9 +444,19 @@
   }
 
   function coverage(o, m) {
-    const days = (o.evidence || [])
-      .filter((e) => e && e.source_tool === "get_summary")
-      .slice()
+    // One chip per day of the period. A long session reads the same days
+    // again; the newest reading of a day wins (the report lists its evidence
+    // in the order Iris read it, so the last row for a day is the newest), and
+    // days outside the period (end exclusive) are not this capture's coverage.
+    const byDay = new Map();
+    for (const e of o.evidence || []) {
+      if (!e || e.source_tool !== "get_summary") continue;
+      const day = String(e.start_date || "");
+      if (m.start_date && day < String(m.start_date)) continue;
+      if (m.end_date && day >= String(m.end_date)) continue;
+      byDay.set(day, e);
+    }
+    const days = [...byDay.values()]
       .sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)))
       .slice(0, 31);
     return el(
@@ -627,6 +643,17 @@
           `${period(m)} · tenant ${o.tenant_id || "unknown"}`,
           "iris_overview",
         ),
+        // Element.append turns null into the text "null": spread, never null.
+        ...(earlierWindow(s)
+          ? [
+              el(
+                "p",
+                { class: "notice small" },
+                el("strong", {}, "An earlier window. "),
+                `Iris's newest overview in this session is for ${period(m)}, which she read for a comparison. It is not this tenant's current period. Collect a fresh overview to see the current period.`,
+              ),
+            ]
+          : []),
         kpis(m),
         coverage(o, m),
         el(
@@ -1615,6 +1642,7 @@
     $("synthetic").hidden = !isSynthetic();
     let text;
     if (!state && refused) text = "Iris's capture is not shown";
+    else if (!state && !loaded) text = "Reading this session…";
     else if (!state) text = "Iris has not read this tenant yet";
     else if (finite(state.captured_at))
       text = `Iris read this tenant ${when(state.captured_at)}`;
@@ -1751,7 +1779,55 @@
     stopWatching = stream.watchTurn(new Set());
   }
 
-  /** Draw a state from the adapter, unless it names another tenant. */
+  const DAY_MS = 86400000;
+  const dayOf = (date) => {
+    const at = Date.parse(`${date}T00:00:00Z`);
+    return /^\d{4}-\d{2}-\d{2}$/.test(String(date)) && Number.isFinite(at)
+      ? at
+      : null;
+  };
+
+  /**
+   * An overview Iris read for a window that ended well before she read it:
+   * for a comparison, not the tenant's current period. "Well before" is at
+   * least the window's own length, and never less than three days, so a
+   * current period that lags a day or two behind its capture is not one.
+   */
+  function earlierWindow(s) {
+    const m = metricsOf(s);
+    const start = dayOf(m.start_date);
+    const end = dayOf(m.end_date);
+    if (start === null || end === null || !s || !finite(s.captured_at))
+      return false;
+    const captured = Math.floor((s.captured_at * 1000) / DAY_MS) * DAY_MS;
+    return captured - end >= Math.max(end - start, 3 * DAY_MS);
+  }
+
+  /**
+   * The Overview stays on the tenant's current period. When a turn leaves an
+   * overview for an earlier window (a "compare with last week"), the one on
+   * screen is kept with its own time, and the rest of the new state is taken.
+   */
+  function keepCurrentPeriod(next) {
+    if (!state || !next || !next.overview) return next;
+    const shown = dayOf(metricsOf(state).end_date);
+    const incoming = dayOf(metricsOf(next).end_date);
+    if (shown === null || incoming === null || incoming >= shown) return next;
+    return {
+      ...next,
+      overview: state.overview,
+      rules: state.rules,
+      rule_effectiveness_meta: state.rule_effectiveness_meta,
+      captured_at: state.captured_at,
+      cache_age_seconds: state.cache_age_seconds,
+      stale: state.stale,
+      report_times: {
+        ...next.report_times,
+        iris_overview: state.report_times && state.report_times.iris_overview,
+      },
+    };
+  }
+
   /**
    * Draw a state from the adapter only when it is this session's tenant and
    * its numbers agree with each other. The adapter refuses another tenant's
@@ -1759,7 +1835,8 @@
    * answering: without readiness the session's tenant is unknown, so nothing
    * is drawn.
    */
-  function accept(next) {
+  function accept(incoming) {
+    const next = keepCurrentPeriod(incoming);
     const bound = readiness && readiness.tenant_id;
     const problems = bound
       ? captureProblems(next, bound)
@@ -1823,6 +1900,7 @@
       if (!shown.has(reply.text.trim())) transcript.add("agent", reply.text);
       // A turn can change what Iris has read; the answer does not carry state.
       void reread();
+      void loadReadiness();
     } catch (error) {
       await stopTurn();
       // Drop the unanswered question so the next turn does not resend it.
@@ -1882,6 +1960,8 @@
       return false;
     } finally {
       setBusy(false);
+      // A collection is a turn: what readiness can confirm may have changed.
+      void loadReadiness();
     }
   }
 
@@ -1913,19 +1993,56 @@
     renderHost();
   }
 
-  /** The first read of state on this load, and the only one that may collect. */
-  async function firstRead() {
+  /**
+   * The page loaded while a turn was running (a reload mid-chat). Draw what
+   * capture there is without collecting over the turn, follow the turn until
+   * it ends so its answer shows, then read state as a load would.
+   */
+  async function resumeRunningTurn() {
+    setBusy(true);
+    let result = { resumed: false, status: "" };
+    try {
+      await firstRead({ mayCollect: false });
+      // Seen running before the history was read: follow it even if it has
+      // ended since, so its answer gets one last read (review N1).
+      result = await stream.resumeTurn({ running: true });
+    } finally {
+      setBusy(false);
+    }
+    if (result.status === "failed")
+      transcript.add(
+        "error",
+        "Iris's turn that was running when this page loaded failed. Open native chat to see what happened. Nothing has been computed in her place.",
+      );
+    else if (result.status === "timeout")
+      transcript.add(
+        "system",
+        "Iris is still on the turn that was running when this page loaded. Open native chat to follow it.",
+      );
+    await loadReadiness();
+    // After the give-up the turn may still be running; collecting over it
+    // would only be refused as busy (review N2). Draw what there is.
+    await firstRead({ mayCollect: result.status !== "timeout" });
+  }
+
+  /**
+   * The first read of state on this load, and the only one that may collect
+   * (not while a turn from before the load is still running: `mayCollect`).
+   */
+  async function firstRead({ mayCollect = true } = {}) {
     let first = null;
     try {
       first = await api("state");
+      loaded = true;
     } catch (error) {
+      loaded = true;
       if (error.status !== 409) {
         notice(`Iris's capture could not be read: ${reason(error)}.`, true);
         render();
         return;
       }
     }
-    if (first === null) return autoCollect("first");
+    if (first === null) return mayCollect ? autoCollect("first") : render();
     if (!first.stale) {
       accept(first);
       render();
@@ -1935,10 +2052,10 @@
       // Shown with its label while one fresh collection runs behind it.
       accept(first);
       render();
-      return autoCollect("stale");
+      return mayCollect ? autoCollect("stale") : undefined;
     }
     heldStale = true;
-    return autoCollect("stale");
+    return mayCollect ? autoCollect("stale") : render();
   }
 
   // ------------------------------------------------------------ wiring --
@@ -1983,8 +2100,12 @@
   });
 
   (async () => {
+    // The status is read before the history: a turn that ends after this read
+    // is in the history, and one still running is followed (review N1).
+    const status = await stream.sessionStatus();
     await stream.loadHistory();
     await loadReadiness();
-    await firstRead();
+    if (status === "running" || status === "waiting") await resumeRunningTurn();
+    else await firstRead();
   })();
 })();

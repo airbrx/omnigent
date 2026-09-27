@@ -126,6 +126,8 @@ const captured =
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let items: unknown[] = [];
+// The native session's status, as GET /v1/sessions/s1 reports it.
+let sessionStatus = "idle";
 const listeners: [string, EventListener][] = [];
 const realAdd = window.addEventListener.bind(window);
 let apiOptions: unknown[] = [];
@@ -156,6 +158,12 @@ function serve(
       ADAPTER[scenario][path] ?? ADAPTER.investigated_and_proposed[path] ?? ADAPTER.captured[path];
     if (recorded) return replay(recorded);
     switch (path) {
+      case "/v1/sessions/s1":
+        return json({
+          id: "s1",
+          status: sessionStatus,
+          active_response_id: sessionStatus === "running" ? "resp_1" : null,
+        });
       case "items":
         return json({ data: items.slice().reverse(), has_more: false });
       case "cancel":
@@ -263,6 +271,7 @@ function deferred<T>() {
 beforeEach(() => {
   localStorage.clear();
   items = [];
+  sessionStatus = "idle";
   apiOptions = [];
   window.addEventListener = ((type: string, listener: EventListener, options?: unknown) => {
     listeners.push([type, listener]);
@@ -855,6 +864,76 @@ it("rule 12: a reload rebuilds the chat from the session, and names a refresh tu
   expect(messages().textContent).not.toContain("Call iris_overview");
 });
 
+// QA 2026-09-26 B4: reloaded while Iris was answering, the page showed the
+// question and never the answer, until one more reload. The reload now follows
+// the turn that is still running and shows its answer when it ends.
+const userItem = (id: string, text: string) => ({
+  id,
+  type: "message",
+  role: "user",
+  content: [{ type: "input_text", text }],
+});
+const assistantItem = (id: string, text: string) => ({
+  id,
+  type: "message",
+  role: "assistant",
+  content: [{ type: "output_text", text }],
+});
+
+it("B4: a reload mid-turn shows the answer when the turn ends, without another reload", async () => {
+  items = [userItem("u1", "How is the cache?")];
+  sessionStatus = "running";
+  start();
+  await waitFor(() =>
+    expect(document.getElementById("freshness")?.textContent).toMatch(/Iris read this tenant /),
+  );
+  await waitFor(() =>
+    expect(messages().querySelector("[role=status]")?.textContent).toBe("Iris is working…"),
+  );
+  // Iris is busy: the page does not offer a second turn over the running one.
+  expect(document.getElementById("send")).toBeDisabled();
+  items.push(
+    { id: "f1", type: "function_call", name: "iris__iris_overview", arguments: "{}" },
+    { id: "o1", type: "function_call_output", output: "SECRET-TOOL-OUTPUT" },
+    assistantItem("a1", "Hit rate is **80.0%**.\n\nOne rule causes most misses."),
+  );
+  sessionStatus = "idle";
+  await waitFor(() =>
+    expect(messages().querySelector("li.agent")?.textContent).toContain("One rule causes"),
+  );
+  expect(messages().querySelectorAll("li.agent > p")).toHaveLength(2);
+  expect(messages().textContent).not.toContain("SECRET-TOOL-OUTPUT");
+  await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
+  expect(messages().querySelector("[role=status]")).toBeNull();
+  expect(calls("chat")).toHaveLength(0);
+  expect(calls("refresh")).toHaveLength(0);
+});
+
+it("B4: a reload during the first collection waits for it, then draws its capture without collecting again", async () => {
+  items = [userItem("u0", "Call iris_overview and iris_audit for the selected tenant. Go.")];
+  sessionStatus = "running";
+  serve(
+    {
+      state: () =>
+        sessionStatus === "running"
+          ? detail("No session overview yet; use Refresh from host", 409)
+          : json(makeState()),
+    },
+    "fresh_session",
+  );
+  start();
+  await waitFor(() =>
+    expect(messages().querySelector("[role=status]")?.textContent).toBe("Iris is working…"),
+  );
+  expect(calls("refresh")).toHaveLength(0);
+  items.push(assistantItem("a0", "Collected."));
+  sessionStatus = "idle";
+  await waitFor(() => expect(view().textContent).toContain("80.0%"));
+  await waitFor(() => expect(document.getElementById("refresh")).not.toBeDisabled());
+  expect(calls("refresh")).toHaveLength(0);
+  expect(messages().querySelector("li.agent")?.textContent).toBe("Collected.");
+});
+
 it("rule 13: Stop calls cancel, stops streaming and clears the progress line", async () => {
   const held = deferred<Response>();
   serve({ chat: () => held.promise });
@@ -1262,4 +1341,146 @@ it("missing hit and coverage counts read as not measured, once", async () => {
   expect(view().textContent).toContain("Coverage not measured");
   expect(view().textContent).not.toContain("Not measured hits over Not measured requests");
   expect(view().textContent).not.toContain("Not measured / Not measured days");
+});
+
+// ------------------------------------------- QA 2026-09-26 F1 to F4 --
+
+it("F1: the readiness line follows the first collection without a reload", async () => {
+  let completed = false;
+  serve(
+    {
+      readiness: () =>
+        json({
+          ...(ADAPTER.fresh_session.readiness.body as Record<string, unknown>),
+          turn_completed_here: completed,
+        }),
+      refresh: () => {
+        completed = true;
+        return replay(ADAPTER.captured.refresh);
+      },
+    },
+    "fresh_session",
+  );
+  start();
+  await waitFor(() => expect(view().textContent).toContain("80.0%"));
+  await waitFor(() =>
+    expect(document.getElementById("host-status")?.textContent).toContain(
+      "Iris has completed a turn in this session",
+    ),
+  );
+  expect(document.getElementById("host-details")).not.toBeVisible();
+});
+
+it("F2: while the page loads it says so, and offers no first collection over a capture", async () => {
+  const held = deferred<Response>();
+  serve({ items: () => held.promise });
+  start();
+  expect(view().textContent).not.toContain("has not collected");
+  expect(screen.queryByRole("button", { name: "Collect the first overview" })).toBeNull();
+  expect(view().textContent).toContain("Reading this session");
+  expect(document.getElementById("freshness")?.textContent).not.toContain("has not read");
+  held.resolve(json({ data: [], has_more: false }));
+  await waitFor(() => expect(view().textContent).toContain("80.0%"));
+});
+
+/** An overview of the week before FULL's, as a comparison turn leaves it. */
+function earlierWindow(): State {
+  const earlier = makeState();
+  earlier.overview = {
+    ...earlier.overview,
+    metrics: {
+      ...earlier.overview.metrics,
+      ...structuredClone(FULL.investigation.previous),
+    },
+  };
+  return earlier;
+}
+
+it("F4: the coverage strip shows each day of the period once", async () => {
+  const state = makeState();
+  const summaries = state.overview.evidence.filter((e) => e.source_tool === "get_summary");
+  state.overview.evidence = [
+    ...state.overview.evidence,
+    // The same days read again later in the session, and days outside it.
+    ...structuredClone(summaries).map((e, i) => ({ ...e, id: `again-${i}` })),
+    { ...structuredClone(summaries[0]), id: "before", start_date: "2026-09-12" } as never,
+    { ...structuredClone(summaries[0]), id: "after", start_date: "2026-09-26" } as never,
+  ];
+  serve({ state: () => json(state) });
+  await mount();
+  const days = [...view().querySelectorAll(".coverage .day")].map((d) => d.textContent);
+  expect(days).toEqual(["09-19", "09-20", "09-21", "09-22", "09-23", "09-24", "09-25"]);
+  expect(view().textContent).toContain("7 / 7 days");
+});
+
+it("F4: an overview Iris read for an earlier window does not replace the current period", async () => {
+  let current = true;
+  serve({ state: () => json(current ? makeState() : earlierWindow()) });
+  await mount();
+  expect(view().textContent).toContain("2026-09-19 to 2026-09-26");
+  current = false;
+  ask("Compare with the previous week.");
+  await waitFor(() => expect(calls("state").length).toBeGreaterThanOrEqual(2));
+  await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
+  expect(view().textContent).toContain("2026-09-19 to 2026-09-26");
+  expect(view().textContent).not.toContain("2026-09-12 to 2026-09-19");
+});
+
+it("F4: on a load where the newest overview is an earlier window, it is labelled, not passed off as current", async () => {
+  serve({ state: () => json(earlierWindow()) });
+  await mount();
+  expect(view().textContent).toContain("2026-09-12 to 2026-09-19");
+  expect(view().textContent).toContain("not this tenant's current period");
+});
+
+/** Text nodes directly under an element that read "null" or "undefined". */
+function strayText(root: Element) {
+  return [...root.querySelectorAll("*")]
+    .concat(root)
+    .flatMap((e) => [...e.childNodes])
+    .filter((n) => n.nodeType === Node.TEXT_NODE && /^\s*(null|undefined)\s*$/.test(n.textContent!))
+    .map((n) => n.textContent);
+}
+
+it("F4 (review R1): a normal Overview has no stray 'null' text", async () => {
+  await mount();
+  expect(view().textContent).toContain("2026-09-19 to 2026-09-26");
+  expect(view().textContent).not.toContain("earlier window");
+  expect(strayText(view())).toEqual([]);
+  expect(view().textContent).not.toMatch(/\bnull\b/);
+});
+
+it("F4 (review N5): a partial current capture (3 of 7 days) is not labelled an earlier window", async () => {
+  serve({
+    state: () => json(withMetrics({ covered_days: 3, requested_days: 7, period_complete: false })),
+  });
+  await mount();
+  expect(view().textContent).toContain("3 / 7 days");
+  expect(view().textContent).toContain("Partial capture.");
+  expect(view().textContent).not.toContain("earlier window");
+  expect(view().textContent).not.toContain("not this tenant's current period");
+  expect(strayText(view())).toEqual([]);
+});
+
+it("B4 (review N1): a turn that ends while the page reads its history still shows its answer", async () => {
+  items = [userItem("u1", "How is the cache?")];
+  sessionStatus = "running";
+  let reads = 0;
+  serve({
+    items: () => {
+      const page = json({ data: items.slice().reverse(), has_more: false });
+      // The turn ends just after the history read: first read has only the question.
+      if ((reads += 1) === 1) {
+        items = [...items, assistantItem("a1", "It ended in between.")];
+        sessionStatus = "idle";
+      }
+      return page;
+    },
+  });
+  start();
+  await waitFor(() =>
+    expect(messages().querySelector("li.agent")?.textContent).toBe("It ended in between."),
+  );
+  await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
+  expect(messages().querySelector("[role=status]")).toBeNull();
 });
