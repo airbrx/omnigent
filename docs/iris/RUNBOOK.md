@@ -195,6 +195,15 @@ After deployment, verify actual native dispatch/downloads with the existing CLI 
 
 The verifier leaves its two sessions available for browser review. It records deployment revision, Iris revision, real session/mount, called tool, downloaded content hashes and cross-session 404. It does not claim browser QA or all-tool/model coverage from an HTTP result. Use the shared Iris `METAHARNESS-VERIFICATION.md` for the remaining cases. Capture actual hosted light/dark, narrow viewport, Tab/Shift+Tab/Escape, cancellation/restart, failure and download workflows for the PR demo; none has been marked passed from a standalone preview.
 
+## Standalone viewer
+
+`scripts/iris/dev.sh` (or `just iris-dev`) serves saved runs at
+`http://127.0.0.1:6790/iris` with dev sign-in and no agent: the packaged
+synthetic fixture plus `~/.iris-viewer/runs`, filled by
+`python -m omnigent.airbrx.iris.export` from the local stack. It binds loopback
+only, starts with a clean environment and never stops another listener on its
+port. See `docs/iris/STANDALONE.md`.
+
 ## Recovery and current limits
 
 - **Busy/cancel:** one workspace turn at a time. Cancel uses the native interrupt event. The tool subprocess is killed on cancellation or deadline; durable reservations are retained. Open native chat to inspect/retry.
