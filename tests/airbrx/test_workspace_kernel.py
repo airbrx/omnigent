@@ -8,6 +8,7 @@ an asset route may serve, and what the source must never contain.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -18,11 +19,9 @@ def test_the_allowlist_is_exactly_the_kernel_files() -> None:
     on_disk = {p.name for p in UI_ROOT.iterdir() if p.is_file()}
     assert set(KERNEL_ASSETS) == on_disk
     for name, media_type in KERNEL_ASSETS.items():
-        found = kernel_asset(name)
-        assert found is not None
-        path, served_as = found
+        path = kernel_asset(name)
+        assert isinstance(path, Path)
         assert path.is_file() and path.parent == UI_ROOT
-        assert served_as == media_type
         assert media_type == ("text/css" if name.endswith(".css") else "text/javascript")
 
 
@@ -73,3 +72,45 @@ def test_the_kernel_is_agent_agnostic(path) -> None:
     source = path.read_text(encoding="utf-8")
     for name in ("eva", "iris", "outreach", "lead"):
         assert not re.search(rf"\b{name}", source, re.IGNORECASE), name
+
+
+# --- The real kernel through the real Iris route (OMNIGENT_IRIS_UI=v2) ------------------
+#
+# No stand-in kernel: this is the merged `omnigent/airbrx/iris/routes.py` asset
+# route calling this package's `kernel_asset`, so a contract drift between the
+# two (as when kernel_asset returned a tuple the route wraps in Path) fails here.
+
+
+@pytest.mark.parametrize("name", sorted(KERNEL_ASSETS))
+def test_the_iris_v2_route_serves_every_kernel_file(monkeypatch, tmp_path, name) -> None:
+    from tests.airbrx.test_iris_workspace_fixtures import (
+        FILES,
+        SESSION,
+        IrisSession,
+        captured,
+        make_client,
+    )
+
+    monkeypatch.setenv("OMNIGENT_IRIS_UI", "v2")
+    client = make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    response = client.get(f"/v1/iris/sessions/{SESSION}/ui/kernel/{name}")
+    assert response.status_code == 200, response.text
+    assert response.content == (UI_ROOT / name).read_bytes()
+    assert response.headers["cache-control"] == "no-store"
+    expected = "text/css" if name.endswith(".css") else "javascript"
+    assert expected in response.headers["content-type"]
+
+
+@pytest.mark.parametrize("name", ["nope.js", "..%2Fassets.py", "", "DOM.JS"])
+def test_the_iris_v2_route_refuses_anything_else(monkeypatch, tmp_path, name) -> None:
+    from tests.airbrx.test_iris_workspace_fixtures import (
+        FILES,
+        SESSION,
+        IrisSession,
+        captured,
+        make_client,
+    )
+
+    monkeypatch.setenv("OMNIGENT_IRIS_UI", "v2")
+    client = make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    assert client.get(f"/v1/iris/sessions/{SESSION}/ui/kernel/{name}").status_code == 404

@@ -3,6 +3,7 @@
 An agent's asset route serves ``kernel/<name>`` by calling :func:`kernel_asset`.
 Only the names in :data:`KERNEL_ASSETS` resolve; anything else, including a path
 that tries to leave ``ui/``, answers ``None`` and the route returns 404.
+It returns the path only: the route wraps the result in ``Path`` itself.
 """
 
 from __future__ import annotations
@@ -28,13 +29,13 @@ KERNEL_ASSETS: dict[str, str] = {
 }
 
 
-def kernel_asset(name: str) -> tuple[Path, str] | None:
-    """The file and media type for kernel asset ``name``, or ``None``.
+def kernel_asset(name: str) -> Path | None:
+    """The file for kernel asset ``name``, or ``None`` when it is not served.
 
-    Serve the result with ``Cache-Control: no-store``, as the agent's own
-    ``app.js`` and ``style.css`` are.
+    The route (``omnigent/airbrx/iris/routes.py`` ``kernel_file``) serves the
+    path with ``Cache-Control: no-store``; its media type is the one listed in
+    :data:`KERNEL_ASSETS`, which is also what the extension implies.
     """
-    media_type = KERNEL_ASSETS.get(name)
-    if media_type is None:
+    if name not in KERNEL_ASSETS:
         return None
-    return UI_ROOT / name, media_type
+    return UI_ROOT / name

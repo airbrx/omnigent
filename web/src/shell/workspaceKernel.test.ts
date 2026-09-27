@@ -151,6 +151,38 @@ describe("markdown", () => {
     ).toBeNull();
   });
 
+  it.each([
+    ["a tab inside the scheme", "java\tscript:alert(1)"],
+    ["a newline inside the scheme", "java\nscript:alert(1)"],
+    ["a carriage return inside the scheme", "java\rscript:alert(1)"],
+    ["a NUL inside the scheme", "java\u0000script:alert(1)"],
+    ["mixed case and leading controls", "\u0001\t JaVaScRiPt:alert(1)"],
+    ["whitespace before the colon", "javascript\n:alert(1)"],
+  ])("el drops a script URL with %s, as the URL parser would read it", (_name, value) => {
+    for (const attr of ["href", "src", "HREF", "formaction"]) {
+      const node = AW.el("a", { [attr]: value }, "x");
+      expect(node.hasAttribute(attr)).toBe(false);
+    }
+  });
+
+  it.each(["ONCLICK", "OnClick", "onClick", "onmouseover"])(
+    "el never turns a %s string into an inline handler",
+    (key) => {
+      const node = AW.el("button", { [key]: "window.pwned = 1" }, "x");
+      expect(node.attributes).toHaveLength(0);
+      node.click();
+      node.dispatchEvent(new MouseEvent("mouseover"));
+      expect((window as any).pwned).toBeUndefined();
+    },
+  );
+
+  it("el still adds a function handler, whatever the key's case", () => {
+    const handler = vi.fn();
+    AW.el("button", { onClick: handler }).click();
+    AW.el("button", { onclick: handler }).click();
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
   it("el drops script URLs and string handlers", () => {
     const a = AW.el("a", { href: " javascript:alert(1)", onclick: "alert(1)" }, "x");
     expect(a.hasAttribute("href")).toBe(false);
