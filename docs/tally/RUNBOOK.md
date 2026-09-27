@@ -34,9 +34,10 @@ report, shows as a dash with the reason, never as zero.
 
 ## Tools
 
-One server, `portal`, a Streamable HTTP MCP endpoint served by the portal
-sidecar on the coordinator at `http://127.0.0.1:4318/mcp` (exactly `/mcp`, no
-trailing slash; POST JSON-RPC, 405 on GET, `Authorization: Bearer <token>`).
+One server, `portal`, a Streamable HTTP MCP endpoint served by the gateway
+router portal on Abram's Mac at `http://127.0.0.1:4319/mcp`, loopback on the
+same Mac as her host (exactly `/mcp`, no trailing slash; POST JSON-RPC, 405 on
+GET, `Authorization: Bearer <token>`).
 
 | Tool | Arguments |
 |---|---|
@@ -54,11 +55,16 @@ reach her CLI.
 
 ## Configuration at deploy time
 
-On the coordinator (`/etc/omnigent/server.env`):
+On the coordinator, `/etc/omnigent/server.env` carries only non-secret values:
 
 ```
 OMNIGENT_TALLY_CONFIG=/etc/omnigent/tally.json
+TALLY_PORTAL_MCP_URL=http://127.0.0.1:4319/mcp
+TALLY_PORTAL_MCP_TOKEN=placeholder-for-bundle-validation-only-runners-expand-their-own
 ```
+
+The last two exist so the bundle validates on the coordinator; the placeholder
+is not a token and never reaches a runner, which expands its own values.
 
 `/etc/omnigent/tally.json`:
 
@@ -66,9 +72,11 @@ OMNIGENT_TALLY_CONFIG=/etc/omnigent/tally.json
 [
   {
     "label": "live",
-    "users": ["<omnigent user id>"],
-    "base_url": "http://127.0.0.1:4318",
-    "token_ref": "env:AIRBRX_TALLY_MCP_TOKEN"
+    "users": ["aerickson@airbrx.com"],
+    "base_url": "http://127.0.0.1:4319",
+    "token_ref": "keychain:tally-portal-token",
+    "host_id": "3d59945073fa4bb4beee19cec305e45f",
+    "workspace": "/Users/abramerickson/.omnigent-tally-host/workspace"
   }
 ]
 ```
@@ -78,13 +86,10 @@ Allowed keys: `users`, `host_id`, `base_url`, `token_ref`, `label`, `fixture`,
 Without `OMNIGENT_TALLY_CONFIG` Tally is inert: not registered, catalog empty,
 readiness 404. Unbinding is the rollback.
 
-On whichever machine launches her runner (see the next section), the token
-reference must resolve and must be allowed:
-
-```
-AIRBRX_TALLY_MCP_TOKEN=<the portal read token, never in a bundle or plist>
-OMNIGENT_HOST_SECRET_REFS=env:AIRBRX_TALLY_MCP_TOKEN
-```
+`base_url` is loopback *on the host*, not on the coordinator: the runner on the
+Mac dials it. The reference `keychain:tally-portal-token` resolves on the Mac,
+and only because her host lists it in `OMNIGENT_HOST_SECRET_REFS` (next
+section).
 
 The runner receives `TALLY_PORTAL_MCP_URL` (value) and `TALLY_PORTAL_MCP_TOKEN`
 (resolved from the reference); the bundle expands those two, on the runner only
@@ -92,8 +97,13 @@ The runner receives `TALLY_PORTAL_MCP_URL` (value) and `TALLY_PORTAL_MCP_TOKEN`
 
 ## Where Tally runs
 
-Tally runs on the coordinator, next to the portal (Abram, September 26, 2026).
-What the code needs for that, verified:
+Tally runs on her own Omnigent host on Abram's Mac, beside the portal she
+reads, as Iris and Eva do (Abram, September 26, 2026: "Tally should run
+locally where we develop"). The coordinator registers her and runs no agents.
+Model access is the Mac's own Claude subscription login, as for Iris and Eva;
+no model token is injected anywhere.
+
+### Why a host is needed at all (verified in code)
 
 1. `launch_env` (`omnigent/airbrx/tally/runtime.py`) returns the URL and the
    token *reference* for a binding with or without `host_id`. `host_id` plays
@@ -109,70 +119,101 @@ What the code needs for that, verified:
    (`omnigent/host/connect.py:988`, applied at `connect.py:2185`), only if the
    host's `OMNIGENT_HOST_SECRET_REFS` (`connect.py:971`) lists it.
 
-The consequence: **a session created with no `host_id` and no managed sandbox
-gets no runner at all.** Session create launches one only when a host is named
+So **a session created with no `host_id` and no managed sandbox gets no runner
+at all.** Session create launches one only when a host is named
 (`routes_core.py:723`) or `host_type` is `managed` (`routes_core.py:709`), and
 dispatch refuses a session with no bound runner
-(`omnigent/runner/routing.py:134`, `:183`). The coordinator process does not
-run turns itself. Eva's hostless shape has the same property; its config
-docstring's "the coordinator dials the app itself" is about the readiness
-probe, not about who runs turns.
+(`omnigent/runner/routing.py:134`, `:183`). The binding therefore names her
+host, and the landing creates sessions on it. Because the binding has a
+`host_id`, `is_host_local()` treats the loopback `base_url` as another
+machine's and the coordinator readiness probe steps aside; check the portal on
+the Mac instead (`curl -i http://127.0.0.1:4319/mcp`, expect 405).
 
-So "Tally runs on the coordinator" needs an execution host process
-(`omnigent host`) running on the coordinator box, owned by the user who opens
-Tally. Two shapes work with this code, and neither needs a code change:
+### The host (Eva's bridge pattern)
 
-- **Name that host in the binding** (`"host_id": "<coordinator host id>"`,
-  `"workspace": "/abs/dir"`). The landing then creates sessions on it and the
-  reference resolves there. `base_url` stays `http://127.0.0.1:4318`, which is
-  the coordinator's loopback because the host is on the coordinator. Note that
-  `is_host_local()` then reports the loopback as another machine's and the
-  coordinator readiness probe steps aside; check with `curl -i
-  http://127.0.0.1:4318/mcp` (expect 405) on the box instead.
-- **Keep the binding hostless** and create sessions on that host another way
-  (for example the native new-session picker). The workspace adapter accepts a
-  hostless binding on any host (`workspace.py:436`, Eva's rule). The landing's
-  Start, as copied from Eva, creates a hostless session for a hostless
-  binding, which will not run.
+A user LaunchAgent, `ai.omnigent.tally-host`
+(`~/Library/LaunchAgents/ai.omnigent.tally-host.plist`, `KeepAlive`,
+`RunAtLoad`), runs `~/.omnigent-tally-host/tally_host.sh`, which exports:
 
-**Decided: the first shape.** An Omnigent host runs on the coordinator, owned
-by Abram, and the binding names it.
+```
+OMNIGENT_HOST_ID=<contents of ~/.omnigent-tally-host/host_id>   # 3d59945073fa4bb4beee19cec305e45f
+OMNIGENT_HOST_NAME="Abrams-MacBook-Air.local (tally)"
+OMNIGENT_DATA_DIR=~/.omnigent-tally-host/data
+OMNIGENT_CONFIG_HOME=~/.omnigent-tally-host
+OMNIGENT_HOST_SECRET_REFS=keychain:tally-portal-token
+```
 
-### Setting up the coordinator host (once, as `ubuntu`)
+and execs `omnigent host --server https://omnigent.airbrx.ai
+--non-interactive`. No `--auto-upgrade`: the Iris host upgrades the shared
+install. Neither the script nor the plist holds a secret; the host resolves
+the keychain reference itself at runner launch.
 
-Modeled on `deploy/omnigent-devbox/bootstrap/omnigent-host.service`. Two steps
-are Abram's alone because they are his credentials: the JumpCloud sign-in and
-the Claude token. Nothing below prints a secret.
+### The portal
 
-1. Check memory first: the coordinator is a t3.small, and a runner plus the
-   `claude` CLI adds to the server's footprint (`free -m`).
-2. Abram creates a Claude token on his own machine with `claude setup-token`.
-3. Create `/home/ubuntu/.config/omnigent/host.env`, mode 600:
+A second user LaunchAgent, `ai.airbrx.gateway-portal`, runs the gateway router
+portal on `127.0.0.1:4319` from a copy at `~/.airbrx-portal/app`, because
+launchd cannot read `~/Documents` (it syncs through iCloud).
+`~/.airbrx-portal/sync.sh` refreshes the copy: code and evidence only, never
+connection files. The portal reads `AIRBRX_TALLY_MCP_TOKEN` from the keychain
+entry `tally-portal-token` (the omnigent secret store) at start, so host and
+portal share one entry and cannot drift.
 
-   ```
-   OMNIGENT_DATA_DIR=/home/ubuntu/.omnigent-host
-   OMNIGENT_HOST_ID=<uuid4 hex, generated once>
-   OMNIGENT_HOST_NAME=omnigent-coordinator
-   CLAUDE_CODE_OAUTH_TOKEN=<from step 2, pasted by Abram>
-   AIRBRX_TALLY_MCP_TOKEN=<copied from /etc/omnigent/gateway.env on the box>
-   OMNIGENT_HOST_SECRET_REFS=env:AIRBRX_TALLY_MCP_TOKEN
-   ```
+### Setting it up (once, on the Mac)
 
-   Keep it separate from `/etc/omnigent/server.env`; the server does not read it.
-4. Abram signs in once, so the host belongs to him (a token reaches only sessions
-   on a host its user owns; never start it with `--shared`):
-   `OMNIGENT_DATA_DIR=/home/ubuntu/.omnigent-host /opt/omnigent/.venv/bin/omnigent login https://omnigent.airbrx.ai`
-5. A systemd user unit `omnigent-host.service` (with `loginctl enable-linger ubuntu`):
-   `ExecStart=/opt/omnigent/.venv/bin/omnigent host --server https://omnigent.airbrx.ai --non-interactive`,
-   `EnvironmentFile=/home/ubuntu/.config/omnigent/host.env`, `Restart=always`,
-   `HOME`, `USER`, `LOGNAME` and `PATH` set explicitly. No `--auto-upgrade`: the
-   host runs the server's own install, so a gated deploy upgrades both.
-6. Confirm the host is online (`GET /v1/hosts`), then add
-   `"host_id": "<OMNIGENT_HOST_ID>", "workspace": "/home/ubuntu/tally-workspace"`
-   to Tally's binding in `/etc/omnigent/tally.json` and restart `omnigent-server`.
-7. On the box: `curl -i http://127.0.0.1:4318/mcp` answers 405. Then open Tally
-   from the drawer and ask "what is blocked right now".
+Nothing below prints a secret.
 
+1. Store the portal read token in the keychain through the omnigent secret
+   store under the name `tally-portal-token` (value pasted by Abram, never on
+   a command line that lands in shell history).
+2. Create `~/.omnigent-tally-host/` with `host_id` (a uuid4 hex, generated
+   once), `data/`, `workspace/` and the wrapper `tally_host.sh` above, then
+   install and load `ai.omnigent.tally-host`
+   (`launchctl bootstrap gui/$UID ~/Library/LaunchAgents/ai.omnigent.tally-host.plist`).
+   The host signs in with Abram's Omnigent login so it belongs to him (a
+   reference reaches only sessions on a host its user owns; never `--shared`).
+3. Copy the portal with `~/.airbrx-portal/sync.sh`, then load
+   `ai.airbrx.gateway-portal` the same way. Check
+   `curl -i http://127.0.0.1:4319/mcp` answers 405.
+4. Confirm the host is online (`GET /v1/hosts`).
+5. On the coordinator, write the binding and `server.env` values above and
+   restart `omnigent-server`.
+6. Open Tally from the drawer and ask "what is blocked right now".
+
+### Operating it
+
+- **Rotate the token:** store a new value under `tally-portal-token`, then
+  restart both agents so each rereads it:
+  `launchctl kickstart -k gui/$UID/ai.airbrx.gateway-portal` and
+  `launchctl kickstart -k gui/$UID/ai.omnigent.tally-host`.
+- **Update the portal:** `~/.airbrx-portal/sync.sh`, then kickstart
+  `ai.airbrx.gateway-portal`.
+- **Restart:** `launchctl kickstart -k gui/$UID/<label>`.
+- **Stop:** `launchctl bootout gui/$UID/<label>`.
+- **Logs:** the host's is `~/.omnigent-tally-host/data/logs/launchd.log`.
+
+**Availability is a laptop's.** Both agents live in Abram's GUI domain: up
+while he is logged in, not after a reboot until he logs in. While the Mac
+sleeps Tally has no host, so a session started then finds no runner; the host
+reconnects on wake. As with Eva, the first session after a host restart can
+fail once on a cold zygote fork; retry before diagnosing. Without the portal,
+Tally has a host and no tools, so check the 405 above before the token.
+
+### Verified, 2026-09-26
+
+- Her first answer came from real portal data.
+- Her CLI init listed only the `omnigent` MCP server: no claude.ai connectors,
+  no `Skill`.
+- Omnigent framework `sys_*` tools are offered to her but denied by her
+  `tool_boundary` server-side, before execution.
+
+### Tried and retired: a coordinator host
+
+The same night, Tally first ran on an Omnigent host on the coordinator itself,
+next to a portal sidecar there. It was retired within hours: it needed a
+separate Claude login on the server (a `CLAUDE_CODE_OAUTH_TOKEN` in a host env
+file), which is not the Iris and Eva pattern and would have broken the
+coordinator's "no model keys, runs no agents" rule. Nothing of it remains in
+the live setup.
 
 ## Tool results
 
