@@ -135,26 +135,14 @@ let apiOptions: unknown[] = [];
 let errorOptions: unknown[] = [];
 let resumed = 0;
 
-// What Omnigent answers at api/host for session s1 (section 2.1). SV1's
-// captured `host` body, once irisAdapter.json has one, wins over this.
-const FRAMED_HOST = {
-  schema: 1,
-  host_label: "Omnigent",
-  identity: { kind: "omnigent", email: null, sign_in: null },
-  agent: { connected: true, why: null },
-  data: { source: "session", scope_id: "s1", tenant_id: TENANT, week: null, weeks: null },
-  links: {
-    native_chat: "/c/s1",
-    items: "/v1/sessions/s1/items",
-    session: "/v1/sessions/s1",
-    files: "/v1/sessions/s1/resources/files",
-    catalog: "/v1/iris",
-    account: "/v1/iris/account",
-    tenant_home: null,
-    week_page: null,
-  },
-  open_tenant: "postMessage",
-};
+// What Omnigent answers at api/host for session s1 (section 2.1), captured
+// from SV1's real handler by test_iris_workspace_fixtures.py.
+interface HostBody {
+  links: Record<string, string | null>;
+  data: Record<string, unknown>;
+  [key: string]: unknown;
+}
+const FRAMED_HOST = ADAPTER.host_200.host.body as HostBody;
 
 function pathOf(input: unknown) {
   const raw = input instanceof Request ? input.url : String(input);
@@ -251,6 +239,9 @@ function start(hash = "", onStale = DEFAULT_ON_STALE, page = "/v1/iris/sessions/
   document.body.innerHTML = BODY;
   document.body.className = "";
   document.body.dataset.pollMs = "10";
+  // api/host's retry backoff and deadline, shortened as pollMs is.
+  document.body.dataset.hostRetryMs = "5";
+  document.body.dataset.hostTimeoutMs = "300";
   if (onStale) document.body.dataset.onStale = onStale;
   else delete document.body.dataset.onStale;
   for (const source of kernelSources) (0, eval)(source);
@@ -1890,12 +1881,9 @@ it("host: with api/host missing, a fresh session still collects exactly once", a
 
 it.each([
   ["a 500", () => detail("Traceback: SENTINEL-host-9d", 500)],
-  [
-    "a network error",
-    () => {
-      throw new TypeError("Failed to fetch");
-    },
-  ],
+  ["a 401", () => detail("Not signed in", 401)],
+  ["a 403", () => detail("You may not open this session", 403)],
+  ["an unreadable body", () => new Response("<html>not json</html>", { status: 200 })],
   ["a descriptor of another schema", () => json({ ...FRAMED_HOST, schema: 2 })],
   [
     "a descriptor that does not say whether the agent is connected",
@@ -1913,10 +1901,188 @@ it.each([
   await new Promise((r) => {
     setTimeout(r, 40);
   });
+  // Asked once: none of these is a blip that asking again could clear.
   expect(fetchMock.mock.calls.map(([input]) => pathOf(input))).toEqual(["api/host"]);
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   expect(document.getElementById("refresh")).toBeDisabled();
   expect(document.getElementById("send")).toBeDisabled();
   expect(view().querySelector(".kpi")).toBeNull();
+});
+
+// ------------------------------------------ B2: one blip is not a verdict --
+
+const hostCalls = () => fetchMock.mock.calls.filter(([input]) => pathOf(input) === "api/host");
+
+it.each([
+  ["a 502", () => detail("Bad Gateway", 502)],
+  ["a 503", () => detail("Service Unavailable", 503)],
+  ["a 504", () => detail("Gateway Timeout", 504)],
+  [
+    "a network error",
+    () => {
+      throw new TypeError("Failed to fetch");
+    },
+  ],
+])("B2: api/host answering %s once is asked again, and the page works", async (_, blip) => {
+  let asked = 0;
+  serve({ host: (init) => ((asked += 1) === 1 ? (blip as Route)(init) : json(FRAMED_HOST)) });
+  await mount();
+  expect(hostCalls()).toHaveLength(2);
+  expect(view().textContent).toContain("80.0%");
+  expect(view().textContent).not.toContain("could not tell which host");
+});
+
+it("B2: a hung api/host read is abandoned on its own short deadline and asked again", async () => {
+  let asked = 0;
+  serve({
+    host: (init) =>
+      (asked += 1) === 1
+        ? new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("aborted", "AbortError")),
+            );
+          })
+        : json(FRAMED_HOST),
+  });
+  await mount();
+  expect(hostCalls()).toHaveLength(2);
+});
+
+it("B2: when the blips do not clear, the page stops with Try again, which asks again", async () => {
+  let down = true;
+  serve({ host: () => (down ? detail("Service Unavailable", 503) : json(FRAMED_HOST)) });
+  start();
+  const again = await screen.findByRole("button", { name: "Try again" });
+  expect(view().textContent).toContain("The workspace could not tell which host it is running in.");
+  // The first read and three more, then no more until asked.
+  expect(hostCalls()).toHaveLength(4);
+  expect(fetchMock.mock.calls.map(([input]) => pathOf(input))).toEqual(Array(4).fill("api/host"));
+  expect(document.getElementById("send")).toBeDisabled();
+  down = false;
+  fireEvent.click(again);
+  await waitFor(() => expect(view().textContent).toContain("80.0%"));
+  await waitFor(() => expect(document.getElementById("refresh")).not.toBeDisabled());
+  expect(hostCalls()).toHaveLength(5);
+});
+
+// ------------------------------------ B1: every link stays on this origin --
+
+/** Every URL the app fetched, exactly as it asked for it. */
+const rawCalls = () =>
+  fetchMock.mock.calls.map(([input]) => (input instanceof Request ? input.url : String(input)));
+
+const withLinks = (links: Record<string, string | null>) => ({
+  ...FRAMED_HOST,
+  links: { ...FRAMED_HOST.links, ...links },
+});
+
+it.each([
+  ["native_chat", "javascript:alert(document.domain)"],
+  ["native_chat", "https://evil.example/c/s1"],
+  ["catalog", "https://evil.example/v1/iris"],
+  ["catalog", "//evil.example/v1/iris"],
+  ["files", "https://evil.example/files"],
+  ["files", "//evil.example/files"],
+  ["files", "/\\evil.example/files"],
+  ["account", "http:/evil.example/account"],
+  ["items", "data:application/json,{}"],
+  ["session", " //evil.example/s1"],
+  ["tenant_home", "//evil.example/{tenant_id}/"],
+  ["week_page", "https://evil.example/{tenant_id}/{week}/"],
+])("B1: a descriptor whose %s is %s is refused, and nothing leaves", async (name, link) => {
+  serve({ host: () => json(withLinks({ [name]: link })) });
+  start("#accounts");
+  await waitFor(() =>
+    expect(view().textContent).toContain(
+      "The workspace could not tell which host it is running in.",
+    ),
+  );
+  await new Promise((r) => {
+    setTimeout(r, 40);
+  });
+  expect(rawCalls()).toEqual(["api/host"]);
+  const native = document.getElementById("native-chat")!;
+  expect(native).not.toBeVisible();
+  expect(native.getAttribute("href")).not.toMatch(/evil|javascript/);
+  expect(document.getElementById("send")).toBeDisabled();
+});
+
+it("B1: an open redirect through week_page is refused before the page draws a picker", async () => {
+  const host = viewerHost("2026-W38");
+  host.links.week_page = "//evil.example/{tenant_id}/{week}/ui/";
+  serveViewer("2026-W38", {}, host);
+  const nav = captureNavigation();
+  startViewer("2026-W38");
+  await waitFor(() =>
+    expect(view().textContent).toContain(
+      "The workspace could not tell which host it is running in.",
+    ),
+  );
+  expect(document.getElementById("week")).not.toBeVisible();
+  nav.stop();
+  expect(nav.went).toEqual([]);
+  expect(rawCalls()).toEqual(["api/host"]);
+});
+
+it("B1: same-origin relative and rooted links are accepted", async () => {
+  serveViewer("2026-W38");
+  await mountViewer("2026-W38");
+  expect(view().textContent).toContain("80.0%");
+});
+
+it("B1: a week whose name would leave the page is never navigated to", async () => {
+  const host = viewerHost("2026-W38");
+  host.data.weeks = [
+    ...host.data.weeks,
+    {
+      week: "//evil.example",
+      captured_at: 1,
+      start_date: "2026-01-01",
+      end_date: "2026-01-08",
+      period_complete: true,
+      readable: true,
+    },
+  ];
+  // A template whose only placeholder is the week, so the week is the path.
+  host.links.week_page = "/{week}";
+  serveViewer("2026-W38", {}, host);
+  await mountViewer("2026-W38", "#rules");
+  const nav = captureNavigation();
+  fireEvent.change(screen.getByRole("combobox", { name: "Week" }), {
+    target: { value: "//evil.example" },
+  });
+  nav.stop();
+  // Encoded, the week stays a path segment on this origin.
+  expect(nav.went).toEqual(["/%2F%2Fevil.example#rules"]);
+  expect(new URL(nav.went[0], window.location.href).origin).toBe(window.location.origin);
+});
+
+// ------------------------------------------------------- review nits --
+
+it("N1: a 404 from api/host outside an Omnigent session path stops, and is not Omnigent", async () => {
+  serveViewer("2026-W38", { "api/host": () => detail("Not Found", 404) });
+  startViewer("2026-W38");
+  await waitFor(() =>
+    expect(view().textContent).toContain(
+      "The workspace could not tell which host it is running in.",
+    ),
+  );
+  await new Promise((r) => {
+    setTimeout(r, 40);
+  });
+  expect(rawCalls()).toEqual(["api/host"]);
+  expect(document.getElementById("send")).toBeDisabled();
+});
+
+it("N2: agent off, the Revise the proposal chip is drawn disabled and writes nothing", async () => {
+  serveViewer();
+  await mountViewer("2026-W38", "#proposals");
+  const revise = within(view()).getByRole("button", { name: "Revise the proposal" });
+  expect(revise).toBeDisabled();
+  expect(revise).toHaveAttribute("title", "Agent not connected");
+  expect(revise).toHaveAttribute("data-agent-off");
+  fireEvent.click(revise);
+  expect((document.getElementById("input") as HTMLTextAreaElement).value).toBe("");
 });
 
 it("host: the error wording names the host the descriptor names", async () => {

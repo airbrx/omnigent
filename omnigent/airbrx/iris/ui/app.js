@@ -25,6 +25,13 @@
   // or collected; when it cannot be read the page says so and stops.
   let HOST = null;
   let hostError = "";
+  // True when api/host kept failing in a way asking again could clear.
+  let hostRetry = false;
+  // api/host gets its own short deadline and a few retries on a blip (a
+  // deploy restarts the coordinator); body data attributes shorten them in tests.
+  const HOST_TIMEOUT_MS = Number(document.body.dataset.hostTimeoutMs) || 12000;
+  const HOST_RETRY_MS = Number(document.body.dataset.hostRetryMs) || 500;
+  const HOST_RETRIES = 3;
   // The session (framed) or saved run (standalone) this page shows.
   let SESSION_ID = "";
   // False when the host has no agent: no turn is ever sent (rule V1).
@@ -390,6 +397,30 @@
     if (hostError) {
       head = NO_HOST;
       body = hostError;
+      if (hostRetry) {
+        container.append(
+          el(
+            "div",
+            { class: "card empty-state" },
+            el("div", { class: "section-title" }, head),
+            el("p", {}, body),
+            el(
+              "div",
+              { class: "asks" },
+              el(
+                "button",
+                {
+                  type: "button",
+                  class: "primary",
+                  onclick: () => void boot(),
+                },
+                "Try again",
+              ),
+            ),
+          ),
+        );
+        return;
+      }
     } else if (refused) {
       head = "This capture is not shown";
       body = refused;
@@ -1024,9 +1055,13 @@
               {
                 type: "button",
                 class: "chip",
-                "data-busy-off": true,
-                disabled: busy,
-                onclick: () => draft("Revise the proposal: "),
+                "data-busy-off": CONNECTED,
+                "data-agent-off": !CONNECTED,
+                title: CONNECTED ? undefined : AGENT_OFF,
+                disabled: busy || !CONNECTED,
+                onclick: () => {
+                  if (CONNECTED) draft("Revise the proposal: ");
+                },
               },
               "Revise the proposal",
             ),
@@ -1550,7 +1585,7 @@
   }
 
   async function listDownloads(list) {
-    if (!HOST) return;
+    if (!HOST || !sameOrigin(HOST.links.files)) return;
     const filesUrl = HOST.links.files;
     list.replaceChildren("Reading the session's files.");
     try {
@@ -1604,6 +1639,7 @@
   // ----------------------------------------------------------- accounts --
 
   async function getJson(path) {
+    if (!sameOrigin(path)) throw new Error("not this origin");
     const response = await fetch(path, { credentials: "same-origin" });
     if (!response.ok) {
       const error = new Error(`HTTP ${response.status}`);
@@ -1873,8 +1909,25 @@
     );
   }
 
+  // A descriptor link: a path on this origin, rooted ("/v1/iris") or relative
+  // ("api/items"). Never a scheme, "//host", a backslash, space or control.
+  const LINK = /^(?:\/(?![/\\])|[A-Za-z0-9_.~-])[^\\\s\u0000-\u001f\u007f]*$/;
+
+  /** Whether `link` stays on this page's origin (STANDALONE_VIEWER.md 2.1). */
+  function sameOrigin(link) {
+    if (typeof link !== "string" || !LINK.test(link)) return false;
+    // A colon before the first "/", "?" or "#" is a scheme.
+    if (/^[^/?#]*:/.test(link)) return false;
+    try {
+      return new URL(link, location.href).origin === location.origin;
+    } catch {
+      return false;
+    }
+  }
+
   /** Go to another page of this host, as following a link would. */
   function navigate(url) {
+    if (!sameOrigin(url)) return;
     const link = el("a", { href: url, hidden: true });
     document.body.append(link);
     link.click();
@@ -1894,11 +1947,18 @@
    * Today's Omnigent, for a server from before api/host existed: the session
    * in the path, its native record, and an agent that is connected.
    */
+  // TODO(SV1): delete this fallback once SV1's api/host is deployed to
+  // omnigent-airbrx-server; after that a 404 from api/host means stop.
   function omnigentHost() {
-    const id = decodeURIComponent(
-      (/\/iris\/sessions\/([^/]+)\/ui\//.exec(location.pathname) || [])[1] ||
-        "",
-    );
+    const match = /\/iris\/sessions\/([^/]+)\/ui\//.exec(location.pathname);
+    let id = "";
+    try {
+      id = match ? decodeURIComponent(match[1]) : "";
+    } catch {
+      id = "";
+    }
+    // Only a framed Omnigent session path; never a guess for another host.
+    if (!id) return null;
     const session = `/v1/sessions/${encodeURIComponent(id)}`;
     return {
       schema: 1,
@@ -1939,7 +1999,10 @@
       text(host.data.scope_id) &&
       host.links &&
       ["items", "session", "files", "catalog", "account"].every((k) =>
-        text(host.links[k]),
+        sameOrigin(host.links[k]),
+      ) &&
+      ["native_chat", "tenant_home", "week_page"].every(
+        (k) => host.links[k] === null || sameOrigin(host.links[k]),
       ) &&
       (host.open_tenant === "postMessage" || host.open_tenant === "navigate"),
     );
@@ -1950,16 +2013,66 @@
    * route existed, which is today's Omnigent; any other failure stops here.
    */
   async function readHost() {
-    let host;
-    try {
-      host = await api("host");
-    } catch (error) {
-      if (error.status === 404) return { host: omnigentHost() };
-      return { why: `${reason(error)}.` };
+    const why = (error) => `${reason(error)}.`;
+    for (let attempt = 0; ; attempt += 1) {
+      let host;
+      try {
+        host = await readHostOnce();
+      } catch (error) {
+        if (error.status === 404) {
+          const fallback = omnigentHost();
+          return fallback ? { host: fallback } : { why: why(error) };
+        }
+        // Only a blip is asked again: never a 401, a 403 or an odd answer.
+        const blip = [0, 502, 503, 504].includes(error.status);
+        if (!blip) return { why: why(error) };
+        if (attempt >= HOST_RETRIES) return { why: why(error), retry: true };
+        await new Promise((resolve) =>
+          setTimeout(resolve, HOST_RETRY_MS * 2 ** attempt),
+        );
+        continue;
+      }
+      return usable(host)
+        ? { host }
+        : { why: "Its answer was not one this page understands." };
     }
-    return usable(host)
-      ? { host }
-      : { why: "Its answer was not one this page understands." };
+  }
+
+  /** One read of api/host on its own deadline, failing as the kernel's api does. */
+  async function readHostOnce() {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, HOST_TIMEOUT_MS);
+    const failure = (status, detail = null) =>
+      Object.assign(new Error(`HTTP ${status}`), { status, detail, timedOut });
+    try {
+      let response;
+      try {
+        response = await fetch("api/host", {
+          credentials: "same-origin",
+          signal: controller.signal,
+        });
+      } catch {
+        throw failure(timedOut ? 504 : 0);
+      }
+      let body = null;
+      try {
+        body = await response.json();
+      } catch {
+        body = undefined;
+      }
+      if (!response.ok)
+        throw failure(
+          response.status,
+          body && typeof body.detail === "string" ? body.detail : null,
+        );
+      return body;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Label a week for the picker, newest first (section 5.2). */
@@ -2007,7 +2120,9 @@
     CONNECTED = host.agent.connected;
     const native = host.links.native_chat;
     $("native-chat").hidden = !native;
-    if (native) $("native-chat").setAttribute("href", native);
+    if (native && sameOrigin(native))
+      $("native-chat").setAttribute("href", native);
+    else $("native-chat").hidden = true;
     const identity = host.identity || {};
     $("identity").hidden = !(identity.kind === "dev" && identity.email);
     $("identity").textContent = $("identity").hidden
@@ -2484,10 +2599,14 @@
     navigate(`${page}#${(currentTab || TABS[0]).id}`);
   });
 
-  (async () => {
+  async function boot() {
+    hostError = "";
+    hostRetry = false;
+    render();
     const found = await readHost();
     if (!found.host) {
       hostError = found.why;
+      hostRetry = Boolean(found.retry);
       notice("");
       render();
       return;
@@ -2512,5 +2631,7 @@
     await loadReadiness();
     if (status === "running" || status === "waiting") await resumeRunningTurn();
     else await firstRead();
-  })();
+  }
+
+  void boot();
 })();
