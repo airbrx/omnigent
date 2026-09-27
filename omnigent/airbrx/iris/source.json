@@ -1,7 +1,7 @@
 {
   "repository": "airbrx/iris",
-  "revision": "804672488dc5842775d4bc10b234c11d6ad7a5ba",
-  "sha256": "db8eb1d3218debc9a1a162f17661d599990fdf959502f6ecfe2aa61352601464",
+  "revision": "4f05f9b214432e8b3fdfa0bf0216c2e627fedacd",
+  "sha256": "09b1378cfd7335bc2b4bbd28be7ee66d8cfd3e41b0c7c870fa955ce4297c2d5b",
   "files": [
     "iris/__init__.py",
     "iris/account.py",
@@ -41,12 +41,8 @@
     "omnigent/tools/python/iris_overview.py",
     "omnigent/tools/python/iris_propose.py",
     "pyproject.toml",
-    "ui/app.js",
     "ui/assets/PROVENANCE.md",
     "ui/assets/airbrx-logo.png",
-    "ui/assets/iris-portrait.png",
-    "ui/index.html",
-    "ui/style.css",
-    "ui/theme.js"
+    "ui/assets/iris-portrait.png"
   ]
 }

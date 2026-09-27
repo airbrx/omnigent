@@ -10,7 +10,7 @@ After rollout, open `https://omnigent.airbrx.ai/iris`, or **Agents → Iris → 
 
 The workspace is served inside the Omnigent shell at `/iris/{session_id}`, framed same-origin, with authenticated assets/API under `/v1/iris/sessions/{session_id}/ui/`. The page is `omnigent/airbrx/iris/ui/` on the shared workspace kernel (`omnigent/airbrx/workspace/ui/`, served as `ui/kernel/*`); the portrait and logo still come from the pinned archive. Nothing else is served from that path: no `iris-state.json`, no `demo-state.json`, and none of the pinned app's own files. Extensions V1 grants only `sessions.read`; it cannot submit or cancel turns or retrieve session files. This fork therefore adds one small shell page and an authenticated host router instead of widening extension permissions or inventing a portable AgentSpec field. The host-side Iris mapping uses the existing agent registry and workspace-scoped avatar store.
 
-The pinned `airbrx/iris` revision and archive SHA256 are in `omnigent/airbrx/iris/source.json`. `scripts/iris/vendor.py /path/to/iris-app` reproduces the archive from tracked files at the recorded revision, regardless of the source checkout HEAD. Use `--revision REVIEWED_COMMIT` only when deliberately updating the pin. The original Python package, portrait, four tool modules and curated skills are unchanged. Packaging folds the existing skills into instructions and supplies a short catalog description. Private `ui/iris-state.json` is excluded. The archive still carries the pinned app's `ui/index.html`, `app.js`, `style.css` and `theme.js`, but the server no longer serves them; dropping them from `vendor.py`'s allowlist waits for the `airbrx/iris` change that marks `ui/` dev-only, and then a re-vendor (`WORKSPACE_V2.md`, section 7, step 5). The v2 workspace has no report import: everything it shows comes from a model turn in that session.
+The pinned `airbrx/iris` revision and archive SHA256 are in `omnigent/airbrx/iris/source.json`. `scripts/iris/vendor.py /path/to/iris-app` reproduces the archive from tracked files at the recorded revision, regardless of the source checkout HEAD. Use `--revision REVIEWED_COMMIT` only when deliberately updating the pin. The original Python package, portrait, four tool modules and curated skills are unchanged. Packaging folds the existing skills into instructions and supplies a short catalog description. Private `ui/iris-state.json` and the synthetic `ui/demo-state.json` are excluded. So is the pinned app (`ui/index.html`, `app.js`, `style.css`, `theme.js`): `airbrx/iris` marks `ui/` dev-only (airbrx/iris #31), and from `ui/` the archive carries only `ui/assets/` (the portrait and logo the v2 route serves, and `PROVENANCE.md`). `airbrx/iris` has no `main`; its default branch is `stage`, and a pin must be a commit on `stage`. The v2 workspace has no report import: everything it shows comes from a model turn in that session.
 
 ToolManager exposes exactly `iris_overview`, `iris_investigate`, `iris_audit`, `iris_propose`. Native runner dispatch also denies unadvertised ambient tools before execution. The pinned spec and absolute tool-source bytes are checked before execution. SDK/dependency versions are locked by the `iris` extra. The host's configured model authentication remains in charge; the integration does not inject model keys or change subscription/API-key mode.
 
@@ -131,16 +131,29 @@ build" to select. The way back is a new commit on that branch:
 
 1. **Unset the switch first.** On the coordinator, delete the
    `OMNIGENT_IRIS_UI` line from `/etc/omnigent/server.env`, or make sure it is
-   anything other than `v2`. After the revert, unset means the pinned UI. If it
-   is still `v2`, the revert deploys and nothing changes.
-2. **Revert the cutover.** It is one commit and restores `host.js`, its test,
-   the `"*.js"` package-data glob and the switch together.
-   - PRs here are squash-merged: `git revert <squash commit>` on `main`.
-   - If it ever landed as a real merge commit: `git revert -m 1 <merge commit>`.
+   anything other than `v2`. After the reverts, unset means the pinned UI. If it
+   is still `v2`, the reverts deploy and nothing changes.
+2. **Revert the re-vendor, then the cutover.** Two commits, newest first.
+   - The re-vendor that dropped the pinned app from the archive ("Iris:
+     re-vendor airbrx/iris at stage 4f05f9b"). Reverting it restores the
+     previous `iris-source.zip`, `source.json` and `vendor.py` allowlist, so the
+     archive carries `ui/index.html`, `app.js`, `style.css` and `theme.js`
+     again. Reverting the cutover alone is **not** a rollback any more: it
+     serves the archive's `index.html` path with nothing behind it, and the
+     frame 404s its own scripts.
+   - The cutover (#123). It restores `host.js`, its test, the `"*.js"`
+     package-data glob and the switch together.
+   - PRs here are squash-merged: `git revert <squash commit>` on `main`, once
+     per commit above.
+   - If one ever landed as a real merge commit: `git revert -m 1 <merge commit>`.
+   - Reverting the re-vendor also reverts its instruction change: the pinned
+     `iris-overview` skill and `AGENTS.md` go back to passing dates for the
+     current period. If that fix must stay, re-vendor instead at a reviewed
+     `stage` commit with the old allowlist.
 3. **Deploy it.** Either forward-merge `main` onto `omnigent-airbrx-server` and
-   push, or apply the same revert directly on `omnigent-airbrx-server` and push
-   (then revert on `main` too, so the next forward-merge does not undo it). The
-   push restarts the server, which also picks up the edited `server.env`.
+   push, or apply the same reverts directly on `omnigent-airbrx-server` and push
+   (then revert on `main` too, so the next forward-merge does not undo them).
+   The push restarts the server, which also picks up the edited `server.env`.
 4. **Check.** `GET /v1/iris/sessions/{id}/ui/` contains `<script src="host.js">`
    after a rollback. With the cutover in place it contains
    `<script src="app.js">` and `ui/host.js` is 404.
@@ -148,12 +161,12 @@ build" to select. The way back is a new commit on that branch:
 No data migrates in either direction: sessions, reports and the chat history
 belong to the Omnigent session, not the UI.
 
-**This rollback expires.** It works only while `iris-source.zip` still carries
-the pinned `ui/index.html`, `app.js`, `style.css` and `theme.js`. The planned
-re-vendor removes them (`WORKSPACE_V2.md`, section 7, step 5). After that,
-reverting the cutover alone serves a pinned `index.html` that 404s its own
-scripts; rolling back then also means reverting the re-vendor. The re-vendor PR
-must update this section.
+**Why both reverts.** Since the re-vendor at `stage` `4f05f9b`,
+`iris-source.zip` no longer carries the pinned `ui/index.html`, `app.js`,
+`style.css` or `theme.js` (`tests/airbrx/test_iris_account_vendored.py` holds
+that). The v1 workspace the cutover revert would bring back lives in those
+files, so the archive has to go back first. Any later re-vendor on top keeps
+this true: roll back to a `source.json` whose `files` list includes them.
 
 ## Verification
 

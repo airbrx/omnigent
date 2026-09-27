@@ -235,7 +235,7 @@ Also:
 2. W1, W2 and W4 run in parallel. W3 starts on hand-written fixtures and a stubbed `AW`, and merges after W2. It moves to W1's `irisAdapter.json` once W1 merges.
 3. Merging to `main` deploys nothing: production deploys on pushes to `omnigent-airbrx-server`. W1 keeps `OMNIGENT_IRIS_UI` defaulting to the pinned UI, so even a deploy leaves Iris as she is today.
 4. **Gate:** no push to the deploy branch until W3 and W4 are merged **and** a local QA pass is done (both tenants, `OMNIGENT_IRIS_UI=v2`, light and dark, a reload mid-chat, a refused turn, a stale capture, Accounts resuming the tenant's existing session and creating one only when there is none). Then production runs behind the switch for live QA.
-5. **W5 last:** flip the default, stop serving and injecting `host.js`, delete it and its test, update `docs/iris/`, and mark `iris:ui/` dev-only. The vendor.py allowlist change (stop shipping the pinned `ui/*.html/js/css`) needs a merge commit on iris main and a re-vendor.
+5. **W5 last:** flip the default, stop serving and injecting `host.js`, delete it and its test, update `docs/iris/`, and mark `iris:ui/` dev-only. The vendor.py allowlist change (stop shipping the pinned `ui/*.html/js/css`) needed a merge commit on iris `stage` (airbrx/iris has no `main`) and a re-vendor: airbrx/iris #31, re-vendored at `stage` `4f05f9b`.
 6. Later, and separate: Eva moves onto the kernel (W6), guarded by `evaWorkspaceApp.test.ts`.
 
 Open for Iris CoS: whether v2 keeps the old "Import report" path. It is not in
