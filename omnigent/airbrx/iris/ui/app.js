@@ -42,6 +42,13 @@
   const DOWNLOADS = ["report.json", "report.md", "proposal.json"];
   const ONCE_PER_SESSION =
     "The page collects on its own only once per session, because each collection reads the warehouse. Collect again when you want a new one.";
+  // Refresh 409s (docs/iris/WORKSPACE_V2.md section 2). Only these two details
+  // mean a collection ran and read no overview; the page's own sentences are
+  // for them. Any other 409 is shown as the adapter words it.
+  const RAN_AND_MISSED =
+    /^The collection (produced no overview|read no current-period overview)/;
+  // These mean no turn was started: BUSY_DETAIL and REPEAT_COLLECT_DETAIL.
+  const NOT_STARTED = /^(Iris is busy|Iris did not start another collection)/;
   // This tab's record of the automatic collection, for when the session's
   // record cannot be read or the turn never reached it.
   const AUTO_KEY = `iris.autoCollected.${SESSION_ID}`;
@@ -2031,9 +2038,11 @@
 
   /**
    * One collection turn. It answers with the state itself, or 409 when the
-   * turn produced no overview. The chat is kept either way.
+   * turn produced no overview or was not started. The chat is kept either way.
+   * `pressed` is the transcript line that recorded a manual press; it is taken
+   * back when the adapter refused to start the collection.
    */
-  async function collect() {
+  async function collect(pressed) {
     setBusy(true);
     await watch();
     try {
@@ -2043,7 +2052,8 @@
       return true;
     } catch (error) {
       await stopTurn();
-      if (error.status === 409)
+      const said = typeof error.detail === "string" ? error.detail : "";
+      if (error.status === 409 && RAN_AND_MISSED.test(said))
         transcript.add(
           "system",
           state
@@ -2052,7 +2062,10 @@
               ? "That collection produced no new overview. The last capture is out of date and is not shown here. Ask Iris in the chat what went wrong."
               : "That collection produced no overview, so there is nothing to show yet. Ask Iris in the chat what went wrong.",
         );
-      else
+      else if (error.status === 409) {
+        if (pressed && NOT_STARTED.test(said)) pressed.remove();
+        transcript.add("system", `${reason(error)}.`);
+      } else
         transcript.add(
           "error",
           `Iris could not collect an overview. ${reason(error)}. Nothing has been computed in her place.`,
@@ -2068,8 +2081,9 @@
   async function refresh() {
     if (busy) return;
     notice("");
-    transcript.add("system", "You had Iris collect a fresh overview.");
-    await collect();
+    await collect(
+      transcript.add("system", "You had Iris collect a fresh overview."),
+    );
     render();
   }
 

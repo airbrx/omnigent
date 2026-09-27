@@ -754,6 +754,29 @@ it("a collection that produced nothing new keeps the capture, with its time, and
   expect(within(messages()).getByText("How is the cache?")).toBeInTheDocument();
 });
 
+// Review of #118/#119: a refresh 409 is "that collection produced no overview"
+// only when a collection ran and missed. When the adapter refused to start one,
+// its own detail says why and when to retry, and no collect is recorded.
+it.each([
+  ["a repeat collect inside the hold", "repeat_collect_refused"],
+  ["a busy session", "busy_session"],
+] as const)(
+  "a collect refused for %s shows the adapter's detail, not 'produced no overview'",
+  async (_, scenario) => {
+    const refusal = ADAPTER[scenario].refresh;
+    const said = (refusal.body as { detail: string }).detail.replace(/[.\s]+$/, "");
+    serve({ refresh: () => replay(refusal) });
+    await mount();
+    fireEvent.click(screen.getByRole("button", { name: "Collect a fresh overview" }));
+    await waitFor(() => expect(messages().textContent).toContain(said));
+    expect(messages().textContent).not.toContain("produced no");
+    expect(messages().textContent).not.toContain("You had Iris collect a fresh overview.");
+    expect(calls("refresh")).toHaveLength(1);
+    // The capture on screen is untouched.
+    expect(view().textContent).toContain("80.0%");
+  },
+);
+
 it("rule 9: chat and refresh run on a 330 s client deadline, and chat sends deadline 300", async () => {
   await mount();
   expect(apiOptions).toContainEqual(expect.objectContaining({ timeoutMs: 330000 }));

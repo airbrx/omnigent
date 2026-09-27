@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import math
 import os
 import re
 import time
@@ -107,13 +108,25 @@ REFRESH_PROMPT = (
 #: warehouse read. A repeat inside this window is refused without a turn. A chat
 #: turn in between, or a refresh after the window, runs as usual.
 REPEAT_COLLECT_COOLDOWN_SECONDS = 600
-#: The 409 detail for that refusal. Distinct from `BUSY_DETAIL` and from both
-#: "no overview" details, so a caller can tell "not started" from "ran and missed".
+#: The 409 detail for that refusal, with `{wait}` filled in by
+#: `repeat_collect_detail`. Distinct from `BUSY_DETAIL` and from both "no
+#: overview" details (it must not start with "The collection"), so a caller can
+#: tell "not started" from "ran and missed". It says "collect", as the page's
+#: buttons do.
 REPEAT_COLLECT_DETAIL = (
-    "The last collection in this session, under 10 minutes ago, read no current-period "
-    "overview, so another was not started; open native chat to see what Iris did, or "
-    "refresh again later."
+    "Iris did not start another collection, because the last one in this session read "
+    "no current-period overview. Collect again in {wait}, or ask Iris anything in chat "
+    "to lift the hold now. Open native chat to see what Iris did."
 )
+
+
+def repeat_collect_detail(seconds_left: float) -> str:
+    """`REPEAT_COLLECT_DETAIL` for a hold with `seconds_left` to run, in whole minutes."""
+    minutes = max(1, math.ceil(seconds_left / 60))
+    return REPEAT_COLLECT_DETAIL.format(
+        wait=f"about {minutes} minute" + ("" if minutes == 1 else "s")
+    )
+
 
 #: Tools whose reports a refresh bounds by its own turn marker. A refresh calls
 #: exactly these, so an older report of either is the previous capture and must
@@ -456,8 +469,9 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
             )
         )
         at = missed_collect_at(list(reversed(page["data"])))
-        if at is not None and time.time() - at < REPEAT_COLLECT_COOLDOWN_SECONDS:
-            raise HTTPException(409, REPEAT_COLLECT_DETAIL)
+        left = REPEAT_COLLECT_COOLDOWN_SECONDS - (time.time() - at) if at is not None else 0
+        if left > 0:
+            raise HTTPException(409, repeat_collect_detail(left))
 
     async def read_state(request: Request, session_id: str, fresh: bool = False):
         async with session_client(request) as client:

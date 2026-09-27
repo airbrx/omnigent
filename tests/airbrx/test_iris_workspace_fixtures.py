@@ -536,6 +536,18 @@ SCENARIOS: dict[str, tuple[Callable[[], IrisSession], list[tuple[str, str]]]] = 
         lambda: IrisSession(captured(), FILES, read_nothing),
         [("GET", "state"), ("POST", "refresh")],
     ),
+    # A collect two minutes ago read nothing: the next one is refused, no turn runs.
+    "repeat_collect_refused": (
+        lambda: IrisSession(
+            [
+                user(f"{REFRESH_FIRST_SENTENCE} Summarize the coverage.", NOW - 120, "u-missed"),
+                answer("I could not reach the tenant's gateway.", NOW - 110, "a-missed"),
+            ],
+            FILES,
+            respond,
+        ),
+        [("POST", "refresh")],
+    ),
     # A turn is already running: chat and refresh are refused, not queued.
     "busy_session": (
         lambda: IrisSession(captured(), FILES, respond, status="running"),
@@ -591,6 +603,9 @@ def test_the_fixtures_cover_what_the_app_must_handle(monkeypatch, tmp_path) -> N
     assert produced["first_collect_produced_nothing"]["refresh"]["status"] == 409
     assert produced["refresh_read_nothing"]["refresh"]["status"] == 409
     assert produced["busy_session"]["chat"]["status"] == 409
+    repeat = produced["repeat_collect_refused"]["refresh"]
+    assert repeat["status"] == 409
+    assert repeat["body"]["detail"].startswith("Iris did not start another collection")
     assert produced["captured"]["state"]["body"]["stale"] is False
     assert produced["stale_capture"]["state"]["body"]["stale"] is True
     worked_state = produced["investigated_and_proposed"]["state"]["body"]
