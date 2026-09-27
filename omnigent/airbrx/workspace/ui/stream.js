@@ -37,8 +37,21 @@
       .join("\n");
   }
 
+  /**
+   * `itemsUrl` and `sessionUrl` are where the session's record is read: its
+   * items page (`?order=desc&limit=N` is added) and its status. Each defaults
+   * to the native path for `sessionId`, /v1/sessions/{id}/items and
+   * /v1/sessions/{id}. A host that keeps the record elsewhere (the standalone
+   * viewer's api/items and api/session) passes its own, used as given.
+   */
   function createStream({
     sessionId,
+    itemsUrl = sessionId
+      ? `/v1/sessions/${encodeURIComponent(sessionId)}/items`
+      : "",
+    sessionUrl = sessionId
+      ? `/v1/sessions/${encodeURIComponent(sessionId)}`
+      : "",
     pollMs = 1500,
     doing = {},
     recognise = () => null,
@@ -59,9 +72,10 @@
 
     /** The newest `limit` items, oldest first, and whether there are more. */
     async function sessionItems(limit) {
-      if (!sessionId) throw new Error("no session");
+      if (!itemsUrl) throw new Error("no session");
+      const joiner = itemsUrl.includes("?") ? "&" : "?";
       const response = await fetch(
-        `/v1/sessions/${encodeURIComponent(sessionId)}/items?order=desc&limit=${limit}`,
+        `${itemsUrl}${joiner}order=desc&limit=${limit}`,
         { credentials: "same-origin" },
       );
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -174,12 +188,11 @@
 
     /** The native session's status ("idle", "running", ...), or "" unread. */
     async function sessionStatus() {
-      if (!sessionId) return "";
+      if (!sessionUrl) return "";
       try {
-        const response = await fetch(
-          `/v1/sessions/${encodeURIComponent(sessionId)}`,
-          { credentials: "same-origin" },
-        );
+        const response = await fetch(sessionUrl, {
+          credentials: "same-origin",
+        });
         if (!response.ok) return "";
         const session = await response.json();
         const status =
