@@ -445,8 +445,9 @@
 
   function coverage(o, m) {
     // One chip per day of the period. A long session reads the same days
-    // again; the newest reading of a day wins, and days outside the period
-    // (end exclusive) are not this capture's coverage.
+    // again; the newest reading of a day wins (the report lists its evidence
+    // in the order Iris read it, so the last row for a day is the newest), and
+    // days outside the period (end exclusive) are not this capture's coverage.
     const byDay = new Map();
     for (const e of o.evidence || []) {
       if (!e || e.source_tool !== "get_summary") continue;
@@ -642,14 +643,17 @@
           `${period(m)} · tenant ${o.tenant_id || "unknown"}`,
           "iris_overview",
         ),
-        earlierWindow(s)
-          ? el(
-              "p",
-              { class: "notice small" },
-              el("strong", {}, "An earlier window. "),
-              `Iris's newest overview in this session is for ${period(m)}, which she read for a comparison. It is not this tenant's current period. Collect a fresh overview to see the current period.`,
-            )
-          : null,
+        // Element.append turns null into the text "null": spread, never null.
+        ...(earlierWindow(s)
+          ? [
+              el(
+                "p",
+                { class: "notice small" },
+                el("strong", {}, "An earlier window. "),
+                `Iris's newest overview in this session is for ${period(m)}, which she read for a comparison. It is not this tenant's current period. Collect a fresh overview to see the current period.`,
+              ),
+            ]
+          : []),
         kpis(m),
         coverage(o, m),
         el(
@@ -1999,7 +2003,9 @@
     let result = { resumed: false, status: "" };
     try {
       await firstRead({ mayCollect: false });
-      result = await stream.resumeTurn();
+      // Seen running before the history was read: follow it even if it has
+      // ended since, so its answer gets one last read (review N1).
+      result = await stream.resumeTurn({ running: true });
     } finally {
       setBusy(false);
     }
@@ -2014,7 +2020,9 @@
         "Iris is still on the turn that was running when this page loaded. Open native chat to follow it.",
       );
     await loadReadiness();
-    await firstRead();
+    // After the give-up the turn may still be running; collecting over it
+    // would only be refused as busy (review N2). Draw what there is.
+    await firstRead({ mayCollect: result.status !== "timeout" });
   }
 
   /**
@@ -2092,9 +2100,11 @@
   });
 
   (async () => {
+    // The status is read before the history: a turn that ends after this read
+    // is in the history, and one still running is followed (review N1).
+    const status = await stream.sessionStatus();
     await stream.loadHistory();
     await loadReadiness();
-    const status = await stream.sessionStatus();
     if (status === "running" || status === "waiting") await resumeRunningTurn();
     else await firstRead();
   })();

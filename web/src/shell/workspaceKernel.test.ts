@@ -147,6 +147,18 @@ describe("markdown", () => {
     expect(root.textContent).toBe("| a | b || c | d |");
   });
 
+  // Review N3: the separator test was quadratic on long runs of spaces
+  // (about 3.5 s for 30,000). Agent text is untrusted input to this parser.
+  it("a long run of spaces in a would-be separator row is handled in linear time", () => {
+    const spaces = " ".repeat(30000);
+    const started = performance.now();
+    const broken = holder(AW.markdown(`| a |\n|-${spaces}x`));
+    const padded = holder(AW.markdown(`| a |\n|---${spaces}|\n| 1 |`));
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(broken.querySelector("table")).toBeNull();
+    expect(padded.querySelector("td")?.textContent).toBe("1");
+  });
+
   it("markup in a table cell stays text", () => {
     const root = holder(
       AW.markdown(

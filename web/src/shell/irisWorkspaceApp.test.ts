@@ -1432,3 +1432,55 @@ it("F4: on a load where the newest overview is an earlier window, it is labelled
   expect(view().textContent).toContain("2026-09-12 to 2026-09-19");
   expect(view().textContent).toContain("not this tenant's current period");
 });
+
+/** Text nodes directly under an element that read "null" or "undefined". */
+function strayText(root: Element) {
+  return [...root.querySelectorAll("*")]
+    .concat(root)
+    .flatMap((e) => [...e.childNodes])
+    .filter((n) => n.nodeType === Node.TEXT_NODE && /^\s*(null|undefined)\s*$/.test(n.textContent!))
+    .map((n) => n.textContent);
+}
+
+it("F4 (review R1): a normal Overview has no stray 'null' text", async () => {
+  await mount();
+  expect(view().textContent).toContain("2026-09-19 to 2026-09-26");
+  expect(view().textContent).not.toContain("earlier window");
+  expect(strayText(view())).toEqual([]);
+  expect(view().textContent).not.toMatch(/\bnull\b/);
+});
+
+it("F4 (review N5): a partial current capture (3 of 7 days) is not labelled an earlier window", async () => {
+  serve({
+    state: () => json(withMetrics({ covered_days: 3, requested_days: 7, period_complete: false })),
+  });
+  await mount();
+  expect(view().textContent).toContain("3 / 7 days");
+  expect(view().textContent).toContain("Partial capture.");
+  expect(view().textContent).not.toContain("earlier window");
+  expect(view().textContent).not.toContain("not this tenant's current period");
+  expect(strayText(view())).toEqual([]);
+});
+
+it("B4 (review N1): a turn that ends while the page reads its history still shows its answer", async () => {
+  items = [userItem("u1", "How is the cache?")];
+  sessionStatus = "running";
+  let reads = 0;
+  serve({
+    items: () => {
+      const page = json({ data: items.slice().reverse(), has_more: false });
+      // The turn ends just after the history read: first read has only the question.
+      if ((reads += 1) === 1) {
+        items = [...items, assistantItem("a1", "It ended in between.")];
+        sessionStatus = "idle";
+      }
+      return page;
+    },
+  });
+  start();
+  await waitFor(() =>
+    expect(messages().querySelector("li.agent")?.textContent).toBe("It ended in between."),
+  );
+  await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
+  expect(messages().querySelector("[role=status]")).toBeNull();
+});

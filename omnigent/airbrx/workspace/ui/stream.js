@@ -203,10 +203,12 @@
      * Resolves { resumed, status }: resumed is false when no turn was
      * running, or the session could not be read. It gives up after
      * `timeoutMs` (the adapter's 300 s turn deadline plus room), with status
-     * "timeout".
+     * "timeout". Pass `running: true` when the caller already saw the turn
+     * running: it is then followed without a fresh check, so a turn that
+     * ended in between still gets its last read and its answer shows.
      */
-    async function resumeTurn({ timeoutMs = 330000 } = {}) {
-      let status = await sessionStatus();
+    async function resumeTurn({ timeoutMs = 330000, running: seen = false } = {}) {
+      let status = seen ? "running" : await sessionStatus();
       if (!running(status)) return { resumed: false, status };
       const stop = watchTurn(null);
       const until = Date.now() + timeoutMs;

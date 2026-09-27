@@ -43,7 +43,10 @@
   const NUMBERED = /^\s*(\d{1,9})[.)]\s+(.*)$/;
   const HEADING = /^\s*#{1,6}\s+(.*)$/;
 
-  const SEPARATOR = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
+  // One separator cell, already trimmed. The row is split and trimmed by
+  // cells(), never matched as a whole: a single pattern with adjacent
+  // whitespace runs is quadratic on a long line of spaces.
+  const SEPARATOR_CELL = /^:?-+:?$/;
 
   /** A table row's cells: outer pipes dropped, `\|` is a literal pipe. */
   function cells(line) {
@@ -68,9 +71,10 @@
   /** A header line and a separator line with as many columns start a table. */
   function tableStart(line, next) {
     if (!line.includes("|") || next === undefined || !next.includes("|")) return 0;
-    if (!SEPARATOR.test(next)) return 0;
+    const separator = cells(next);
+    if (!separator.every((cell) => SEPARATOR_CELL.test(cell))) return 0;
     const width = cells(line).length;
-    return width > 0 && cells(next).length === width ? width : 0;
+    return width > 0 && separator.length === width ? width : 0;
   }
 
   /** The table whose header is lines[start], and the index after its last row. */
