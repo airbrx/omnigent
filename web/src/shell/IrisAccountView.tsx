@@ -220,7 +220,7 @@ export function IrisAccountView({
   loading = false,
   openLabel,
   onOpen,
-  resumable = {},
+  resumable,
   onResume,
 }: IrisAccountViewProps) {
   const rows = orderedRows(tenants, account);
@@ -251,7 +251,7 @@ export function IrisAccountView({
           </thead>
           <tbody>
             {rows.map((entry) => {
-              const last = onResume ? resumable[entry.tenant_id] : undefined;
+              const last = onResume ? resumable?.[entry.tenant_id] : undefined;
               const offline = entry.host_online === false;
               const label = entry.name || entry.tenant_id;
               return (
