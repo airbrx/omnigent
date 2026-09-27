@@ -637,6 +637,76 @@ describe("stream", () => {
     ]);
   });
 
+  it("with only a session id, reads today's native paths, encoded", async () => {
+    sessionStatus = "running";
+    const { stream } = streamFixture();
+    await stream.sessionItems(5);
+    await expect(stream.sessionStatus()).resolves.toBe("running");
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/v1/sessions/s1/items?order=desc&limit=5",
+      "/v1/sessions/s1",
+    ]);
+    const { transcript } = transcriptFixture();
+    const bare = AW.createStream({ transcript });
+    await expect(bare.sessionItems(5)).rejects.toThrow("no session");
+    await expect(bare.sessionStatus()).resolves.toBe("");
+    const odd = AW.createStream({ sessionId: "a/b c", transcript });
+    fetchMock.mockClear();
+    await odd.sessionItems(1).catch(() => undefined);
+    await odd.sessionStatus();
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/v1/sessions/a%2Fb%20c/items?order=desc&limit=1",
+      "/v1/sessions/a%2Fb%20c",
+    ]);
+  });
+
+  // Standalone viewer (STANDALONE_VIEWER.md 2.2): the host names the record's
+  // URLs, relative to the page, and nothing is read from /v1/.
+  it("reads the items and the status from the URLs it is given, and never /v1/", async () => {
+    const calls: string[] = [];
+    window.fetch = vi.fn(async (input: string) => {
+      calls.push(String(input));
+      if (String(input) === "api/session") return Response.json({ status: "idle" });
+      if (String(input).startsWith("api/items"))
+        return Response.json({
+          data: [assistant("a1", "Saved answer."), user("u1", "Saved question.")],
+          has_more: false,
+        });
+      throw new Error(`unexpected fetch ${input}`);
+    }) as never;
+    const { list, transcript } = transcriptFixture();
+    const stream = AW.createStream({
+      itemsUrl: "api/items",
+      sessionUrl: "api/session",
+      pollMs: 10,
+      transcript,
+    });
+    await expect(stream.loadHistory()).resolves.toBe(true);
+    expect(lines(list)).toEqual([
+      ["user", "Saved question."],
+      ["agent", "Saved answer."],
+    ]);
+    await expect(stream.resumeTurn()).resolves.toEqual({ resumed: false, status: "idle" });
+    await stream.markExisting();
+    expect(calls).toEqual([
+      "api/items?order=desc&limit=200",
+      "api/session",
+      "api/items?order=desc&limit=200",
+    ]);
+    // A given URL wins over a session id, and one with a query is extended.
+    calls.length = 0;
+    const both = AW.createStream({
+      sessionId: "s1",
+      itemsUrl: "api/items?scope=w38",
+      sessionUrl: "api/session",
+      transcript,
+    });
+    await both.sessionItems(50);
+    await both.sessionStatus();
+    expect(calls).toEqual(["api/items?scope=w38&order=desc&limit=50", "api/session"]);
+    expect(calls.some((url) => url.includes("/v1/"))).toBe(false);
+  });
+
   it("stop() is idempotent", async () => {
     const { stream } = streamFixture();
     const stop = stream.watchTurn(new Set());
@@ -924,6 +994,47 @@ describe("api", () => {
       );
     expect(AW.plainError({ status: 401 })).toMatch(/sign-in has expired/);
     expect(AW.plainError({ status: 504, detail: SENTINEL })).not.toContain("SENTINEL");
+  });
+
+  // STANDALONE_VIEWER.md 2.2 and 7 (SV3): only the word "Omnigent" becomes
+  // the host, and with no host given every sentence is today's, byte for byte.
+  it("with no host, the host sentences are today's exactly", () => {
+    for (const options of [undefined, {}, { agent: "Iris" }]) {
+      expect(AW.plainError({ status: 401 }, options)).toBe(
+        "Your Omnigent sign-in has expired. Reload the page to sign in again.",
+      );
+      expect(AW.plainError({ status: 0 }, options)).toBe(
+        "The workspace could not reach Omnigent. Check your connection.",
+      );
+      expect(AW.plainError({ status: 500, detail: "x" }, options)).toBe(
+        "Something went wrong on the Omnigent side.",
+      );
+    }
+    expect(AW.plainError({ status: 502 })).toBe(
+      "The agent could not be reached just now. The host may be offline or restarting.",
+    );
+  });
+
+  it("names the host it is given in the three host sentences, and only there", () => {
+    const viewer = { agent: "Iris", host: "Iris viewer" };
+    expect(AW.plainError({ status: 401 }, viewer)).toBe(
+      "Your Iris viewer sign-in has expired. Reload the page to sign in again.",
+    );
+    expect(AW.plainError({ status: 0 }, viewer)).toBe(
+      "The workspace could not reach Iris viewer. Check your connection.",
+    );
+    expect(AW.plainError({ status: 503, detail: "Traceback" }, viewer)).toBe(
+      "Iris could not be reached just now. The host may be offline or restarting.",
+    );
+    expect(AW.plainError({ status: 500, detail: "Traceback" }, viewer)).toBe(
+      "Something went wrong on the Iris viewer side.",
+    );
+    expect(AW.plainError({ status: 504 }, viewer)).toBe(
+      "Iris took too long, so the turn was stopped.",
+    );
+    expect(AW.plainError({ status: 409, detail: "Refused" }, viewer)).toBe("Refused.");
+    for (const status of [0, 401, 500, 502, 504])
+      expect(AW.plainError({ status }, viewer)).not.toContain("Omnigent");
   });
 
   it("a network failure is status 0", async () => {

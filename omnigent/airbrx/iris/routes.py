@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import math
-import re
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -26,6 +23,14 @@ from omnigent.airbrx.iris.records import (
     report_references,  # noqa: F401 -- re-exported; tests import it from here
 )
 from omnigent.airbrx.iris.runtime import TOOLS
+from omnigent.airbrx.iris.ui_assets import ui_response
+from omnigent.airbrx.iris.workspace import (
+    ReportUnavailable,
+    StateUnavailable,
+    TenantMismatch,
+    build_state,
+    report_ids,
+)
 from omnigent.server.routes._auth_helpers import require_user
 from omnigent.server.routes._content_type import require_json_content_type
 
@@ -125,55 +130,6 @@ def repeat_collect_detail(seconds_left: float) -> str:
     return REPEAT_COLLECT_DETAIL.format(
         wait=f"about {minutes} minute" + ("" if minutes == 1 else "s")
     )
-
-
-#: Tools whose reports a refresh bounds by its own turn marker. A refresh calls
-#: exactly these, so an older report of either is the previous capture and must
-#: not be passed off as the fresh one. `iris_investigate` and `iris_propose` are
-#: deliberately absent: a refresh never calls them, so bounding them would blank
-#: the investigation and the proposal on every refresh. Each carries its own
-#: `report_times` entry instead, which says how old it is.
-_REFRESH_BOUND = frozenset({"iris_overview", "iris_audit"})
-
-#: Reports a state read carries when it can, and leaves null when it cannot.
-#: Their fetch failing must not take the overview and audit down with it: the
-#: workspace can still show the capture, and a null already means "absent".
-#: A tenant mismatch is not a fetch failure and still refuses the whole read.
-_OPTIONAL_REPORTS = frozenset({"iris_investigate", "iris_propose"})
-
-#: Where the v2 workspace (docs/iris/WORKSPACE_V2.md, D1) lives in this package.
-UI_ROOT = HERE / "ui"
-#: The v2 app files served from `UI_ROOT`. A pattern, not a directory listing,
-#: so nothing else placed under `ui/` becomes reachable, and `views/` cannot be
-#: escaped with `..` or a nested path.
-_V2_APP_FILES = re.compile(r"(?:app\.js|style\.css|views/[A-Za-z0-9_-]+\.js)")
-#: The two images still read from the pinned archive (`ui/assets/`, D1).
-_PINNED_IMAGES = frozenset({"assets/iris-portrait.png", "assets/airbrx-logo.png"})
-
-
-def kernel_file(name: str) -> Path | None:
-    """The shared workspace kernel file `name`, or None when it is not served.
-
-    The kernel (`omnigent.airbrx.workspace`) owns its allowlist; this only
-    refuses anything outside it. Imported here rather than at module load so a
-    host without the kernel 404s kernel files instead of failing to import.
-    """
-    try:
-        # By name, so this module imports and type-checks without the kernel
-        # package; a missing kernel is a 404 on its files, nothing more.
-        kernel = importlib.import_module("omnigent.airbrx.workspace.assets")
-    except ImportError:
-        return None
-    if name not in getattr(kernel, "KERNEL_ASSETS", ()):
-        return None
-    try:
-        path = kernel.kernel_asset(name)
-    except (KeyError, ValueError, OSError):
-        return None
-    if path is None:
-        return None
-    path = Path(path)
-    return path if path.is_file() else None
 
 
 def completed_answer(items: list[dict]) -> dict | None:
@@ -514,96 +470,43 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                         "established; open native chat to review the turn.",
                     )
                 collected_after = marker.get("created_at", 0)
-            refs = report_calls(ordered)
-            reports = {}
-            report_times = dict.fromkeys(sorted(TOOLS))
-            cache_age = 0
-            captured_at = None
-            unreadable = set()
-            other_windows = False
-            for tool, file_id, created_at, arguments, called_at in reversed(refs):
-                if tool in reports or tool in unreadable:
-                    continue
-                # On a fresh collection, only this turn's overview and audit
-                # count. A refresh that returns the previous capture is worse
-                # than one that admits it collected nothing. The investigation
-                # and the proposal are the newest in the session either way:
-                # see _REFRESH_BOUND. Checked before the window below, so an
-                # older comparison does not turn "produced no overview" into
-                # "read no current-period overview".
-                if tool in _REFRESH_BOUND and created_at < collected_after:
-                    continue
-                # `overview` is the tenant's current period. An overview Iris
-                # read over another window mid-session (to compare against) is
-                # newer than the capture, and was being shown as the capture
-                # after a reload. It is skipped, not fetched: the contract has
-                # no slot for it, and the comparison itself is what
-                # `investigation` carries. The window is judged on the day the
-                # call was made, not the day its answer was recorded.
-                if tool == "iris_overview" and not reads_current_period(arguments, called_at):
-                    other_windows = True
-                    continue
+            # Only the reports `build_state` will ask for are fetched, and a
+            # failed fetch is handed to it rather than raised here, so which
+            # failure wins is decided in one place, in the builder's order.
+            # All are fetched before the builder runs, so a failure path may make extra GETs.
+            fetched: dict[str, object] = {}
+            for file_id in report_ids(ordered, collected_after=collected_after):
                 try:
-                    report = await checked(
+                    fetched[file_id] = await checked(
                         await client.get(
                             f"/v1/sessions/{session_id}/resources/files/{file_id}/content"
                         )
                     )
-                    if not isinstance(report, dict):
-                        raise ValueError("report is not an object")
-                except (HTTPException, ValueError, httpx.HTTPError):
-                    if tool not in _OPTIONAL_REPORTS:
-                        raise
-                    # Null, as if absent, and no older report in its place:
-                    # the newest is the one the session stands behind.
-                    unreadable.add(tool)
-                    continue
-                if report.get("tenant_id") != binding.tenant_id:
-                    raise HTTPException(403, "Report tenant does not match session")
-                reports[tool] = report
-                report_times[tool] = float(created_at)
-                if tool == "iris_overview":
-                    captured_at = float(created_at)
-                    cache_age = max(0, time.time() - created_at)
-            if "iris_overview" not in reports:
-                # Two different situations; the wording used to send both to
-                # "use Refresh from host", which on the fresh path pointed at
-                # the button that had just run.
-                if other_windows:
-                    raise HTTPException(
-                        409,
-                        "The collection read no current-period overview; open native chat to "
-                        "see what Iris did."
-                        if fresh
-                        else "No current-period overview yet; use Refresh from host",
-                    )
-                raise HTTPException(
-                    409,
-                    "The collection produced no overview; open native chat to see what Iris did."
-                    if fresh
-                    else "No session overview yet; use Refresh from host",
+                except (HTTPException, ValueError, httpx.HTTPError) as exc:
+                    fetched[file_id] = exc
+
+            def report(file_id: str):
+                body = fetched[file_id]
+                if isinstance(body, Exception):
+                    raise ReportUnavailable(str(body)) from body
+                return body
+
+            try:
+                return build_state(
+                    ordered,
+                    report,
+                    tenant_id=binding.tenant_id,
+                    collected_after=collected_after,
+                    fresh=fresh,
+                    now=time.time(),
                 )
-            rules, meta = [], {}
-            for evidence in reports["iris_overview"].get("evidence", []):
-                if evidence.get("source_tool") == "get_rule_effectiveness":
-                    data = evidence.get("data") or {}
-                    rules = data.get("rules") or []
-                    meta = {k: data.get(k) for k in ("year", "generatedAt", "totalQueries")}
-            return {
-                "overview": reports["iris_overview"],
-                "audit": reports.get("iris_audit", {"findings": []}),
-                "rules": rules,
-                "rule_effectiveness_meta": meta,
-                "stale": cache_age > 300,
-                "cache_age_seconds": round(cache_age),
-                "monitoring": None,
-                # The clock `cache_age_seconds` is measured on: when the item
-                # carrying the overview report was recorded.
-                "captured_at": captured_at,
-                "investigation": reports.get("iris_investigate"),
-                "proposal": reports.get("iris_propose"),
-                "report_times": report_times,
-            }
+            except StateUnavailable as exc:
+                raise HTTPException(409, exc.detail) from None
+            except TenantMismatch as exc:
+                raise HTTPException(403, exc.detail) from None
+            except ReportUnavailable as exc:
+                # A required report: the fetch's own failure, as before the split.
+                raise (exc.__cause__ or ValueError(str(exc))) from None
 
     @router.get("/iris/sessions/{session_id}/ui/api/readiness")
     async def readiness(request: Request, session_id: str):
@@ -676,6 +579,43 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                 ),
             }
 
+    @router.get("/iris/sessions/{session_id}/ui/api/host", include_in_schema=False)
+    async def host_descriptor(request: Request, session_id: str):
+        """Which host the workspace runs in (docs/iris/STANDALONE_VIEWER.md, section 2.1).
+
+        The app reads this before anything else and branches on capabilities,
+        never on the label. Framed in Omnigent the agent is connected, the data
+        is this session's record, and there is no week. It carries no email
+        and no host error text.
+        """
+        async with session_client(request) as client:
+            _, binding = await authorize(request, session_id, client)
+        native = f"/v1/sessions/{session_id}"
+        return {
+            "schema": 1,
+            "host_label": "Omnigent",
+            "identity": {"kind": "omnigent", "email": None, "sign_in": None},
+            "agent": {"connected": True, "why": None},
+            "data": {
+                "source": "session",
+                "scope_id": session_id,
+                "tenant_id": binding.tenant_id,
+                "week": None,
+                "weeks": None,
+            },
+            "links": {
+                "native_chat": f"/c/{session_id}",
+                "items": f"{native}/items",
+                "session": native,
+                "files": f"{native}/resources/files",
+                "catalog": "/v1/iris",
+                "account": "/v1/iris/account",
+                "tenant_home": None,
+                "week_page": None,
+            },
+            "open_tenant": "postMessage",
+        }
+
     @router.get("/iris/sessions/{session_id}/ui/api/state")
     async def state(request: Request, session_id: str):
         return await read_state(request, session_id)
@@ -706,28 +646,9 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
         """
         async with session_client(request) as client:
             await authorize(request, session_id, client)
-        if not asset or asset == "index.html":
-            if not (UI_ROOT / "index.html").is_file():
-                raise HTTPException(404)
-            return FileResponse(
-                UI_ROOT / "index.html",
-                media_type="text/html",
-                headers={"Cache-Control": "no-store", "X-Frame-Options": "SAMEORIGIN"},
-            )
-        if _V2_APP_FILES.fullmatch(asset):
-            path = UI_ROOT / asset
-            if path.is_file():
-                return FileResponse(path, headers={"Cache-Control": "no-store"})
+        response = ui_response(asset)
+        if response is None:
             raise HTTPException(404)
-        if asset.startswith("kernel/"):
-            path = kernel_file(asset.removeprefix("kernel/"))
-            if path is None:
-                raise HTTPException(404)
-            return FileResponse(path, headers={"Cache-Control": "no-store"})
-        if asset in _PINNED_IMAGES:
-            return FileResponse(
-                source_root() / "ui" / asset, headers={"Cache-Control": "private, max-age=3600"}
-            )
-        raise HTTPException(404)
+        return response
 
     return router

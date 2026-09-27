@@ -2,6 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useResolvedThemeMode } from "@/components/theme/useResolvedThemeMode";
 import { Button } from "@/components/ui/button";
+import { useSessionHostOnline } from "@/hooks/RunnerHealthProvider";
+import { useHosts } from "@/hooks/useHosts";
 import { getOmnigentHostConfig } from "@/lib/host";
 import { authenticatedFetch } from "@/lib/identity";
 import { useNavigate, useParams, useSearchParams } from "@/lib/routing";
@@ -50,6 +52,12 @@ export function TallyWorkspace() {
   useEffect(loadInter, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // A start that failed because the bound host could not take it: the
+  // fallback signal when the host list has not (yet) said "offline".
+  const [startFailed, setStartFailed] = useState(false);
+  // Host-tunnel liveness for an open session (null: not host-bound).
+  const sessionHostOnline = useSessionHostOnline(sessionId);
+  const [frameKey, setFrameKey] = useState(0);
   const { data, isLoading } = useQuery({
     queryKey: ["tally-workspace"],
     queryFn: async (): Promise<TallyCatalog> => {
@@ -76,6 +84,23 @@ export function TallyWorkspace() {
       return ((await response.json()) as { data?: TallySession[] }).data ?? [];
     },
   });
+  // Tally runs on a bound execution host (Abram's Mac), offline whenever the
+  // Mac sleeps. /v1/hosts carries each host's online/offline status.
+  const hosts = useHosts({
+    enabled: Boolean(!sessionId && data?.bindings.some((b) => b.host_id)),
+  });
+  const hostOffline = (binding: TallyBinding) =>
+    Boolean(
+      binding.host_id &&
+      hosts.data?.find((h) => h.host_id === binding.host_id)?.status === "offline",
+    );
+  const notConnected =
+    startFailed || Boolean(data?.bindings.length && data.bindings.every(hostOffline));
+  const retry = () => {
+    setStartFailed(false);
+    setError("");
+    void hosts.refetch();
+  };
   const lastSession = (binding: TallyBinding) =>
     recent.data?.find((s) => !binding.host_id || s.host_id === binding.host_id);
   const open = (id: string) => navigate(`/${chatMode ? "c" : "tally"}/${encodeURIComponent(id)}`);
@@ -101,10 +126,22 @@ export function TallyWorkspace() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!response.ok) throw Error("Could not start Tally. Check that her host is online.");
+      if (!response.ok) {
+        // 409 is the server's "host offline"; 5xx means it could not reach it.
+        if (binding.host_id && (response.status === 409 || response.status >= 500)) {
+          setStartFailed(true);
+          return;
+        }
+        throw Error("Could not start Tally. Check that her host is online.");
+      }
       const session = await response.json();
       navigate(`/${chatMode ? "c" : "tally"}/${encodeURIComponent(session.id)}`);
     } catch (e) {
+      // A network failure on a host-bound start is the host being unreachable.
+      if (binding.host_id && !(e instanceof Error && e.message.startsWith("Could not start"))) {
+        setStartFailed(true);
+        return;
+      }
       setError(e instanceof Error ? e.message : "Could not start Tally");
     } finally {
       setBusy(false);
@@ -139,7 +176,11 @@ export function TallyWorkspace() {
           data-tally-header-clearance=""
           className="h-14 shrink-0 bg-[#F0EFED] md:h-12 dark:bg-[#121212]"
         />
+        {sessionHostOnline === false && (
+          <NotConnectedBanner onRetry={() => setFrameKey((k) => k + 1)} />
+        )}
         <iframe
+          key={frameKey}
           ref={frame}
           title="Tally workspace"
           // oxlint-disable-next-line iframe-missing-sandbox -- Same-origin host UI needs scripts and session cookies.
@@ -153,6 +194,18 @@ export function TallyWorkspace() {
           }
           src={`/v1/tally/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}`}
         />
+      </>
+    );
+  if (notConnected)
+    return (
+      <>
+        <div
+          aria-hidden="true"
+          data-tally-header-clearance=""
+          className="h-14 shrink-0 bg-[#F0EFED] md:h-12 dark:bg-[#121212]"
+        />
+        <NotConnectedBanner onRetry={retry} busy={hosts.isFetching} />
+        <PortalTabs />
       </>
     );
   return (
@@ -251,6 +304,83 @@ export function TallyWorkspace() {
         )}
       </main>
     </div>
+  );
+}
+
+/** Tally's host is offline: chat is unavailable, the portal is not. */
+function NotConnectedBanner({ onRetry, busy = false }: { onRetry: () => void; busy?: boolean }) {
+  return (
+    <section
+      role="status"
+      aria-label="Agent not connected"
+      className="flex shrink-0 items-center justify-between gap-3 border-[#E8E8E8] border-b bg-white px-5 py-3 text-[#1A1A1A] dark:border-[#333333] dark:bg-[#1A1A1A] dark:text-[#E0E0E0]"
+      style={{ fontFamily: "Inter, system-ui, -apple-system, sans-serif" }}
+    >
+      <span className="flex min-w-0 items-start gap-3">
+        <span
+          aria-hidden="true"
+          className="mt-1.5 inline-block size-2 shrink-0 rounded-full bg-[#8A8A8A]"
+        />
+        <span className="min-w-0">
+          <span className="block font-semibold text-sm">Agent not connected</span>
+          <span className="block text-[#505050] text-xs leading-relaxed dark:text-[#A0A0A0]">
+            Tally's host is offline, so chat is unavailable. The portal tabs still work.
+          </span>
+        </span>
+      </span>
+      <button type="button" disabled={busy} onClick={onRetry} className={SECONDARY}>
+        Retry
+      </button>
+    </section>
+  );
+}
+
+// The portal's own pages, framed through Omnigent's same-origin gateway proxy.
+// The same three tabs Tally's app shows (omnigent/airbrx/tally/ui/app.js); they
+// need the portal, not the agent.
+const PORTAL_TABS = [
+  { id: "analytics", label: "Analytics", path: "/gateway/app/#overview" },
+  { id: "agents", label: "Agent management", path: "/gateway/app/#agents" },
+  { id: "board", label: "Sprint board", path: "/gateway/app/#board" },
+] as const;
+
+function PortalTabs() {
+  const [active, setActive] = useState<(typeof PORTAL_TABS)[number]["id"]>("analytics");
+  const tab = PORTAL_TABS.find((t) => t.id === active) ?? PORTAL_TABS[0];
+  return (
+    <>
+      <div
+        role="tablist"
+        aria-label="Portal"
+        className="flex shrink-0 gap-1 border-[#E8E8E8] border-b bg-[#F0EFED] px-4 py-2 dark:border-[#333333] dark:bg-[#121212]"
+        style={{ fontFamily: "Inter, system-ui, -apple-system, sans-serif" }}
+      >
+        {PORTAL_TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={t.id === active}
+            onClick={() => setActive(t.id)}
+            className={`rounded-lg px-3 py-1.5 font-medium text-sm transition-colors ${
+              t.id === active
+                ? "bg-white text-[#1A1A1A] shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:bg-[#242424] dark:text-[#E0E0E0]"
+                : "text-[#505050] hover:bg-white/60 dark:text-[#A0A0A0] dark:hover:bg-[#1A1A1A]"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <iframe
+        role="tabpanel"
+        title={`Portal: ${tab.label}`}
+        // oxlint-disable-next-line iframe-missing-sandbox -- Same-origin portal needs scripts and session cookies.
+        sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-top-navigation-by-user-activation"
+        className="h-full min-h-0 w-full flex-1 border-0"
+        src={tab.path}
+      />
+    </>
   );
 }
 

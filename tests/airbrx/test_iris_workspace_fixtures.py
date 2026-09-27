@@ -553,6 +553,11 @@ SCENARIOS: dict[str, tuple[Callable[[], IrisSession], list[tuple[str, str]]]] = 
         lambda: IrisSession(captured(), FILES, respond, status="running"),
         [("POST", "chat"), ("POST", "refresh")],
     ),
+    # The host descriptor the app reads before anything else (STANDALONE_VIEWER.md 2.1).
+    "host_200": (
+        lambda: IrisSession(captured(), FILES, respond),
+        [("GET", "host")],
+    ),
 }
 
 
@@ -626,3 +631,115 @@ def test_every_evidence_link_in_the_fixture_resolves(monkeypatch, tmp_path) -> N
     linked = {i for r in reports for f in r.get("findings", []) for i in f["evidence_ids"]}
     assert linked, "no finding links any evidence"
     assert linked <= known, f"dangling evidence ids: {sorted(linked - known)}"
+
+
+# --- One state builder for both hosts (STANDALONE_VIEWER.md, section 3.4) ---------------
+
+#: Every recorded state answer `build_state` is responsible for. The refresh
+#: refusals that come before any items are read (`busy_session`, the repeat
+#: collect) are the route's, not the builder's, so they are not listed.
+#: This pins the recorded shapes and the "no overview" wordings only. Choosing
+#: the current-period overview (comparison windows, partial and dated windows,
+#: the UTC midnight edge) is pinned by the window tests in test_iris_routes.py,
+#: which run through `build_state` too.
+BUILT = [
+    ("fresh_session", "state"),
+    ("first_collect_produced_nothing", "refresh"),
+    ("captured", "state"),
+    ("captured", "refresh"),
+    ("stale_capture", "state"),
+    ("stale_capture", "refresh"),
+    ("investigated_and_proposed", "state"),
+    ("investigated_and_proposed", "refresh"),
+    ("refresh_read_nothing", "state"),
+    ("refresh_read_nothing", "refresh"),
+]
+
+
+def build(name: str, route: str) -> dict[str, Any]:
+    """`build_state` over a scenario's items, answered as the route would answer it."""
+    from omnigent.airbrx.iris.routes import REFRESH_PROMPT
+    from omnigent.airbrx.iris.workspace import StateUnavailable, build_state
+
+    session = SCENARIOS[name][0]()
+    fresh = route == "refresh"
+    collected_after = 0.0
+    if fresh:
+        content = [{"type": "input_text", "text": REFRESH_PROMPT}]
+        posted = session.post({"type": "message", "data": {"content": content}})
+        marker = next(i for i in session.items if i["id"] == posted["item_id"])
+        collected_after = marker["created_at"]
+    try:
+        body = build_state(
+            session.items,
+            session.files.__getitem__,
+            tenant_id=TENANT,
+            collected_after=collected_after,
+            fresh=fresh,
+            now=NOW,
+        )
+    except StateUnavailable as exc:
+        return {"status": 409, "body": {"detail": exc.detail}}
+    return {"status": 200, "body": json.loads(json.dumps(body))}
+
+
+@pytest.mark.parametrize(("name", "route"), BUILT)
+def test_build_state_answers_what_the_adapter_recorded(name: str, route: str) -> None:
+    """The committed fixture is the adapter's answer before the split; the builder matches it."""
+    recorded = json.loads(FIXTURE.read_text())[name][route]
+    assert build(name, route) == recorded
+
+
+def test_build_state_refuses_another_tenants_report() -> None:
+    from omnigent.airbrx.iris.workspace import TenantMismatch, build_state
+
+    with pytest.raises(TenantMismatch):
+        build_state(captured(), FILES.__getitem__, tenant_id="fixture-other", now=NOW)
+
+
+def test_build_state_nulls_an_unreadable_optional_report_and_fails_a_required_one() -> None:
+    from omnigent.airbrx.iris.workspace import ReportUnavailable, build_state
+
+    def report(file_id: str) -> dict[str, Any]:
+        if file_id in {PROPOSE_ID, AUDIT_ID}:
+            raise ReportUnavailable(file_id)
+        return FILES[file_id]
+
+    with pytest.raises(ReportUnavailable):
+        build_state(worked(), report, tenant_id=TENANT, now=NOW)
+
+    def optional_only(file_id: str) -> Any:
+        return "not an object" if file_id == PROPOSE_ID else FILES[file_id]
+
+    body = build_state(worked(), optional_only, tenant_id=TENANT, now=NOW)
+    assert body["proposal"] is None
+    assert body["report_times"]["iris_propose"] is None
+    assert body["investigation"] == FILES[INVESTIGATE_ID]
+
+
+def test_build_state_measures_age_on_the_clock_it_is_given() -> None:
+    from omnigent.airbrx.iris.workspace import build_state
+
+    body = build_state(captured(), FILES.__getitem__, tenant_id=TENANT, now=READ_AT + 301)
+    assert body["captured_at"] == float(READ_AT)
+    assert body["cache_age_seconds"] == 301
+    assert body["stale"] is True
+    # A clock behind the capture is age zero, never negative.
+    early = build_state(captured(), FILES.__getitem__, tenant_id=TENANT, now=READ_AT - 5)
+    assert early["cache_age_seconds"] == 0
+    assert early["stale"] is False
+
+
+def test_the_builder_imports_nothing_from_the_server() -> None:
+    """The viewer calls `build_state` without an Omnigent server (section 1)."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, omnigent.airbrx.iris.workspace, omnigent.airbrx.iris.ui_assets;"
+        "bad = [m for m in sys.modules if m.startswith(('omnigent.server', "
+        "'omnigent.airbrx.iris.routes'))];"
+        "print(bad); sys.exit(1 if bad else 0)"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
