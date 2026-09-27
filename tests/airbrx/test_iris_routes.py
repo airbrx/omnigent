@@ -421,7 +421,11 @@ def v2_ui(tmp_path, monkeypatch):
     (root / "views" / "overview.js.bak").write_text("// a backup\n")
     (root / "old").mkdir()
     (root / "old" / "app.js").write_text("// an old copy\n")
-    monkeypatch.setattr(iris_routes, "UI_ROOT", root, raising=False)
+    # The rules live in `ui_assets`, shared with the standalone viewer, so the
+    # stand-in root is patched there: both hosts then serve it.
+    from omnigent.airbrx.iris import ui_assets
+
+    monkeypatch.setattr(ui_assets, "UI_ROOT", root)
 
     kernel = tmp_path / "kernel"
     kernel.mkdir()
@@ -1293,3 +1297,96 @@ def test_a_busy_session_after_a_missed_collect_still_answers_busy(monkeypatch, t
     response = _refresh(monkeypatch, tmp_path, session)
     assert response.status_code == 409
     assert response.json() == {"detail": iris_routes.BUSY_DETAIL}
+
+
+# --- The host descriptor (docs/iris/STANDALONE_VIEWER.md, section 2.1) -------------------
+
+
+def test_the_host_descriptor_names_omnigent_and_the_native_session_links(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    response = client.get(f"{API}/host")
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "schema": 1,
+        "host_label": "Omnigent",
+        "identity": {"kind": "omnigent", "email": None, "sign_in": None},
+        "agent": {"connected": True, "why": None},
+        "data": {
+            "source": "session",
+            "scope_id": SESSION,
+            "tenant_id": "fixture-iris",
+            "week": None,
+            "weeks": None,
+        },
+        "links": {
+            "native_chat": f"/c/{SESSION}",
+            "items": f"/v1/sessions/{SESSION}/items",
+            "session": f"/v1/sessions/{SESSION}",
+            "files": f"/v1/sessions/{SESSION}/resources/files",
+            "catalog": "/v1/iris",
+            "account": "/v1/iris/account",
+            "tenant_home": None,
+            "week_page": None,
+        },
+        "open_tenant": "postMessage",
+    }
+
+
+def test_the_host_descriptor_requires_an_iris_session(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    monkeypatch.setattr(iris_routes, "require_user", lambda request, provider: None)
+    assert client.get(f"{API}/host").status_code == 401
+
+
+def test_the_host_descriptor_is_not_served_as_a_ui_asset(v2_ui, monkeypatch, tmp_path):
+    """`ui/api/host` is the descriptor, not a 404 from the asset catch-all."""
+    response = _ui_client(monkeypatch, tmp_path).get(f"{UI}/api/host")
+    assert response.status_code == 200
+    assert response.json()["host_label"] == "Omnigent"
+
+
+def test_the_host_descriptor_stays_out_of_the_schema_and_carries_no_email(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES))
+    paths = client.app.openapi()["paths"]
+    assert not [p for p in paths if p.endswith("/api/host")], sorted(paths)
+    body = client.get(f"{API}/host").json()
+    assert body["identity"]["email"] is None
+    assert "@" not in json.dumps(body)
+
+
+# --- The shared asset rules (STANDALONE_VIEWER.md, section 7, SV1) -----------------------
+
+
+def test_the_asset_rules_live_in_ui_assets_and_routes_serves_through_them():
+    """One set of rules, so the viewer and the adapter serve the same files."""
+    from omnigent.airbrx.iris import ui_assets
+
+    assert ui_assets.UI_ROOT == iris_routes.HERE / "ui"
+    assert {"assets/iris-portrait.png", "assets/airbrx-logo.png"} == ui_assets.PINNED_IMAGES
+    for name in ("app.js", "style.css", "views/overview.js"):
+        assert ui_assets.APP_FILES.fullmatch(name), name
+    for name in ("UI_ROOT", "_V2_APP_FILES", "_PINNED_IMAGES", "kernel_file"):
+        assert not hasattr(iris_routes, name), f"routes.py still defines {name}"
+
+
+@pytest.mark.parametrize(
+    ("asset", "served"),
+    [
+        ("", True),
+        ("index.html", True),
+        ("app.js", True),
+        ("views/overview.js", True),
+        ("kernel/dom.js", True),
+        ("assets/airbrx-logo.png", True),
+        ("host.js", False),
+        ("iris-state.json", False),
+        ("demo-state.json", False),
+        ("secret.txt", False),
+        ("kernel/unlisted.js", False),
+        ("views/../secret.txt", False),
+    ],
+)
+def test_ui_response_is_the_one_rule_both_hosts_serve_by(v2_ui, asset, served):
+    from omnigent.airbrx.iris.ui_assets import ui_response
+
+    assert (ui_response(asset) is not None) is served

@@ -648,6 +648,42 @@
       "status": 409
     }
   },
+  "host_200": {
+    "host": {
+      "body": {
+        "agent": {
+          "connected": true,
+          "why": null
+        },
+        "data": {
+          "scope_id": "s1",
+          "source": "session",
+          "tenant_id": "fixture-iris",
+          "week": null,
+          "weeks": null
+        },
+        "host_label": "Omnigent",
+        "identity": {
+          "email": null,
+          "kind": "omnigent",
+          "sign_in": null
+        },
+        "links": {
+          "account": "/v1/iris/account",
+          "catalog": "/v1/iris",
+          "files": "/v1/sessions/s1/resources/files",
+          "items": "/v1/sessions/s1/items",
+          "native_chat": "/c/s1",
+          "session": "/v1/sessions/s1",
+          "tenant_home": null,
+          "week_page": null
+        },
+        "open_tenant": "postMessage",
+        "schema": 1
+      },
+      "status": 200
+    }
+  },
   "investigated_and_proposed": {
     "refresh": {
       "body": {
