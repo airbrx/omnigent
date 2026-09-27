@@ -7,7 +7,16 @@
 # credentials, so this is the one part of the rollout an agent cannot do.
 #
 #   aws sso login --profile airbrx-prod      # interactive, once
-#   bash scripts/iris/configure_coordinator.sh
+#   IRIS_LIVE_TENANT_ID=<tenant uuid> bash scripts/iris/configure_coordinator.sh
+#
+# Required:
+#   IRIS_LIVE_TENANT_ID    UUID of the live Airbrx tenant to bind. Deliberately
+#                          not hard-coded: this repo is public, and a real
+#                          customer tenant id does not belong in it. Get it
+#                          from the Airbrx admin console or the operator.
+# Optional:
+#   IRIS_LIVE_TENANT_NAME  label the picker shows instead of the UUID
+#                          (default: "Live tenant").
 #
 # Idempotent: re-running replaces the binding file and leaves one env line.
 # To undo: delete the OMNIGENT_IRIS_CONFIG line and restart omnigent-server.
@@ -16,6 +25,19 @@ set -euo pipefail
 PROFILE="${AWS_PROFILE:-airbrx-prod}"
 INSTANCE_ID="${OMNIGENT_COORDINATOR_INSTANCE:-i-02eb2f52439574844}"
 REGION="${AWS_REGION:-us-east-1}"
+
+usage() { sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' >&2; }
+LIVE_TENANT_ID="${IRIS_LIVE_TENANT_ID:-}"
+LIVE_TENANT_NAME="${IRIS_LIVE_TENANT_NAME:-Live tenant}"
+if [ -z "$LIVE_TENANT_ID" ]; then
+  echo "error: IRIS_LIVE_TENANT_ID is required" >&2
+  usage
+  exit 2
+fi
+if ! [[ "$LIVE_TENANT_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  echo "error: IRIS_LIVE_TENANT_ID must be a UUID, got '$LIVE_TENANT_ID'" >&2
+  exit 2
+fi
 
 # The bindings. NOT secret — a tenant id, the execution host's id, an operator
 # workspace path, the users allowed to open it, and a *reference* to the PAT.
@@ -59,11 +81,11 @@ REGION="${AWS_REGION:-us-east-1}"
 # keyring call *raises*, so a reachable-but-empty keychain fails closed. The
 # fixture tenant is unaffected — it resolves no PAT at all. Run
 # `scripts/iris/verify_host.py --live` after this script to settle it.
-read -r -d '' BINDINGS <<'JSON' || true
+BINDINGS=$(jq -n --arg tid "$LIVE_TENANT_ID" --arg name "$LIVE_TENANT_NAME" '
 [
   {
-    "tenant_id": "f65d9135-0ba3-4c58-8768-c48a1334041d",
-    "name": "Airbrx Databricks Production",
+    "tenant_id": $tid,
+    "name": $name,
     "host_id": "448499c76820453d84eadc5b7107ed8b",
     "workspace": "/Users/abramerickson/.omnigent/iris-workspaces/live",
     "users": ["aerickson@airbrx.com"],
@@ -80,7 +102,7 @@ read -r -d '' BINDINGS <<'JSON' || true
     "fixture": true
   }
 ]
-JSON
+')
 
 REMOTE=$(cat <<EOS
 set -eu

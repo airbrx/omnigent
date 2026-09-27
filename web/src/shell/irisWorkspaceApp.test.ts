@@ -177,7 +177,7 @@ function serve(
           bindings: [
             { tenant_id: TENANT, name: "Iris fixture tenant", fixture: true, host_online: true },
             {
-              tenant_id: "f65d9135-0000-4000-8000-000000000000",
+              tenant_id: "00000000-0000-4000-8000-000000000001",
               name: "Production",
               fixture: false,
               host_online: true,
@@ -190,7 +190,7 @@ function serve(
           tenants: 2,
           ranked: [
             {
-              tenant_id: "f65d9135-0000-4000-8000-000000000000",
+              tenant_id: "00000000-0000-4000-8000-000000000001",
               name: "Production",
               hit_rate: 0.5,
               hit_rate_denominator: 2000,
@@ -487,7 +487,7 @@ it("Accounts lists the tenants read-only; this session's tenant has no button", 
   const here = table.querySelector(`[data-tenant-id="${TENANT}"]`) as HTMLElement;
   expect(here.textContent).toContain("This session");
   expect(within(here).queryByRole("button")).toBeNull();
-  const other = table.querySelector('[data-tenant-id^="f65d9135"]') as HTMLElement;
+  const other = table.querySelector('[data-tenant-id^="00000000"]') as HTMLElement;
   expect(other.textContent).toContain("50.0%");
   expect(other.textContent).toContain("of 2,000 requests");
 });
@@ -496,7 +496,7 @@ it("Accounts opens another tenant through the shell, never by creating or switch
   const posted = vi.spyOn(window.parent, "postMessage");
   await mount("#accounts");
   const table = await screen.findByRole("table", { name: "Tenants in this account" });
-  const other = table.querySelector('[data-tenant-id^="f65d9135"]') as HTMLElement;
+  const other = table.querySelector('[data-tenant-id^="00000000"]') as HTMLElement;
   // Since #113 the shell goes back to the tenant's last session when there is
   // one, so neither the button nor the heading promises a new session.
   expect(screen.getByRole("heading", { name: "Accounts" }).parentElement?.textContent).not.toMatch(
@@ -505,7 +505,7 @@ it("Accounts opens another tenant through the shell, never by creating or switch
   expect(within(other).queryByRole("button", { name: /new session/i })).toBeNull();
   fireEvent.click(within(other).getByRole("button", { name: "Open" }));
   expect(posted).toHaveBeenCalledWith(
-    { type: "iris.openTenant", tenant_id: "f65d9135-0000-4000-8000-000000000000" },
+    { type: "iris.openTenant", tenant_id: "00000000-0000-4000-8000-000000000001" },
     window.location.origin,
   );
   expect(

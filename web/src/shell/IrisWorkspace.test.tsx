@@ -316,12 +316,12 @@ it("shows a short tenant id whole rather than cutting it to a fragment", () => {
 });
 
 it("truncates a UUID, which costs 36 characters to say nothing", () => {
-  expect(shortId("f65d9135-0ba3-4c58-8768-c48a1334041d")).toBe("f65d9135");
+  expect(shortId("00000000-0000-4000-8000-000000000001")).toBe("00000000");
 });
 
 it("keeps enough of a UUID to tell two tenants apart", () => {
-  expect(shortId("f65d9135-0ba3-4c58-8768-c48a1334041d")).not.toBe(
-    shortId("f65d9136-0ba3-4c58-8768-c48a1334041d"),
+  expect(shortId("00000000-0000-4000-8000-000000000001")).not.toBe(
+    shortId("00000001-0000-4000-8000-000000000001"),
   );
 });
 
