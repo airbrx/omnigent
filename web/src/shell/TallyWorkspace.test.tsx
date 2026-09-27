@@ -179,3 +179,16 @@ it("an embedded host offers the native chat instead of a frame it cannot route",
   fireEvent.click(screen.getByRole("button", { name: "Open native chat instead" }));
   expect(routing.navigate).toHaveBeenCalledWith("/c/owned-session");
 });
+
+it("keeps the frame below the shell header, so the header cannot take the tab bar's clicks", () => {
+  // AppShell lays ChatHeader over <main> (absolute, top-0, z-30, h-14 / md:h-12,
+  // transparent), and Tally's tab bar and Refresh are the top of the frame.
+  routing.params = { sessionId: "owned-session" };
+  const { container } = show();
+  const frame = screen.getByTitle("Tally workspace");
+  const clearance = container.querySelector("[data-tally-header-clearance]");
+  expect(clearance).not.toBeNull();
+  expect(clearance).toHaveAttribute("aria-hidden", "true");
+  expect(clearance).toHaveClass("h-14", "md:h-12", "shrink-0");
+  expect(clearance!.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
