@@ -2,15 +2,15 @@
 
 The integration is implemented in this checkout. Production rollout and hosted browser/model acceptance are pending; a passing local test is not deployment.
 
-After rollout, open `https://omnigent.airbrx.ai/iris`, or **Agents → Iris → Open workspace**. Select the authorized tenant, then **Open workspace → Refresh from host**. The existing Overview, Improvements, Rules, Results and chat remain intact. **Open native chat** continues that exact session. **Show session downloads** exposes JSON/Markdown via the normal authenticated file routes. To start with native chat, choose the Iris row in the drawer, select the tenant, then **Start chat**. The landing picker remains available; its selected host/workspace must match an operator binding.
+After rollout, open `https://omnigent.airbrx.ai/iris`, or **Agents → Iris → Open workspace**. The landing lists the account's tenants from their last captures. A tenant with a previous session of yours gets **Resume** (matched on host **and** workspace) beside **New**; otherwise its only button is **Open workspace**, which creates one session for that tenant. The workspace is v2 (`docs/iris/WORKSPACE_V2.md`): tabs for Overview, Findings, Rules, Proposals, Evidence, Results and Accounts, with **Ask Iris** docked on the right and collapsible to a rail. The chat survives a reload. A session with no capture collects its first overview automatically, once; after that the page offers **Collect now**, and **Collect a fresh overview** runs one on demand. A capture older than five minutes is shown with "may be out of date" while one background refresh runs. **Open native chat** continues that exact session. **Session downloads** lists the session's JSON/Markdown through the normal authenticated file routes. To start with native chat, choose the Iris row in the drawer, select the tenant, then **Start chat**. The selected host/workspace must match an operator binding.
 
 ## Architecture and ownership
 
 `Agents drawer → registered /v1/agents Iris → POST /v1/sessions → native Claude SDK → four existing Iris tools → session-owned file APIs`.
 
-The accepted workspace is served inside the Omnigent shell at `/iris/{session_id}`, with authenticated assets/API under `/v1/iris/sessions/{session_id}/ui/`. Extensions V1 grants only `sessions.read`; it cannot submit or cancel turns or retrieve session files. This fork therefore adds one small shell page and an authenticated host router instead of widening extension permissions or inventing a portable AgentSpec field. The host-side Iris mapping uses the existing agent registry and workspace-scoped avatar store.
+The workspace is served inside the Omnigent shell at `/iris/{session_id}`, framed same-origin, with authenticated assets/API under `/v1/iris/sessions/{session_id}/ui/`. The page is `omnigent/airbrx/iris/ui/` on the shared workspace kernel (`omnigent/airbrx/workspace/ui/`, served as `ui/kernel/*`); the portrait and logo still come from the pinned archive. Nothing else is served from that path: no `iris-state.json`, no `demo-state.json`, and none of the pinned app's own files. Extensions V1 grants only `sessions.read`; it cannot submit or cancel turns or retrieve session files. This fork therefore adds one small shell page and an authenticated host router instead of widening extension permissions or inventing a portable AgentSpec field. The host-side Iris mapping uses the existing agent registry and workspace-scoped avatar store.
 
-The pinned `airbrx/iris` revision and archive SHA256 are in `omnigent/airbrx/iris/source.json`. `scripts/iris/vendor.py /path/to/iris-app` reproduces the archive from tracked files at the recorded revision, regardless of the source checkout HEAD. Use `--revision REVIEWED_COMMIT` only when deliberately updating the pin. The original Python package, UI, portrait, four tool modules and curated skills are unchanged. Packaging folds the existing skills into instructions and supplies a short catalog description. Private `ui/iris-state.json` is excluded. Importing a synthetic/local capture retains the existing snapshot-only chat behavior.
+The pinned `airbrx/iris` revision and archive SHA256 are in `omnigent/airbrx/iris/source.json`. `scripts/iris/vendor.py /path/to/iris-app` reproduces the archive from tracked files at the recorded revision, regardless of the source checkout HEAD. Use `--revision REVIEWED_COMMIT` only when deliberately updating the pin. The original Python package, portrait, four tool modules and curated skills are unchanged. Packaging folds the existing skills into instructions and supplies a short catalog description. Private `ui/iris-state.json` is excluded. The archive still carries the pinned app's `ui/index.html`, `app.js`, `style.css` and `theme.js`, but the server no longer serves them; dropping them from `vendor.py`'s allowlist waits for the `airbrx/iris` change that marks `ui/` dev-only, and then a re-vendor (`WORKSPACE_V2.md`, section 7, step 5). The v2 workspace has no report import: everything it shows comes from a model turn in that session.
 
 ToolManager exposes exactly `iris_overview`, `iris_investigate`, `iris_audit`, `iris_propose`. Native runner dispatch also denies unadvertised ambient tools before execution. The pinned spec and absolute tool-source bytes are checked before execution. SDK/dependency versions are locked by the `iris` extra. The host's configured model authentication remains in charge; the integration does not inject model keys or change subscription/API-key mode.
 
@@ -109,12 +109,37 @@ launcher, restore the saved original plist and repeat the two launchctl
 commands. The code/config rollout must be coordinated; a version endpoint alone
 does not prove success.
 
+## Workspace v2 and rollback
+
+v2 is the only Iris workspace. The cutover (W5) removed the pinned UI path and
+`omnigent/airbrx/iris/host.js`, the adapter that was injected into it, with its
+test. `OMNIGENT_IRIS_UI` is no longer read: it can be left in
+`/etc/omnigent/server.env` or removed, and setting it to `v1` or anything else
+does **not** bring the old workspace back. There is nothing to bring back
+without `host.js`: the pinned app on its own falls back to
+`iris-state.json` and then the synthetic `demo-state.json` and answers from them
+locally, which is exactly what the host refuses to serve.
+
+**Rollback** is a code rollback, not a setting:
+
+1. `git revert <cutover merge commit>` on `main` (it restores `host.js`, its
+   test, and the switch with the pinned UI as the default), then deploy that
+   through the normal push to `omnigent-airbrx-server`.
+2. Or redeploy the previous server build. The vendored archive did not change
+   in the cutover, so either route serves the same pinned package.
+3. After either, `GET /v1/iris/sessions/{id}/ui/` should contain
+   `<script src="host.js">`; with the cutover in place it contains
+   `<script src="app.js">` and `ui/host.js` is 404.
+
+No data migrates in either direction: sessions, reports and the chat history
+belong to the Omnigent session, not the UI.
+
 ## Verification
 
 ```sh
-uv run --no-sync pytest tests/server/integration/test_iris_host.py tests/runner/test_local_tool_workspace_binding.py tests/runner/test_app_spec_workdir_paths.py
+uv run --no-sync pytest tests/airbrx tests/server/integration/test_iris_host.py tests/runner/test_local_tool_workspace_binding.py tests/runner/test_app_spec_workdir_paths.py
 cd web
-pnpm exec vitest run src/shell/AgentDrawer.test.tsx src/shell/IrisWorkspace.test.tsx
+pnpm exec vitest run src/shell/AgentDrawer.test.tsx src/shell/IrisWorkspace.test.tsx src/shell/IrisAccountView.test.tsx src/shell/irisWorkspaceApp.test.ts src/shell/workspaceKernel.test.ts
 pnpm run lint
 pnpm run type-check
 pnpm run build
@@ -141,9 +166,9 @@ The verifier leaves its two sessions available for browser review. It records de
 - **Busy/cancel:** one workspace turn at a time. Cancel uses the native interrupt event. The tool subprocess is killed on cancellation or deadline; durable reservations are retained. Open native chat to inspect/retry.
 - **Credentials unavailable/expired:** the tool fails visibly; repair the host secret reference and start a fresh session. No fallback model loop is launched.
 - **Budget exhausted:** the existing Iris budget persists across the conversation, including its 300-second elapsed budget. Start a new session; reload does not reset it.
-- **Refresh failed:** a fresh refresh must produce a new successful overview tool result. Old reports do not become fresh evidence. The UI retains its prior capture; reports older than five minutes are marked stale.
+- **Refresh failed:** a fresh refresh must produce a new successful overview tool result. Old reports do not become fresh evidence. The UI retains its prior capture; captures older than five minutes are labelled "may be out of date" and get one background refresh, at most once per capture. A failed refresh does not retry by itself.
 - **Isolation:** the UI checks current host authentication, edit permission, registered agent and authorized user/host/workspace binding. State reads only reports referenced by native Iris tool results. Downloads use the existing session/workspace permission and file ownership checks. A report's tenant must match the binding.
-- **Workspace UI authentication:** the accepted document uses same-origin host cookies. The normal web deployment supports this; token-only embedded clients require a separate authenticated document transport before browser acceptance there.
+- **Workspace UI authentication:** the framed workspace authenticates with the host's same-origin cookies (`credentials: "same-origin"` on every kernel request), and nothing passes a token into the frame. The normal web deployment supports this. An embedded client that reaches the API only through its own `fetcher` cannot route an `<iframe src>` through it, so there the shell does not mount the frame: it says the workspace is served by the Omnigent host and offers **Open native chat instead**, which is the same session. There is no token bridge for the Iris workspace, and none is planned; Eva's token bridge (`docs/eva/RUNBOOK.md`) is a runner credential, not a document transport.
 - **Monitoring:** unavailable. No scheduler, browser-closed watch, anomaly detector or protective action is claimed. Shared article-alignment work remains open.
 
 ## Rollout gate

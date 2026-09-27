@@ -393,7 +393,10 @@ def test_existing_state_keys_are_unchanged(monkeypatch, tmp_path):
     assert body["monitoring"] is None
 
 
-# --- Assets under OMNIGENT_IRIS_UI (WORKSPACE_V2.md, D1 and section 2 "Assets") --------
+# --- Assets (WORKSPACE_V2.md, D1, section 2 "Assets" and section 7 step 5) --------------
+#
+# v2 is the only workspace since the cutover (W5). `OMNIGENT_IRIS_UI` is no
+# longer read: nothing it is set to brings back the pinned UI or `host.js`.
 
 UI = f"/v1/iris/sessions/{SESSION}/ui"
 
@@ -431,7 +434,8 @@ def v2_ui(tmp_path, monkeypatch):
     package.assets = assets
     monkeypatch.setitem(sys.modules, "omnigent.airbrx.workspace", package)
     monkeypatch.setitem(sys.modules, "omnigent.airbrx.workspace.assets", assets)
-    monkeypatch.setenv("OMNIGENT_IRIS_UI", "v2")
+    # v2 is the default: nothing opts in to it.
+    monkeypatch.delenv("OMNIGENT_IRIS_UI", raising=False)
     return root
 
 
@@ -513,28 +517,34 @@ def test_v2_without_the_kernel_package_404s_kernel_files(v2_ui, monkeypatch, tmp
     assert _ui_client(monkeypatch, tmp_path).get(f"{UI}/kernel/dom.js").status_code == 404
 
 
-def test_v2_is_read_per_request(v2_ui, monkeypatch, tmp_path):
-    client = _ui_client(monkeypatch, tmp_path)
-    assert "host.js" not in client.get(f"{UI}/index.html").text
-    monkeypatch.delenv("OMNIGENT_IRIS_UI")
-    assert "host.js" in client.get(f"{UI}/index.html").text
+@pytest.mark.parametrize("value", [None, "", "v2", "V2", "v1", "pinned", "1", " v2"])
+def test_v2_is_served_whatever_the_retired_switch_says(v2_ui, monkeypatch, tmp_path, value):
+    """The cutover: `/iris` is v2 with no env var, and the old switch cannot undo it.
 
-
-@pytest.mark.parametrize("value", [None, "", "V2", "v1", "pinned", "1", " v2"])
-def test_anything_but_v2_serves_the_pinned_ui_as_before(v2_ui, monkeypatch, tmp_path, value):
+    `OMNIGENT_IRIS_UI=v1` (or anything else) used to serve the pinned UI with
+    `host.js` injected. `host.js` is deleted, and the pinned app without it
+    falls back to synthetic data, so there is no v1 left to serve. Rolling back
+    is reverting the cutover commit, not setting a variable (docs/iris/RUNBOOK.md).
+    """
     if value is None:
-        monkeypatch.delenv("OMNIGENT_IRIS_UI")
+        monkeypatch.delenv("OMNIGENT_IRIS_UI", raising=False)
     else:
         monkeypatch.setenv("OMNIGENT_IRIS_UI", value)
     client = _ui_client(monkeypatch, tmp_path)
-    index = client.get(f"{UI}/index.html")
-    assert index.status_code == 200
-    assert '<script src="host.js"></script><script src="theme.js">' in index.text
-    assert index.text != (v2_ui / "index.html").read_text()
-    assert client.get(f"{UI}/host.js").status_code == 200
-    assert client.get(f"{UI}/theme.js").status_code == 200
-    for name in ("iris-state.json", "demo-state.json", "kernel/dom.js", "views/overview.js"):
+    for path in (f"{UI}/", f"{UI}/index.html"):
+        index = client.get(path)
+        assert index.status_code == 200
+        assert index.text == (v2_ui / "index.html").read_text()
+        assert "host.js" not in index.text
+    assert client.get(f"{UI}/app.js").text == "// v2 app\n"
+    assert client.get(f"{UI}/kernel/dom.js").status_code == 200
+    for name in ("host.js", "theme.js", "iris-state.json", "demo-state.json"):
         assert client.get(f"{UI}/{name}").status_code == 404, name
+
+
+def test_the_pinned_adapter_is_gone_from_the_package():
+    assert not (iris_routes.HERE / "host.js").exists()
+    assert not hasattr(iris_routes, "ui_version")
 
 
 def test_assets_still_require_an_iris_session(v2_ui, monkeypatch, tmp_path):

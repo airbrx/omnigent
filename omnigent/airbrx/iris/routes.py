@@ -6,7 +6,6 @@ import asyncio
 import importlib
 import json
 import math
-import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -14,7 +13,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from omnigent.airbrx.iris.account import collect_captures
@@ -148,18 +147,8 @@ UI_ROOT = HERE / "ui"
 #: so nothing else placed under `ui/` becomes reachable, and `views/` cannot be
 #: escaped with `..` or a nested path.
 _V2_APP_FILES = re.compile(r"(?:app\.js|style\.css|views/[A-Za-z0-9_-]+\.js)")
-#: The two images still read from the pinned archive under either UI.
+#: The two images still read from the pinned archive (`ui/assets/`, D1).
 _PINNED_IMAGES = frozenset({"assets/iris-portrait.png", "assets/airbrx-logo.png"})
-
-
-def ui_version() -> str:
-    """Which workspace the asset route serves, read on every request.
-
-    `OMNIGENT_IRIS_UI=v2` serves the new UI plus the shared kernel. Anything
-    else, including unset, serves the pinned UI with `host.js` injected, as
-    before, so production is unchanged until the default is flipped (W5).
-    """
-    return "v2" if os.environ.get("OMNIGENT_IRIS_UI") == "v2" else "pinned"
 
 
 def kernel_file(name: str) -> Path | None:
@@ -167,11 +156,11 @@ def kernel_file(name: str) -> Path | None:
 
     The kernel (`omnigent.airbrx.workspace`) owns its allowlist; this only
     refuses anything outside it. Imported here rather than at module load so a
-    host without the kernel still serves the pinned UI.
+    host without the kernel 404s kernel files instead of failing to import.
     """
     try:
-        # By name: the kernel lands in its own change (W2), and this module
-        # must import, type-check and serve the pinned UI without it.
+        # By name, so this module imports and type-checks without the kernel
+        # package; a missing kernel is a 404 on its files, nothing more.
         kernel = importlib.import_module("omnigent.airbrx.workspace.assets")
     except ImportError:
         return None
@@ -698,13 +687,25 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
     async def refresh(request: Request, session_id: str):
         return await read_state(request, session_id, fresh=True)
 
-    def v2_asset(asset: str):
-        """The v2 workspace (WORKSPACE_V2.md, section 2, "Assets"). Everything else is 404.
+    @router.get("/iris/sessions/{session_id}/ui/{asset:path}", include_in_schema=False)
+    async def asset(request: Request, session_id: str, asset: str):
+        """The workspace (WORKSPACE_V2.md, section 2, "Assets"). Everything else is 404.
 
-        No `host.js`, no injection, and none of the pinned app's files: v2 is
-        the new UI and the kernel, plus the two pinned images. `iris-state.json`
-        and `demo-state.json` stay 404 for the reason given in `asset` below.
+        v2 is the only workspace since the cutover (W5): the new UI and the
+        kernel, plus the two pinned images. There is no switch back. The pinned
+        app is not served, and `host.js`, the adapter that was injected into it,
+        is deleted: without that adapter the pinned app boots through
+        `iris-state.json` then `demo-state.json` and answers from them locally,
+        so serving it at all would be serving synthetic data.
+
+        `iris-state.json` stays 404 because it is someone's captured tenant
+        evidence, and `demo-state.json` because a fresh tenant-bound session
+        must show its own evidence or nothing, never a complete fabricated
+        report behind a small chip. Neither is under `UI_ROOT`, and nothing but
+        the names below is served from it.
         """
+        async with session_client(request) as client:
+            await authorize(request, session_id, client)
         if not asset or asset == "index.html":
             if not (UI_ROOT / "index.html").is_file():
                 raise HTTPException(404)
@@ -728,54 +729,5 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                 source_root() / "ui" / asset, headers={"Cache-Control": "private, max-age=3600"}
             )
         raise HTTPException(404)
-
-    @router.get("/iris/sessions/{session_id}/ui/{asset:path}", include_in_schema=False)
-    async def asset(request: Request, session_id: str, asset: str):
-        async with session_client(request) as client:
-            await authorize(request, session_id, client)
-        if ui_version() == "v2":
-            return v2_asset(asset)
-        if not asset or asset == "index.html":
-            html = (source_root() / "ui/index.html").read_text()
-            html = html.replace(
-                '<script src="theme.js">', '<script src="host.js"></script><script src="theme.js">'
-            )
-            return HTMLResponse(
-                html, headers={"Cache-Control": "no-store", "X-Frame-Options": "SAMEORIGIN"}
-            )
-        if asset == "host.js":
-            # No-store, unlike the pinned assets below: this adapter is part of
-            # the host build, not the verified package, and a cached copy would
-            # keep reporting a readiness contract the server has moved past.
-            return FileResponse(
-                HERE / "host.js",
-                media_type="text/javascript",
-                headers={"Cache-Control": "no-store"},
-            )
-        # The app, not captures. `iris-state.json` is already withheld because
-        # it is someone's captured tenant evidence; `demo-state.json` is
-        # withheld for a subtler reason that is the same reason.
-        #
-        # app.js boots through a fallback chain: `api/state`, then
-        # `iris-state.json`, then `demo-state.json`. On a hosted mount the
-        # first 409s until a turn has produced an overview and the second is
-        # 404. Serving the third meant a fresh tenant-bound session opened
-        # showing a complete, entirely synthetic cache report - hit rate,
-        # findings, a tenant line - behind nothing but a small "Synthetic
-        # demo" chip, and `ask()` then answered questions from it locally
-        # without ever calling the host. A session shows its own evidence or
-        # it shows nothing and says so.
-        allowed = {
-            "app.js",
-            "theme.js",
-            "style.css",
-            "assets/iris-portrait.png",
-            "assets/airbrx-logo.png",
-        }
-        if asset not in allowed:
-            raise HTTPException(404)
-        return FileResponse(
-            source_root() / "ui" / asset, headers={"Cache-Control": "private, max-age=3600"}
-        )
 
     return router

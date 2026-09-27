@@ -74,7 +74,7 @@ def test_the_kernel_is_agent_agnostic(path) -> None:
         assert not re.search(rf"\b{name}", source, re.IGNORECASE), name
 
 
-# --- The real kernel through the real Iris route (OMNIGENT_IRIS_UI=v2) ------------------
+# --- The real kernel through the real Iris route (v2, the default since W5) --------------
 #
 # No stand-in kernel: this is the merged `omnigent/airbrx/iris/routes.py` asset
 # route calling this package's `kernel_asset`, so a contract drift between the
@@ -91,7 +91,7 @@ def test_the_iris_v2_route_serves_every_kernel_file(monkeypatch, tmp_path, name)
         make_client,
     )
 
-    monkeypatch.setenv("OMNIGENT_IRIS_UI", "v2")
+    monkeypatch.delenv("OMNIGENT_IRIS_UI", raising=False)
     client = make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES))
     response = client.get(f"/v1/iris/sessions/{SESSION}/ui/kernel/{name}")
     assert response.status_code == 200, response.text
@@ -111,6 +111,6 @@ def test_the_iris_v2_route_refuses_anything_else(monkeypatch, tmp_path, name) ->
         make_client,
     )
 
-    monkeypatch.setenv("OMNIGENT_IRIS_UI", "v2")
+    monkeypatch.delenv("OMNIGENT_IRIS_UI", raising=False)
     client = make_client(monkeypatch, tmp_path, IrisSession(captured(), FILES))
     assert client.get(f"/v1/iris/sessions/{SESSION}/ui/kernel/{name}").status_code == 404
