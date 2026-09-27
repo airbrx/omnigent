@@ -2854,6 +2854,11 @@ def create_app(
     from omnigent.airbrx.gateway.proxy import create_gateway_app_router
 
     app.include_router(create_gateway_app_router(auth_provider=auth_provider), tags=["gateway"])
+    # Airbrx Superset at /superset/app, prefix kept upstream, signed identity.
+    # Answers 503 until AIRBRX_SUPERSET_IDENTITY_SECRET is set.
+    from omnigent.airbrx.superset.proxy import create_superset_app_router
+
+    app.include_router(create_superset_app_router(auth_provider=auth_provider), tags=["superset"])
     # Read-only built-in agent discovery (designs/BUILTIN_AGENTS.md).
     # Successor to the removed GET /api/agents list; lists only
     # built-in (session_id IS NULL) agents for the new-session picker.
