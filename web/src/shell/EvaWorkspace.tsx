@@ -28,6 +28,50 @@ interface EvaCatalog {
 }
 
 /**
+ * The framed workspace's tab ids, the only values a deep link may carry into it
+ * (app.js TABS; evaWorkspaceApp.test.ts fails if the two lists drift). A tab id
+ * is all that crosses into the frame: the frame maps it to its own fixed
+ * `/eva/app/<page>` path, so no URL from the address bar is ever framed.
+ */
+export const EVA_TABS = [
+  "chat",
+  "leads",
+  "pool",
+  "accounts",
+  "analytics",
+  "scoreboard",
+  "linkedin",
+  "plan",
+  "guardrails",
+  "sync",
+  "settings",
+] as const;
+export type EvaTab = (typeof EVA_TABS)[number];
+
+/** `linkedin` or `#linkedin` to the tab id, or nothing for anything else. */
+export function knownEvaTab(value: unknown): EvaTab | undefined {
+  if (typeof value !== "string") return undefined;
+  const id = value.replace(/^#/, "");
+  return (EVA_TABS as readonly string[]).includes(id) ? (id as EvaTab) : undefined;
+}
+
+/**
+ * The tab a deep link names: `/eva#linkedin`, or `/eva?tab=linkedin` where a
+ * hash is awkward (the hash wins when both are present).
+ */
+export function deepLinkedTab(hash: string, search: URLSearchParams): EvaTab | undefined {
+  return knownEvaTab(hash) ?? knownEvaTab(search.get("tab"));
+}
+
+/** Put the open tab in this page's hash without a navigation or history entry. */
+function showTabInAddress(tab: EvaTab) {
+  if (window.location.hash === `#${tab}`) return;
+  const { pathname, search } = window.location;
+  // Keep the router's own history state; only the hash changes.
+  window.history.replaceState(window.history.state, "", `${pathname}${search}#${tab}`);
+}
+
+/**
  * Eva's workspace: the everyday surface. See docs/eva/WORKSPACE.md.
  *
  * Mirrors IrisWorkspace. The landing lists the caller's Eva bindings and starts
@@ -44,6 +88,37 @@ export function EvaWorkspace() {
   const frame = useRef<HTMLIFrameElement>(null);
   // Captured once: rewriting `src` would reload the frame and lose the chat.
   const [mountTheme] = useState(mode);
+  // The deep-linked tab, read once for the same reason.
+  const [mountTab] = useState(() => deepLinkedTab(window.location.hash, searchParams));
+  // The frame says which tab it shows, so the address bar names it and a copied
+  // link reopens it. Accepted only from this origin, from this page's own
+  // frame, and only as a known tab id.
+  useEffect(() => {
+    if (!sessionId) return;
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (!event.source || event.source !== frame.current?.contentWindow) return;
+      const data = event.data as { type?: unknown; tab?: unknown } | null;
+      if (!data || data.type !== "eva.tab") return;
+      const tab = knownEvaTab(data.tab);
+      if (tab) showTabInAddress(tab);
+    };
+    // Back, forward or an edited hash: tell the frame, by id only.
+    const onHashChange = () => {
+      const tab = knownEvaTab(window.location.hash);
+      if (tab)
+        frame.current?.contentWindow?.postMessage(
+          { type: "eva.host.tab", tab },
+          window.location.origin,
+        );
+    };
+    window.addEventListener("message", onMessage);
+    window.addEventListener("hashchange", onHashChange);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      window.removeEventListener("hashchange", onHashChange);
+    };
+  }, [sessionId]);
   useEffect(() => {
     frame.current?.contentWindow?.postMessage({ evaHostTheme: mode }, window.location.origin);
   }, [mode]);
@@ -78,7 +153,12 @@ export function EvaWorkspace() {
   });
   const lastSession = (binding: EvaBinding) =>
     recent.data?.find((s) => !binding.host_id || s.host_id === binding.host_id);
-  const open = (id: string) => navigate(`/${chatMode ? "c" : "eva"}/${encodeURIComponent(id)}`);
+  // A deep link survives the landing: Start or Resume opens the same tab.
+  const sessionPath = (id: string) =>
+    chatMode
+      ? `/c/${encodeURIComponent(id)}`
+      : `/eva/${encodeURIComponent(id)}${mountTab ? `#${mountTab}` : ""}`;
+  const open = (id: string) => navigate(sessionPath(id));
 
   async function create(binding: EvaBinding) {
     if (!data?.agent_id) return;
@@ -103,7 +183,7 @@ export function EvaWorkspace() {
       });
       if (!response.ok) throw Error("Could not start Eva. Check that the bound host is online.");
       const session = await response.json();
-      navigate(`/${chatMode ? "c" : "eva"}/${encodeURIComponent(session.id)}`);
+      navigate(sessionPath(session.id));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not start Eva");
     } finally {
@@ -129,17 +209,32 @@ export function EvaWorkspace() {
     );
   if (sessionId)
     return (
-      <iframe
-        ref={frame}
-        title="Eva workspace"
-        // oxlint-disable-next-line iframe-missing-sandbox -- Same-origin host UI needs scripts and session cookies.
-        sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-top-navigation-by-user-activation"
-        className="h-full min-h-0 w-full flex-1 border-0"
-        onLoad={() =>
-          frame.current?.contentWindow?.postMessage({ evaHostTheme: mode }, window.location.origin)
-        }
-        src={`/v1/eva/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}`}
-      />
+      <>
+        {/* AppShell lays its ChatHeader over <main>: absolute, top-0, z-30,
+            transparent, h-14 (md:h-12). Over a framed page it takes every
+            click in that band, which is where Eva's tab bar sits. The frame
+            starts below it instead, as IrisWorkspace's does. Heights pinned in
+            ChatHeader.test.tsx. */}
+        <div
+          aria-hidden="true"
+          data-eva-header-clearance=""
+          className="h-14 shrink-0 bg-[#F0EFED] md:h-12 dark:bg-[#121212]"
+        />
+        <iframe
+          ref={frame}
+          title="Eva workspace"
+          // oxlint-disable-next-line iframe-missing-sandbox -- Same-origin host UI needs scripts and session cookies.
+          sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-top-navigation-by-user-activation"
+          className="h-full min-h-0 w-full flex-1 border-0"
+          onLoad={() =>
+            frame.current?.contentWindow?.postMessage(
+              { evaHostTheme: mode },
+              window.location.origin,
+            )
+          }
+          src={`/v1/eva/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}${mountTab ? `#${mountTab}` : ""}`}
+        />
+      </>
     );
   return (
     <div
