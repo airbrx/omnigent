@@ -1,0 +1,31 @@
+{
+  "captured_at": 1790468460.0,
+  "exported_at": 1790510400.0,
+  "files": {
+    "files/file_4826258cb0a7eb19c64d9b2ad57f1212": "2ddca2ae0039ed124fe8ee72b5d1488fbac6912ae0c2295c9face3c9961ac1b1",
+    "files/file_aac363cbe72569592f79c7fd9725837b": "0e263ef07ed7b4f7dc7d94223664c13fcb10f83ca5022d62c62a7597266a437c",
+    "files/file_db07cd3238e3261b41e7ce8f77a00d47": "63f38dcf5744f754a198ec634f333a9e5719acda53871290339278960729a640",
+    "files/file_f46c424dfa3c760f317711bea769e8d6": "0d2c6bc977bb2811ae29903c62b93dee429b09080e8cd8a583f8398e13144cbd",
+    "files/index.json": "5a35f19c609d2689be411a08c0c142e9c05a54be242cc2f946d014b41dd162cf",
+    "items.json": "69612cd14dd26636ace146c9abb4e7288c23e6df0d54e737d0aff64c930f0eb4",
+    "state.json": "39af2065edf0b15272d7b3ef4cfa2e07f98fb2e22851a2f12c6668df58b9512f"
+  },
+  "period": {
+    "covered_days": 3,
+    "end_date": "2026-09-23",
+    "period_complete": false,
+    "requested_days": 7,
+    "start_date": "2026-09-20"
+  },
+  "schema": 1,
+  "source": {
+    "iris_revision": null,
+    "kind": "synthetic",
+    "omnigent_version": null,
+    "server": null,
+    "session_id": "fixture-session-iris-w39",
+    "through_item_id": "msg_cceb375397bb881cf3f40a8e451ed8af"
+  },
+  "tenant_id": "fixture-iris",
+  "week": "2026-W39"
+}

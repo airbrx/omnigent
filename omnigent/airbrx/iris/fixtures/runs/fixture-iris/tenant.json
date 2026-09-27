@@ -1,0 +1,5 @@
+{
+  "fixture": true,
+  "name": "Iris fixture tenant",
+  "tenant_id": "fixture-iris"
+}
