@@ -15,7 +15,14 @@ import pytest
 
 from omnigent.airbrx.eva import config as eva_config
 from omnigent.airbrx.eva.package import bundle_root, is_eva
-from omnigent.airbrx.eva.policy import EVA_TOOLS, WITHHELD, tool_boundary
+from omnigent.airbrx.eva.policy import (
+    BROWSER_SERVER,
+    BROWSER_TOOLS,
+    EVA_TOOLS,
+    WITHHELD,
+    linkedin_url_ok,
+    tool_boundary,
+)
 
 # --------------------------------------------------------------------------
 # The bundle
@@ -50,7 +57,7 @@ def test_the_coordinator_loads_her_without_the_token(monkeypatch: pytest.MonkeyP
     monkeypatch.delenv("OUTREACH_MCP_TOKEN", raising=False)
     monkeypatch.delenv("OUTREACH_MCP_URL", raising=False)
     spec = load(bundle_root(), expand_env=True, server_side=True)
-    (server,) = spec.mcp_servers
+    (server,) = [s for s in spec.mcp_servers if s.name == "outreach"]
     assert server.headers["Authorization"] == "Bearer ${OUTREACH_MCP_TOKEN}"
 
 
@@ -66,15 +73,21 @@ def test_eva_runs_on_the_meta_harness_with_no_model_pinned() -> None:
     assert ex.config.get("smart_routing_harness") == "auto"
 
 
-def test_every_tool_is_remote_so_no_execution_host_is_needed() -> None:
-    """Zero local tools is the reason Eva needs no host binding or keychain.
+def test_no_local_tools_and_exactly_two_mcp_servers() -> None:
+    """Zero local tools is why Eva needs no vendored archive or keychain apparatus.
 
-    If this ever fails, a local tool has been added and the whole of Iris's host
-    apparatus (pat_ref, prepare_host, the launchd delta) comes back with it.
+    The second server, the browser, is a stdio MCP server the runner spawns on
+    the execution host (2026-09-26). If this fails with a local tool, Iris's
+    host apparatus (pat_ref, prepare_host, the launchd delta) comes back with it.
     """
     spec = _spec()
     assert spec.local_tools == []
-    assert len(spec.mcp_servers) == 1
+    assert [s.name for s in spec.mcp_servers] == ["outreach", BROWSER_SERVER]
+
+
+def _server(name: str):
+    (server,) = [s for s in _spec().mcp_servers if s.name == name]
+    return server
 
 
 def test_the_spec_allow_list_matches_the_policy_allow_list() -> None:
@@ -84,12 +97,12 @@ def test_the_spec_allow_list_matches_the_policy_allow_list() -> None:
     that stops them drifting apart, which is the defect shape this repository
     has already recorded twice against literals spelled in two places.
     """
-    spec_tools = set(_spec().mcp_servers[0].tools)
-    assert spec_tools == set(EVA_TOOLS)
+    assert set(_server("outreach").tools) == set(EVA_TOOLS)
+    assert set(_server(BROWSER_SERVER).tools) == set(BROWSER_TOOLS)
 
 
 def test_the_two_withheld_tools_are_in_neither_list() -> None:
-    spec_tools = set(_spec().mcp_servers[0].tools)
+    spec_tools = {t for server in _spec().mcp_servers for t in server.tools or ()}
     for name in ("approve_draft", "mark_sent"):
         assert name not in spec_tools
         assert name not in EVA_TOOLS
@@ -133,12 +146,12 @@ def test_her_instructions_answer_both_dashboard_asks() -> None:
 
 
 # --------------------------------------------------------------------------
-# The browser: approved 2026-09-26, but her host has none, so none is allowed.
+# The browser: approved 2026-09-26, declared in her bundle, fenced to linkedin.com
 # --------------------------------------------------------------------------
 
-#: Browser tools as each candidate names them, and the ambient tools a harness
-#: could hand her. None may pass until a browser is declared in her bundle and
-#: fenced to linkedin.com, with its own tests (docs/eva/RUNBOOK.md).
+#: Tools that are not hers under any arguments: other browsers, Playwright's
+#: action tools, bare or wrongly namespaced browser names, and the ambient tools
+#: a harness could hand her.
 NOT_HERS = (
     "mcp__claude-in-chrome__navigate",
     "mcp__claude-in-chrome__computer",
@@ -147,6 +160,19 @@ NOT_HERS = (
     "mcp__playwright__browser_navigate",
     "mcp__omnigent__playwright__browser_navigate",
     "mcp__omnigent__browser__browser_click",
+    "mcp__omnigent__browser__browser_type",
+    "mcp__omnigent__browser__browser_fill_form",
+    "mcp__omnigent__browser__browser_press_key",
+    "mcp__omnigent__browser__browser_evaluate",
+    "mcp__omnigent__browser__browser_run_code_unsafe",
+    "mcp__omnigent__browser__browser_file_upload",
+    "mcp__omnigent__browser__browser_take_screenshot",
+    "mcp__omnigent__browser__browser_tabs",
+    "mcp__omnigent__browser__browser_handle_dialog",
+    "mcp__omnigent__browser__browser_select_option",
+    "mcp__omnigent__browser__browser_network_requests",
+    "mcp__omnigent__browser__list_pool",
+    "mcp__omnigent__outreach__browser_navigate",
     "browser_navigate",
     "browser_type",
     "Bash",
@@ -158,18 +184,174 @@ NOT_HERS = (
     "mcp__claude_ai_Slack__slack_send_message",
 )
 
+_LINKEDIN = "https://www.linkedin.com/feed/update/urn:li:activity:7000000000000000000/"
+
+
+def _call(target: str, arguments: object = None) -> dict:
+    return tool_boundary(
+        {"type": "tool_call", "target": target, "data": {"name": target, "arguments": arguments}}
+    )
+
 
 @pytest.mark.parametrize("name", NOT_HERS)
-def test_no_browser_shell_file_or_other_server_tool_is_allowed(name: str) -> None:
+def test_no_other_browser_action_shell_file_or_server_tool_is_allowed(name: str) -> None:
+    """Even carrying a linkedin.com URL, which is what a lured call would carry."""
     assert tool_boundary({"type": "tool_call", "target": name})["result"] == "DENY"
+    assert _call(name, {"url": _LINKEDIN})["result"] == "DENY"
 
 
-def test_her_one_mcp_server_carries_only_outreach_tools() -> None:
-    """Nothing broader: no browser, shell or file tool slipped into the spec."""
-    spec = _spec()
-    assert [s.name for s in spec.mcp_servers] == ["outreach"]
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.linkedin.com/",
+        "https://www.linkedin.com/feed/",
+        _LINKEDIN,
+        "https://www.linkedin.com/analytics/post-summary/urn:li:activity:7000000000000000000/",
+        "https://www.linkedin.com/company/airbrx/admin/analytics/updates/",
+    ],
+)
+@pytest.mark.parametrize("prefix", ["mcp__omnigent__browser__", "browser__"])
+def test_navigate_to_linkedin_is_allowed(prefix: str, url: str) -> None:
+    assert _call(f"{prefix}browser_navigate", {"url": url})["result"] == "ALLOW"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        None,
+        "",
+        42,
+        "https://www.linkedin.com",  # no path: the prefix is the rule, slash and all
+        "http://www.linkedin.com/feed/",
+        "https://linkedin.com/feed/",
+        "https://lnkd.in/abc",
+        "https://www.linkedin.com.evil.example/",
+        "https://www.linkedin.com@evil.example/",
+        "https://www.linkedin.com:8443/feed/",
+        "https://evil.example/https://www.linkedin.com/",
+        "https://www.linkedin.com/\\evil.example",
+        "https://www.linkedin.com/ feed",
+        "https://www.linkedin.com/\nfeed",
+        "javascript:alert(1)//https://www.linkedin.com/",
+        "file:///etc/passwd",
+        "about:blank",
+        "https://www.google.com/search?q=https://www.linkedin.com/",
+    ],
+)
+def test_navigate_anywhere_else_is_denied(url: object) -> None:
+    out = _call("mcp__omnigent__browser__browser_navigate", {"url": url})
+    assert out["result"] == "DENY"
+    assert "linkedin.com" in out["reason"]
+    assert linkedin_url_ok(url) is False
+
+
+def test_navigate_with_no_or_unreadable_arguments_is_denied() -> None:
+    target = "mcp__omnigent__browser__browser_navigate"
+    assert tool_boundary({"type": "tool_call", "target": target})["result"] == "DENY"
+    assert _call(target, {})["result"] == "DENY"
+    assert _call(target, "not json")["result"] == "DENY"
+    assert _call(target, ["https://www.linkedin.com/"])["result"] == "DENY"
+    assert tool_boundary({"type": "tool_call", "target": target, "data": "x"})["result"] == "DENY"
+
+
+def test_arguments_are_read_in_every_shape_the_engines_send() -> None:
+    """``{"name", "arguments"}`` (engine), JSON text, and ``{"tool", "args"}`` (inner)."""
+    target = "browser__browser_navigate"
+    good, bad = {"url": _LINKEDIN}, {"url": "https://evil.example/"}
+    assert _call(target, good)["result"] == "ALLOW"
+    assert _call(target, json.dumps(good))["result"] == "ALLOW"
+    assert _call(target, json.dumps(bad))["result"] == "DENY"
+    inner = {"type": "tool_call", "target": target, "data": {"tool": target, "args": good}}
+    assert tool_boundary(inner)["result"] == "ALLOW"
+    inner["data"]["args"] = bad
+    assert tool_boundary(inner)["result"] == "DENY"
+
+
+def test_an_extra_navigate_argument_is_denied() -> None:
+    out = _call("browser__browser_navigate", {"url": _LINKEDIN, "waitUntil": "load"})
+    assert out["result"] == "DENY"
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("browser_snapshot", {}),
+        ("browser_snapshot", None),
+        ("browser_snapshot", {"depth": 8}),
+        ("browser_snapshot", {"target": "e12"}),
+        ("browser_wait_for", {"text": "Impressions"}),
+        ("browser_wait_for", {"time": 3}),
+        ("browser_wait_for", {"textGone": "Loading"}),
+        ("browser_navigate_back", {}),
+        ("browser_close", {}),
+    ],
+)
+def test_the_read_tools_are_allowed(tool: str, arguments: object) -> None:
+    assert _call(f"mcp__omnigent__browser__{tool}", arguments)["result"] == "ALLOW"
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        # A snapshot to a file writes to the host; that is not reading.
+        ("browser_snapshot", {"filename": "../../.ssh/authorized_keys"}),
+        ("browser_snapshot", {"filename": "page.yml"}),
+        ("browser_wait_for", {"time": 600}),
+        ("browser_wait_for", {"time": 0}),
+        ("browser_wait_for", {"time": -1}),
+        ("browser_wait_for", {"time": True}),
+        ("browser_wait_for", {"time": "5"}),
+        ("browser_navigate_back", {"url": _LINKEDIN}),
+        ("browser_close", {"force": True}),
+    ],
+)
+def test_a_read_tool_with_other_arguments_is_denied(tool: str, arguments: object) -> None:
+    assert _call(f"mcp__omnigent__browser__{tool}", arguments)["result"] == "DENY"
+
+
+def test_the_outreach_server_carries_no_browser_and_the_browser_no_action() -> None:
+    """Each server carries only its own tools, and the browser only read tools."""
     broader = re.compile(r"browser|chrome|navigate|click|shell|bash|exec|write_file|upload", re.I)
+    assert not [t for t in _server("outreach").tools if broader.search(t)]
     assert not [t for t in EVA_TOOLS if broader.search(t)]
+    action = re.compile(
+        r"click|type|press|key|fill|select|drag|drop|hover|evaluate|run_code|upload"
+        r"|screenshot|pdf|tabs|cookie|storage|network|route|dialog|resize|webmcp|install",
+        re.I,
+    )
+    assert not [t for t in _server(BROWSER_SERVER).tools if action.search(t)]
+
+
+def test_the_browser_server_is_fenced_at_launch() -> None:
+    """The launch flags are the third and fourth fences; pin them.
+
+    Its own profile, headless, requests only to linkedin.com and licdn.com,
+    no page-registered tools, no extra capabilities, and no way onto the
+    operator's own Chrome (``--extension``, ``--cdp-endpoint``).
+    """
+    server = _server(BROWSER_SERVER)
+    assert server.transport == "stdio"
+    assert server.command == "/bin/sh"
+    assert server.args[0] == "-c"
+    line = server.args[1]
+    assert '--user-data-dir "$HOME/.eva-linkedin-profile"' in line
+    assert "/.eva-playwright/node_modules/.bin/playwright-mcp" in line
+    assert "--browser chrome" in line
+    assert "--headless" in line
+    assert "--sandbox" in line and "--no-sandbox" not in line
+    assert '--allowed-origins "https://www.linkedin.com;*.licdn.com"' in line
+    assert "--no-webmcp" in line
+    for absent in (
+        "--caps",
+        "--extension",
+        "--cdp-endpoint",
+        "--isolated",
+        "--port",
+        "--allow-unrestricted-file-access",
+        "--storage-state",
+        "--secrets",
+    ):
+        assert absent not in line, absent
 
 
 def test_her_instructions_carry_the_browser_rules() -> None:
@@ -188,10 +370,24 @@ def test_her_instructions_carry_the_browser_rules() -> None:
     assert "never" in lower and "estimate" in lower
 
 
-def test_the_paste_in_route_stays_while_there_is_no_browser() -> None:
+def test_the_paste_in_route_stays_for_a_refusal_or_a_sign_in() -> None:
     text = (bundle_root() / "AGENTS.md").read_text()
     assert "If you have no browser tool, or a browser call is refused" in text
     assert "paste each post's numbers" in text
+    assert "asks for a sign-in" in text
+
+
+@pytest.mark.parametrize("tool", sorted(BROWSER_TOOLS))
+def test_her_instructions_name_each_browser_tool(tool: str) -> None:
+    assert f"`{tool}`" in (bundle_root() / "AGENTS.md").read_text()
+
+
+def test_her_instructions_say_to_snapshot_and_never_to_sign_in() -> None:
+    text = (bundle_root() / "AGENTS.md").read_text()
+    assert "call `browser_snapshot` after" in text
+    for marker in ("/login", "/authwall", "/checkpoint"):
+        assert marker in text
+    assert "never ask the rep for a password" in text
 
 
 def test_no_em_dash_in_eva_s_own_instructions() -> None:

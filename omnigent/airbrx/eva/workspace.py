@@ -44,7 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from omnigent.airbrx.eva.config import Binding, bindings
 from omnigent.airbrx.eva.package import portrait_path
-from omnigent.airbrx.eva.policy import EVA_TOOLS
+from omnigent.airbrx.eva.policy import BROWSER_SERVER, BROWSER_TOOLS, EVA_TOOLS
 from omnigent.airbrx.eva.proxy import PREFIX as OUTREACH_APP_PATH
 from omnigent.server.routes._auth_helpers import require_user
 from omnigent.server.routes._content_type import require_json_content_type
@@ -61,7 +61,11 @@ _REFRESH_READS = frozenset({"list_pool", "list_my_leads"})
 #: ``ToolSearch`` only loads schemas; anything it surfaces still has to be
 #: called as its own ``function_call``, which the check below sees.
 _HARNESS_TOOLS = frozenset({"ToolSearch"})
-_ALLOWED_IN_A_TURN = EVA_TOOLS | _HARNESS_TOOLS
+#: Her read-only browser tools as a turn records them (``browser__<tool>``,
+#: the runner's namespace). The policy has already held each call's arguments
+#: to linkedin.com; this only stops the workspace refusing a turn that used them.
+_BROWSER_IN_A_TURN = frozenset(f"{BROWSER_SERVER}__{t}" for t in BROWSER_TOOLS)
+_ALLOWED_IN_A_TURN = EVA_TOOLS | _HARNESS_TOOLS | _BROWSER_IN_A_TURN
 
 #: Files the framed app may fetch, and where each one lives. Nothing else is
 #: served. Her portrait is the packaged one (``package.portrait_path``), the

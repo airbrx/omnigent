@@ -14,6 +14,7 @@ import error away from being nothing, which is exactly the failure
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 #: The tools of ``contracts/mcp_tools.md``, minus the two Eva must not hold.
@@ -67,6 +68,110 @@ DISCOVERY_TOOLS = frozenset({"ToolSearch"})
 
 _MCP_PREFIX = "mcp__omnigent__"
 
+#: The key of the Playwright MCP server in her bundle's ``tools:`` block. The
+#: runner namespaces its tools as ``browser__<tool>``, so that prefix is the
+#: only way a browser tool reaches her. A bare ``browser_navigate`` is not
+#: hers: nothing in her spec serves one under that name.
+BROWSER_SERVER = "browser"
+
+#: The browser tools Eva may call, each with the only argument names it may
+#: carry. Read-only by selection: open a linkedin.com page, read it, wait for
+#: it, go back, close. No click, type, key press, form fill, evaluate, run
+#: code, upload, screenshot, tab, cookie or network tool, so she cannot post,
+#: comment, react or message even if a page talked her into trying.
+#:
+#: ``browser_snapshot`` may not take ``filename``: that writes the page to a
+#: file on the host, which is not reading it.
+BROWSER_TOOLS: dict[str, frozenset[str]] = {
+    "browser_navigate": frozenset({"url"}),
+    "browser_snapshot": frozenset({"target", "depth", "boxes"}),
+    "browser_wait_for": frozenset({"time", "text", "textGone"}),
+    "browser_navigate_back": frozenset(),
+    "browser_close": frozenset(),
+}
+
+#: Every page she opens starts with exactly this. Abram's rule, 2026-09-26:
+#: linkedin.com only, never another site, including a link LinkedIn offers.
+LINKEDIN_PREFIX = "https://www.linkedin.com/"
+
+#: Longest wait she may ask for, in seconds. A page that has not rendered in
+#: half a minute is a page to report, not to sit on.
+MAX_WAIT_SECONDS = 30
+
+
+def linkedin_url_ok(url: object) -> bool:
+    """Is *url* a page on ``https://www.linkedin.com/`` and nothing else?
+
+    The prefix, trailing slash included, fixes the scheme and the host: a port,
+    credentials or a lookalike host (``www.linkedin.com.evil.example``) cannot
+    follow it. What is left is what a browser rewrites before it navigates:
+    whitespace and control characters, which it strips, and a backslash, which
+    it reads as a slash. Any of those is a refusal.
+    """
+    if not isinstance(url, str) or not url.startswith(LINKEDIN_PREFIX):
+        return False
+    return not any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F or c == "\\" for c in url)
+
+
+def _arguments(event: Any) -> dict[str, Any] | None:
+    """The call's arguments, or ``None`` when they cannot be read.
+
+    The engine builds ``data`` as ``{"name", "arguments"}``; the inner stack's
+    shape is ``{"tool", "args"}``. Both are read. Anything that is not a
+    mapping is unreadable, and unreadable is a denial for a browser call.
+    """
+    data = event.get("data")
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        return None
+    args = data.get("arguments", data.get("args"))
+    if args is None:
+        return {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args) if args.strip() else {}
+        except ValueError:
+            return None
+    return args if isinstance(args, dict) else None
+
+
+def _browser_call(tool: str, event: Any) -> dict[str, str]:
+    """Decide one browser call. Fail-closed: every unmatched path denies."""
+    if tool not in BROWSER_TOOLS:
+        return {
+            "result": "DENY",
+            "reason": (
+                f"Eva's browser is read-only; {tool} is not one of {sorted(BROWSER_TOOLS)}"
+            ),
+        }
+    args = _arguments(event)
+    if args is None:
+        return {"result": "DENY", "reason": f"Could not read the arguments of {tool}"}
+    extra = set(args) - BROWSER_TOOLS[tool]
+    if extra:
+        return {
+            "result": "DENY",
+            "reason": f"{tool} may not carry {sorted(extra)} for Eva",
+        }
+    if tool == "browser_navigate" and not linkedin_url_ok(args.get("url")):
+        return {
+            "result": "DENY",
+            "reason": f"Eva's browser opens only {LINKEDIN_PREFIX} pages",
+        }
+    if tool == "browser_wait_for" and "time" in args:
+        wait = args["time"]
+        if (
+            isinstance(wait, bool)
+            or not isinstance(wait, (int, float))
+            or not 0 < wait <= MAX_WAIT_SECONDS
+        ):
+            return {
+                "result": "DENY",
+                "reason": f"A wait is between 0 and {MAX_WAIT_SECONDS} seconds",
+            }
+    return {"result": "ALLOW", "reason": "Read-only linkedin.com browser call"}
+
 
 def tool_boundary(event: Any) -> Any:
     """Evaluate one TOOL_CALL event.
@@ -80,6 +185,8 @@ def tool_boundary(event: Any) -> Any:
     name = event.get("target", "") or ""
     if name.startswith(_MCP_PREFIX):
         name = name[len(_MCP_PREFIX) :]
+    if name.startswith(f"{BROWSER_SERVER}__"):
+        return _browser_call(name[len(BROWSER_SERVER) + 2 :], event)
     # Some servers namespace by the spec's server key rather than the transport.
     if name.startswith("outreach__"):
         name = name[len("outreach__") :]
@@ -92,5 +199,5 @@ def tool_boundary(event: Any) -> Any:
         return {"result": "ALLOW", "reason": "Read-only tool discovery, executes nothing"}
     return {
         "result": "DENY",
-        "reason": "Eva permits only the outreach MCP tools named in her spec",
+        "reason": "Eva permits only the outreach and read-only browser tools in her spec",
     }
