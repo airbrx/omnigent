@@ -86,46 +86,86 @@ permission settings:
 Falsified rather than asserted: neutering `tool_boundary` to always ALLOW turns
 red exactly the four denial cases and nothing else.
 
-## A browser for LinkedIn stats: approved, not wired (2026-09-26)
+## A browser for LinkedIn stats (2026-09-26)
 
 Abram approved Eva using a browser to read LinkedIn post analytics herself.
-**Her production host has no browser tool she can reach, so none is on either
-allow list**, and "Refresh stats with Eva" still ends in the paste-in route.
+"Refresh stats with Eva" on the LinkedIn page now has her open each post's
+analytics on linkedin.com and record the numbers with `record_linkedin_metrics`,
+once LinkedIn has been signed in on her profile. Until then, and whenever a call
+is refused, she says so and falls back to the paste-in route.
 
-What was measured on the bridge host, from the Claude CLI's `init` message in
-the runner logs: Eva runs on the `claude-sdk` harness, and the latest turns
-list one MCP server, `omnigent`, carrying her outreach tools plus Omnigent's
-own `sys_*` tools, `Skill` and `ToolSearch`. No browser tool. Two candidates
-exist on the machine but neither reaches her:
+**Why a declared server and not Claude in Chrome.** The fence below only holds
+for tools Omnigent dispatches. Claude in Chrome's tools would come from the CLI
+itself (never, in fact: the claude-sdk executor does not pass `--chrome`), and a
+measured Iris turn ran a CLI-loaded tool (`ToolSearch`) with no policy
+evaluation. It would also drive the operator's own Chrome, signed in as them
+everywhere. So the browser is Playwright MCP, declared in Eva's bundle as a
+stdio server the runner spawns on the execution host. Its tools reach her CLI
+through the one `omnigent` server as `browser__<tool>`, so `--strict-mcp-config`
+(#97) and the `Skill` removal (#98) are unchanged.
 
-- **Claude in Chrome.** The extension's native messaging host is installed, but
-  the claude-sdk executor never starts the CLI with `--chrome`, so its
-  `mcp__claude-in-chrome__*` tools are not in her session. It would also drive
-  the operator's own Chrome profile, signed in as them everywhere.
-- **Playwright MCP** (`@playwright/mcp`). Node and npx are present; the package
-  is not installed.
+**The fences, outermost first.**
 
-**What the fence can do.** `tool_boundary` receives the call's arguments
-(`event["data"]["args"]`), so it can hold a browser's navigate call to
-`https://www.linkedin.com/` and refuse anything else. That only holds for tools
-Omnigent dispatches, which means a browser declared as an MCP server in Eva's
-bundle. Tools the CLI loads on its own (the operator's connectors, Claude in
-Chrome) are not reliably put to the policy: a measured Iris turn ran
-`ToolSearch` with no policy evaluation.
+1. The bundle's `tools.browser.tools` allow list: `browser_navigate`,
+   `browser_snapshot`, `browser_wait_for`, `browser_navigate_back`,
+   `browser_close`. No click, type, key, form, evaluate, run code, upload,
+   screenshot, tab, cookie or network tool, so she cannot post, comment, react
+   or message whatever a page says.
+2. `tool_boundary`: a navigate must start with `https://www.linkedin.com/` and
+   carry no whitespace, control character or backslash; each tool may carry
+   only its named arguments (`browser_snapshot` never `filename`, which writes a
+   file); a wait is at most 30 seconds; a bare or differently namespaced browser
+   name is refused. The engine sends `data` as `{"name", "arguments"}`, the
+   inner stack as `{"tool", "args"}`; both are read, and unreadable arguments
+   are a denial.
+3. `--allowed-origins "https://www.linkedin.com;*.licdn.com"`: the browser
+   requests nothing else. Playwright documents this as not a security boundary
+   and not covering redirects, which is why 2 exists.
+4. `--no-webmcp`: a page cannot register tools of its own.
 
-**To wire it (LOCAL ONLY, on the bridge host):**
+**What is installed on the execution host (LOCAL ONLY, as the operator, no
+sudo).**
 
-1. Install Playwright MCP at a pinned version and a Chrome channel for it, and
-   create a dedicated browser profile directory for Eva.
-2. Sign that profile in to LinkedIn once, by hand, as the account whose post
-   analytics Eva should read. Eva never signs in; the rules in her AGENTS.md
-   tell her to stop at a sign-in page.
-3. Then, in this repository: declare the server in Eva's bundle
-   (`--user-data-dir` for that profile, `--allowed-origins` for linkedin.com
-   and its asset hosts), allow only its read tools (navigate, snapshot, wait,
-   back, close; never click, type, evaluate or upload), and add the
-   linkedin.com URL check to `tool_boundary`, with tests. Without click and
-   type she cannot post, comment or react even if she tried.
+- `~/.eva-playwright`: `npm install --save-exact @playwright/mcp@0.0.82` from
+  registry.npmjs.org (Microsoft's package, repo microsoft/playwright-mcp; it
+  brings playwright and playwright-core 1.64.0-alpha-1789764292000). Nothing
+  global.
+- The Chrome channel is the installed Google Chrome
+  (`/Applications/Google Chrome.app`), which `--browser chrome` launches. No
+  Playwright browser download was needed.
+- `~/.eva-linkedin-profile` (mode 700): Eva's own browser profile, used by
+  nothing else. Headless during her turns, with Chrome's sandbox on
+  (`--sandbox`; Playwright turns it off by default).
+- `~/.eva-playwright/output`: where Playwright writes the snapshot a navigate
+  takes; capped at 20 MB. Eva reads pages with an explicit `browser_snapshot`,
+  which returns the text inline.
+
+The bundle launches it through `/bin/sh -c` only so `$HOME` resolves on the
+host that runs her turn: spec `args` are not environment-expanded, and a path
+naming one operator's home would be wrong on any other host. A host without
+the install fails to start the browser server and Eva falls back to paste-in.
+
+**The one-time sign-in (the operator, by hand).** Playwright launches Chrome
+with `--use-mock-keychain`, so a profile signed in by an ordinary Chrome window
+cannot be read by Eva's browser. The sign-in has to happen in a
+Playwright-launched window on the same profile:
+
+```sh
+~/.eva-playwright/sign-in.sh
+```
+
+It opens a headed Chrome on `~/.eva-linkedin-profile` at
+`https://www.linkedin.com/login` and returns when that window is closed. Sign
+in as the account whose post analytics Eva should read, then close the window.
+Nobody else types or sees the credentials. Run it while no Eva turn is using the
+browser (one Chrome at a time per profile). Re-run it whenever Eva reports that
+LinkedIn wants a sign-in.
+
+**Known limits.** One profile means one browser at a time: two Eva sessions
+opening the browser at once on the same host, the second one fails to launch
+and falls back to paste-in. The coordinator never spawns the stdio server for a
+host-bound session; if a harness ever resolves MCP schemas server-side, the
+browser shows as a failed server there and nothing else changes.
 
 ## Operator configuration
 
