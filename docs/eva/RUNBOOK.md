@@ -69,12 +69,14 @@ configured with.
 1. The bundle's `tools.outreach.tools` allow list: 15 of the original 17 tools
    in `contracts/mcp_tools.md`, plus the four LinkedIn and GTM plan tools
    (`list_linkedin_posts`, `record_linkedin_metrics`, `list_plan_items`,
-   `record_plan_actual`) added on 2026-09-26.
+   `record_plan_actual`) added on 2026-09-26, plus `set_linkedin_post_url`
+   (airbrx-outreach#149, 2026-09-27), which fills an empty post address with
+   one post's `https://www.linkedin.com/` address and nothing else.
 2. `omnigent.airbrx.eva.policy.tool_boundary`, registered as a `tool_call`
    guardrail, fail-closed.
 3. The outreach app's own tool layer, which is the authoritative one.
 
-Two tools are withheld by name, and both are product refusals rather than
+Three tools are withheld by name, and all are product refusals rather than
 permission settings:
 
 - **`approve_draft`**: approval belongs to the lead owner or an admin and never
@@ -82,6 +84,9 @@ permission settings:
 - **`mark_sent`**: nothing in this system sends. A rep sends from their own
   client and then records that they did. An agent marking a draft sent would be
   recording an event it cannot observe.
+- **`upsert_linkedin_post`**: it rewrites a post's title, status, dates or
+  copy. Eva only fills an empty address, with `set_linkedin_post_url`. The
+  server lets any rep upsert, so for Eva this refusal is layers 1 and 2 only.
 
 Falsified rather than asserted: neutering `tool_boundary` to always ALLOW turns
 red exactly the four denial cases and nothing else.
@@ -89,8 +94,11 @@ red exactly the four denial cases and nothing else.
 ## A browser for LinkedIn stats (2026-09-26)
 
 Abram approved Eva using a browser to read LinkedIn post analytics herself.
-"Refresh stats with Eva" on the LinkedIn page now has her open each post's
-analytics on linkedin.com and record the numbers with `record_linkedin_metrics`,
+"Refresh stats with Eva" on the LinkedIn page now has her find each posted
+item without an address on its author's recent-activity page
+(`https://www.linkedin.com/in/<handle>/recent-activity/all/`, matched by date
+and opening words), record its address with `set_linkedin_post_url`, then open
+its analytics on linkedin.com and record the numbers with `record_linkedin_metrics`,
 once LinkedIn has been signed in on her profile. Until then, and whenever a call
 is refused, she says so and falls back to the paste-in route.
 

@@ -71,7 +71,8 @@ tools:
 
   # The airbrx-outreach MCP surface. `contracts/mcp_tools.md` in
   # airbrx/airbrx-outreach fixes these tools (17, plus the four the Scoreboard,
-  # LinkedIn and GTM plan pages added on 2026-09-26), their schemas and their
+  # LinkedIn and GTM plan pages added on 2026-09-26, plus set_linkedin_post_url
+  # from airbrx-outreach#149 on 2026-09-27), their schemas and their
   # permission rules.
   #
   # The URL and the bearer token are expanded from the RUNNER's environment,
@@ -84,8 +85,8 @@ tools:
   #
   # This is an ALLOW LIST rather than a passthrough. Everything absent is
   # unavailable to Eva even if the server advertises it, which is how the
-  # boundary is expressed in the spec as well as in the tool layer. Two of the
-  # contract's tools are deliberately withheld below.
+  # boundary is expressed in the spec as well as in the tool layer. Three of
+  # the contract's tools are deliberately withheld below.
   outreach:
     type: mcp
     url: ${OUTREACH_MCP_URL}
@@ -110,6 +111,7 @@ tools:
       - record_agent_run
       - list_linkedin_posts
       - record_linkedin_metrics
+      - set_linkedin_post_url
       - list_plan_items
       - record_plan_actual
 
@@ -123,8 +125,15 @@ tools:
 #                  own client and then records that they did. An agent marking a
 #                  draft sent would be recording an event it cannot observe.
 #
-# Both refusals are also enforced server-side in the outreach tool layer, so
-# this list is defence in depth rather than the only thing standing there.
+#   upsert_linkedin_post
+#                  It rewrites a post's title, status, dates or copy. Eva only
+#                  fills an empty address with set_linkedin_post_url, which the
+#                  server refuses for a post that already has one.
+#
+# The first two refusals are also enforced server-side in the outreach tool
+# layer, so for them this list is defence in depth rather than the only thing
+# standing there. upsert_linkedin_post is open to any rep on the server, so for
+# Eva this list and policy.py are what withhold it.
 
   # A browser, for one job: reading the analytics of Airbrx's and the founders'
   # own LinkedIn posts. Approved by Abram on 2026-09-26; docs/eva/RUNBOOK.md has

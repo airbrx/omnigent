@@ -102,9 +102,9 @@ def test_the_spec_allow_list_matches_the_policy_allow_list() -> None:
     assert set(_server(BROWSER_SERVER).tools) == set(BROWSER_TOOLS)
 
 
-def test_the_two_withheld_tools_are_in_neither_list() -> None:
+def test_the_withheld_tools_are_in_neither_list() -> None:
     spec_tools = {t for server in _spec().mcp_servers for t in server.tools or ()}
-    for name in ("approve_draft", "mark_sent"):
+    for name in ("approve_draft", "mark_sent", "upsert_linkedin_post"):
         assert name not in spec_tools
         assert name not in EVA_TOOLS
         assert name in WITHHELD
@@ -122,6 +122,8 @@ DASHBOARD_TOOLS = (
     "record_linkedin_metrics",
     "list_plan_items",
     "record_plan_actual",
+    # airbrx-outreach#149 (2026-09-27): the address of a post she found.
+    "set_linkedin_post_url",
 )
 
 
@@ -134,6 +136,106 @@ def test_a_dashboard_tool_is_allowed_and_her_instructions_say_how_to_use_it(name
         == "ALLOW"
     )
     assert f"`{name}`" in (bundle_root() / "AGENTS.md").read_text()
+
+
+# --------------------------------------------------------------------------
+# LinkedIn writes: one address into an empty field, and a metrics snapshot.
+# Nothing that changes a post, and nothing that posts, messages or reacts.
+# --------------------------------------------------------------------------
+
+#: Every LinkedIn tool Eva holds. Pinned whole, so a new one is a decision here.
+HER_LINKEDIN_TOOLS = frozenset(
+    {"list_linkedin_posts", "record_linkedin_metrics", "set_linkedin_post_url"}
+)
+
+#: LinkedIn writes that are not hers: the contract's post editor, and the names
+#: a posting, messaging or reacting tool would plausibly carry.
+NOT_HER_LINKEDIN_WRITES = (
+    "upsert_linkedin_post",
+    "create_linkedin_post",
+    "update_linkedin_post",
+    "delete_linkedin_post",
+    "publish_linkedin_post",
+    "schedule_linkedin_post",
+    "post_to_linkedin",
+    "linkedin_post",
+    "comment_on_linkedin_post",
+    "react_to_linkedin_post",
+    "repost_linkedin_post",
+    "send_linkedin_message",
+    "linkedin_send_message",
+    "linkedin_connect",
+    "clear_linkedin_post_url",
+    "replace_linkedin_post_url",
+    "update_linkedin_post_url",
+)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "set_linkedin_post_url",
+        "mcp__omnigent__set_linkedin_post_url",
+        "outreach__set_linkedin_post_url",
+    ],
+)
+def test_set_linkedin_post_url_is_allowed(target: str) -> None:
+    """The one post-level LinkedIn write she holds (airbrx-outreach#149).
+
+    The server fills only an empty ``linkedin_url`` and only with one post's
+    https://www.linkedin.com/ address, so this points a post at its page and
+    changes nothing else about it.
+    """
+    assert "set_linkedin_post_url" in EVA_TOOLS
+    assert "set_linkedin_post_url" in _server("outreach").tools
+    assert tool_boundary({"type": "tool_call", "target": target})["result"] == "ALLOW"
+    out = _call(target, {"post_id": "p1", "linkedin_url": _LINKEDIN})
+    assert out["result"] == "ALLOW"
+
+
+def test_her_linkedin_tools_are_exactly_these_in_both_lists() -> None:
+    """The only LinkedIn writes are the address and the metrics snapshot."""
+    assert {t for t in EVA_TOOLS if "linkedin" in t} == HER_LINKEDIN_TOOLS
+    assert {t for t in _server("outreach").tools if "linkedin" in t} == HER_LINKEDIN_TOOLS
+    writes = {t for t in HER_LINKEDIN_TOOLS if not t.startswith("list_")}
+    assert writes == {"set_linkedin_post_url", "record_linkedin_metrics"}
+
+
+@pytest.mark.parametrize("name", NOT_HER_LINKEDIN_WRITES)
+@pytest.mark.parametrize(
+    "prefix", ["", "mcp__omnigent__", "outreach__", "mcp__omnigent__outreach__"]
+)
+def test_no_other_linkedin_write_tool_is_allowed(prefix: str, name: str) -> None:
+    assert name not in EVA_TOOLS
+    assert name not in (_server("outreach").tools or ())
+    assert _call(f"{prefix}{name}", {"linkedin_url": _LINKEDIN})["result"] == "DENY"
+
+
+def test_upsert_linkedin_post_is_withheld_by_name() -> None:
+    out = tool_boundary({"type": "tool_call", "target": "mcp__omnigent__upsert_linkedin_post"})
+    assert out["result"] == "DENY"
+    assert "set_linkedin_post_url" in out["reason"]
+
+
+def test_her_instructions_say_how_to_find_and_record_a_post_address() -> None:
+    """The steps of airbrx-outreach prompts/linkedin-stats.md, in her own file."""
+    text = (bundle_root() / "AGENTS.md").read_text()
+    refresh = text[text.index('### "Refresh the LinkedIn post stats"') :]
+    refresh = refresh[: refresh.index("\n### ", 1)]
+    assert "https://www.linkedin.com/in/<handle>/recent-activity/all/" in refresh
+    assert "`posted_on`" in refresh and "opening words" in refresh
+    assert "Match on two things, both of them" in refresh
+    assert "ask the rep for it once" in refresh
+    assert "`include_body: true`" in refresh
+    # Find and record the address, then read the figures: in that order.
+    found = refresh.index("recent-activity/all/")
+    recorded = refresh.index("with `set_linkedin_post_url`")
+    figures = refresh.index("Then read its figures")
+    snapshot = refresh.index("with `record_linkedin_metrics`")
+    assert found < recorded < figures < snapshot
+    assert "https://www.linkedin.com/posts/" in refresh
+    assert "https://www.linkedin.com/feed/update/urn:li:activity:" in refresh
+    assert "only fills an empty address" in refresh
 
 
 def test_her_instructions_answer_both_dashboard_asks() -> None:
