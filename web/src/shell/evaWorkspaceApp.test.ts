@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { EVA_TABS } from "./EvaWorkspace";
 
 const UI = join(dirname(fileURLToPath(import.meta.url)), "../../../omnigent/airbrx/eva/ui");
 const html = readFileSync(join(UI, "index.html"), "utf8");
@@ -885,3 +886,90 @@ it("'Open the lead list' switches to the Leads tab in place, before any answer",
   expect(screen.getByRole("tab", { name: "Leads" })).toHaveAttribute("aria-selected", "true");
   expect(screen.getByTitle("Eva Leads")).toHaveAttribute("src", "/eva/app/leads");
 });
+
+// ---------------------------------------------------------------------------
+// Deep links: the parent (EvaWorkspace.tsx) forwards #<tab>, and the frame
+// keeps the parent's hash on the open tab.
+// ---------------------------------------------------------------------------
+
+it("the shell's deep-link allow list is exactly this app's tab ids", async () => {
+  await mount();
+  expect(screen.getAllByRole("tab").map((tab) => tab.dataset.tab)).toEqual([...EVA_TABS]);
+});
+
+/** Frame the app under a stand-in parent window, as Omnigent does. */
+async function mountFramed(hash = "") {
+  const parent = { postMessage: vi.fn() };
+  Object.defineProperty(window, "parent", { configurable: true, value: parent });
+  await mount(hash);
+  return parent;
+}
+
+function unframe() {
+  // jsdom defines `parent` as an accessor on the window itself; restore it.
+  Object.defineProperty(window, "parent", { configurable: true, get: () => window });
+}
+
+it("tells the framing page which tab is open, by id only, on load and on every switch", async () => {
+  try {
+    const parent = await mountFramed("#linkedin");
+    expect(parent.postMessage).toHaveBeenLastCalledWith(
+      { type: "eva.tab", tab: "linkedin" },
+      window.location.origin,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Sync" }));
+    expect(parent.postMessage).toHaveBeenLastCalledWith(
+      { type: "eva.tab", tab: "sync" },
+      window.location.origin,
+    );
+  } finally {
+    unframe();
+  }
+});
+
+it("an unframed workspace posts nothing upward", async () => {
+  const posted = vi.spyOn(window, "postMessage");
+  await mount("#plan");
+  expect(posted.mock.calls.some(([data]) => (data as { type?: string })?.type === "eva.tab")).toBe(
+    false,
+  );
+  posted.mockRestore();
+});
+
+function fromHost(data: unknown, source: unknown, origin = window.location.origin) {
+  window.dispatchEvent(new MessageEvent("message", { data, origin, source: source as Window }));
+}
+
+it("the framing page can switch the tab by id, and the tab frames its own fixed path", async () => {
+  try {
+    const parent = await mountFramed();
+    fromHost({ type: "eva.host.tab", tab: "scoreboard" }, parent);
+    expect(screen.getByRole("tab", { name: "Scoreboard" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByTitle("Eva Scoreboard")).toHaveAttribute("src", "/eva/app/scoreboard");
+    expect(window.location.hash).toBe("#scoreboard");
+  } finally {
+    unframe();
+  }
+});
+
+it.each([
+  ["another origin", { type: "eva.host.tab", tab: "sync" }, "parent", "https://evil.example"],
+  ["a window that is not the parent", { type: "eva.host.tab", tab: "sync" }, "other", undefined],
+  ["a URL for a tab", { type: "eva.host.tab", tab: "https://evil.example/" }, "parent", undefined],
+  ["a path for a tab", { type: "eva.host.tab", tab: "/eva/app/sync" }, "parent", undefined],
+])(
+  "a host tab message from %s changes nothing and frames nothing",
+  async (_, data, who, origin) => {
+    try {
+      const parent = await mountFramed();
+      fromHost(data, who === "parent" ? parent : { postMessage: vi.fn() }, origin);
+      expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true");
+      expect(document.querySelectorAll("iframe")).toHaveLength(0);
+    } finally {
+      unframe();
+    }
+  },
+);

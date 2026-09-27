@@ -1154,8 +1154,25 @@
     for (const frame of frames.querySelectorAll("iframe"))
       frame.hidden = frame.dataset.tab !== tab.id;
     if (!fromHash) replaceHash(`#${tab.id}`);
+    announceTab();
     renderTabs();
     renderDock();
+  }
+
+  // Deep links (docs/eva/WORKSPACE.md, "Deep links to a tab"). Omnigent frames
+  // this page at /eva/:sessionId and forwards its own #<tab> here as our hash.
+  // Telling it which tab is open keeps its address bar on the same tab, so a
+  // copied link reopens it. Only the tab id goes up, never a path.
+  function announceTab() {
+    if (window.parent === window) return;
+    try {
+      window.parent.postMessage(
+        { type: "eva.tab", tab: tab.id },
+        location.origin,
+      );
+    } catch {
+      // A parent on another origin gets nothing, which is the point.
+    }
   }
 
   /** Open an outreach app link in its own tab here, with Eva docked beside it. */
@@ -1301,6 +1318,17 @@
       };
     },
   };
+  // Omnigent's address bar changed to name a tab (back, forward, an edited
+  // hash). Accepted only from the page framing this one, on this origin, and
+  // only as a tab id from TABS: the frame opens that tab's own fixed path.
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || data.type !== "eva.host.tab") return;
+    if (event.origin !== location.origin) return;
+    if (window.parent === window || event.source !== window.parent) return;
+    const next = TABS.find((t) => t.id === data.tab);
+    if (next && next.id !== tab.id) showTab(next);
+  });
   window.addEventListener("message", (event) => {
     const data = event.data;
     if (!data || data.type !== "eva.ask") return;
