@@ -149,6 +149,44 @@ For the frontend (`omnigent/airbrx/eva/ui/`, owned by the UI branch):
 - **The adapter API** is `/v1/eva/sessions/{session_id}/ui/api/{chat,cancel,state,refresh,readiness}`,
   with Iris's shapes. The differences are in the next section.
 
+## Deep links to a tab
+
+A link can open the workspace on one of its tabs:
+
+- `https://omnigent.airbrx.ai/eva/<session_id>#linkedin` opens that session on
+  the LinkedIn tab.
+- `https://omnigent.airbrx.ai/eva#linkedin` opens the landing, and Start or
+  Resume then opens the session on LinkedIn.
+- `?tab=linkedin` does the same where a hash is awkward. A hash wins over it.
+
+The tab ids are `chat`, `leads`, `pool`, `accounts`, `analytics`,
+`scoreboard`, `linkedin`, `plan`, `guardrails`, `sync` and `settings`. That is
+`EVA_TABS` in `web/src/shell/EvaWorkspace.tsx`, and `TABS` in
+`omnigent/airbrx/eva/ui/app.js` must match it. `evaWorkspaceApp.test.ts`
+fails when the two lists drift. Anything else in the hash or `tab` is
+ignored, and the workspace opens on Chat.
+
+**Only a tab id ever crosses into the frame, never a URL.** The shell appends
+`#<id>` to the frame's own `/v1/eva/sessions/<id>/ui/` address. The frame then
+opens that tab's fixed `/eva/app/<page>` path from its `TABS` table. Nothing
+from the address bar is used as a frame `src`.
+
+**The address bar follows the open tab.** When the tab changes, the frame
+posts `{type: "eva.tab", tab}` to its parent. The shell accepts that message
+only when three things hold:
+
+- its origin is the shell's own origin;
+- its source is the shell's own Eva frame;
+- its tab is a known id.
+
+The shell then rewrites its hash with `replaceState`, so no history entry is
+added and a copied link reopens the same tab.
+
+When the shell's hash changes (Back, Forward, or an edited hash), the shell
+posts `{type: "eva.host.tab", tab}` to the frame. The frame accepts it only
+when its origin is the same origin, its source is `window.parent`, and its tab
+is in `TABS`.
+
 ## Adapter API, against Iris's
 
 The frontend is built against Iris's request and response shapes, so Eva's

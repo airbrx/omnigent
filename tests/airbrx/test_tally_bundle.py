@@ -214,6 +214,30 @@ def test_everything_else_is_denied(target: str) -> None:
     assert tool_boundary(_call(target))["result"] == "DENY"
 
 
+def _framework_tool_names() -> list[str]:
+    """The always-on tools ``ToolManager`` registers for her real spec.
+
+    ``tools.builtins: []`` does not remove these: skills, sessions, agents,
+    comments, policies, scheduled tasks and the embedded browser reach the
+    model on the ``omnigent`` server regardless. MCP tools are registered only
+    by ``start()``, so an unstarted manager lists exactly the framework set.
+    """
+    from omnigent.tools.manager import ToolManager
+
+    spec = load(bundle_root(), expand_env=False)
+    names = {schema["function"]["name"] for schema in ToolManager(spec).get_tool_schemas()}
+    return sorted(names - TALLY_TOOLS - DISCOVERY_TOOLS)
+
+
+def test_every_framework_tool_is_denied() -> None:
+    names = _framework_tool_names()
+    assert names
+    assert {"sys_add_policy", "sys_scheduled_task_create"} <= set(names)
+    for name in names:
+        for target in (name, f"mcp__omnigent__{name}"):
+            assert tool_boundary(_call(target))["result"] == "DENY", target
+
+
 def test_another_servers_tool_does_not_become_hers_by_stripping() -> None:
     assert tool_boundary(_call("mcp__claude_ai_Slack__get_health"))["result"] == "DENY"
 

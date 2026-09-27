@@ -15,13 +15,12 @@ cluster so the box is disposable.
 
 ## What this is (and isn't)
 
-The EC2 box is mainly the coordinator: it stores accounts + session history
-and brokers WebSocket connections. One exception: Tally, the read-only
-control-plane agent, runs on an Omnigent host on this box so she can reach the
-gateway portal on loopback. That host holds one Claude token, Abram's, in
-`/home/ubuntu/.config/omnigent/host.env`; see `docs/tally/RUNBOOK.md`. No other
-agent runs here. Each person registers their own laptop as a *host* and signs in with
-their own model subscription. Server-side LLM spend is **$0**.
+The EC2 box is **only the coordinator**: it stores accounts + session history
+and brokers WebSocket connections. It holds **no model keys** and **runs no
+agents**. Each person registers their own laptop as a *host* and signs in with
+their own model subscription. Server-side LLM spend is **$0**. Tally is
+registered here (`/etc/omnigent/tally.json`) but runs on Abram's Mac; see
+`docs/tally/RUNBOOK.md`.
 
 ```
   Laptop (host)             ALB (TLS @ *.airbrx.ai)     EC2 t3.small
