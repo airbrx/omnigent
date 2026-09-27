@@ -5,7 +5,8 @@
 //
 // The honesty rules in docs/iris/WORKSPACE_V2.md section 5 are each one test
 // here, named "rule N: ...". They were paid for by incidents in the pinned
-// workspace and its host.js adapter, and they are what this app must keep.
+// workspace and its host.js adapter (both retired in W5), and they are what
+// this app must keep.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";

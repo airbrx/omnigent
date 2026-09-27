@@ -113,26 +113,47 @@ does not prove success.
 
 v2 is the only Iris workspace. The cutover (W5) removed the pinned UI path and
 `omnigent/airbrx/iris/host.js`, the adapter that was injected into it, with its
-test. `OMNIGENT_IRIS_UI` is no longer read: it can be left in
-`/etc/omnigent/server.env` or removed, and setting it to `v1` or anything else
-does **not** bring the old workspace back. There is nothing to bring back
-without `host.js`: the pinned app on its own falls back to
-`iris-state.json` and then the synthetic `demo-state.json` and answers from them
-locally, which is exactly what the host refuses to serve.
+test. `OMNIGENT_IRIS_UI` is no longer read, and setting it to `v1` or anything
+else does **not** bring the old workspace back. There is nothing to bring back
+without `host.js`: the pinned app on its own falls back to `iris-state.json`
+and then the synthetic `demo-state.json` and answers from them locally, which
+is exactly what the host refuses to serve.
 
-**Rollback** is a code rollback, not a setting:
+Remove `OMNIGENT_IRIS_UI` from `/etc/omnigent/server.env` once the cutover is
+deployed. It does nothing while the cutover is in place, but a rollback brings
+the switch back, and a leftover `OMNIGENT_IRIS_UI=v2` would make the rolled-back
+server keep serving v2 (step 1 below).
 
-1. `git revert <cutover merge commit>` on `main` (it restores `host.js`, its
-   test, and the switch with the pinned UI as the default), then deploy that
-   through the normal push to `omnigent-airbrx-server`.
-2. Or redeploy the previous server build. The vendored archive did not change
-   in the cutover, so either route serves the same pinned package.
-3. After either, `GET /v1/iris/sessions/{id}/ui/` should contain
-   `<script src="host.js">`; with the cutover in place it contains
+**Rollback** is a code rollback. Production deploys the head of
+`omnigent-airbrx-server` on every push (`.github/workflows/deploy-omnigent-airbrx.yml`;
+a `workflow_dispatch` re-run also deploys the head), so there is no "previous
+build" to select. The way back is a new commit on that branch:
+
+1. **Unset the switch first.** On the coordinator, delete the
+   `OMNIGENT_IRIS_UI` line from `/etc/omnigent/server.env`, or make sure it is
+   anything other than `v2`. After the revert, unset means the pinned UI. If it
+   is still `v2`, the revert deploys and nothing changes.
+2. **Revert the cutover.** It is one commit and restores `host.js`, its test,
+   the `"*.js"` package-data glob and the switch together.
+   - PRs here are squash-merged: `git revert <squash commit>` on `main`.
+   - If it ever landed as a real merge commit: `git revert -m 1 <merge commit>`.
+3. **Deploy it.** Either forward-merge `main` onto `omnigent-airbrx-server` and
+   push, or apply the same revert directly on `omnigent-airbrx-server` and push
+   (then revert on `main` too, so the next forward-merge does not undo it). The
+   push restarts the server, which also picks up the edited `server.env`.
+4. **Check.** `GET /v1/iris/sessions/{id}/ui/` contains `<script src="host.js">`
+   after a rollback. With the cutover in place it contains
    `<script src="app.js">` and `ui/host.js` is 404.
 
 No data migrates in either direction: sessions, reports and the chat history
 belong to the Omnigent session, not the UI.
+
+**This rollback expires.** It works only while `iris-source.zip` still carries
+the pinned `ui/index.html`, `app.js`, `style.css` and `theme.js`. The planned
+re-vendor removes them (`WORKSPACE_V2.md`, section 7, step 5). After that,
+reverting the cutover alone serves a pinned `index.html` that 404s its own
+scripts; rolling back then also means reverting the re-vendor. The re-vendor PR
+must update this section.
 
 ## Verification
 
