@@ -110,7 +110,7 @@ a {
   height: 20px;
   display: block;
 }
-.agent {
+.brand-agent {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -120,7 +120,7 @@ a {
   padding-left: 12px;
   border-left: 1px solid var(--border);
 }
-.agent img {
+.brand-agent img {
   width: 28px;
   height: 28px;
   border-radius: 8px;

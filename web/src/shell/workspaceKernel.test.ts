@@ -809,3 +809,50 @@ describe("context", () => {
     expect(AW.$("context")).toBeVisible();
   });
 });
+
+// ------------------------------------------------------------ brand.css (B2)
+//
+// QA 2026-09-26 B2: brand.css styled the header's agent label as `.agent`
+// (a bold flex row). Chat answers are `li.agent`, so every answer was bold and
+// a multi-paragraph answer laid its paragraphs side by side, each a few pixels
+// wide. The header label is `.brand-agent` now; nothing in brand.css may style
+// a bare `.agent`.
+
+describe("brand.css and the chat's agent lines", () => {
+  const BRAND = readFileSync(join(KERNEL, "brand.css"), "utf8");
+
+  it("no rule styles a bare .agent class, which chat answers also carry", () => {
+    const bare = BRAND.replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("}")
+      .map((rule) => rule.split("{")[0])
+      .flatMap((selectors) => selectors.split(","))
+      .map((selector) => selector.trim())
+      .filter((selector) => /(^|[\s>+~])\.agent\b(?!-)/.test(selector));
+    expect(bare).toEqual([]);
+  });
+
+  it("a two-paragraph answer renders as block paragraphs, not bold", () => {
+    const style = document.createElement("style");
+    style.textContent = BRAND;
+    document.head.append(style);
+    try {
+      const list = document.createElement("ol");
+      list.id = "messages";
+      list.className = "messages";
+      document.body.append(list);
+      const transcript = AW.createTranscript({ list, agentName: "Iris" });
+      const li = transcript.add("agent", "First paragraph.\n\nSecond paragraph.");
+      const paragraphs = [...li.querySelectorAll(":scope > p")];
+      expect(paragraphs.map((p) => p.textContent)).toEqual([
+        "First paragraph.",
+        "Second paragraph.",
+      ]);
+      const computed = getComputedStyle(li);
+      expect(computed.display).not.toMatch(/flex|grid/);
+      expect(["700", "bold", "bolder"]).not.toContain(computed.fontWeight);
+      for (const p of paragraphs) expect(getComputedStyle(p).display).toBe("block");
+    } finally {
+      style.remove();
+    }
+  });
+});
