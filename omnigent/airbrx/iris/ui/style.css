@@ -192,8 +192,45 @@ pre.json {
   margin-right: 8px;
 }
 
+.finding code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
 @media (max-width: 760px) {
   .host-line {
     padding: 8px 16px 0;
+  }
+}
+
+/* A phone: the Accounts table stacks each tenant's columns, so none is cut
+   off at the card's edge. Each cell is named by its data-label. */
+@media (max-width: 560px) {
+  table.accounts,
+  table.accounts tbody,
+  table.accounts tr,
+  table.accounts td {
+    display: block;
+    width: auto;
+  }
+  table.accounts thead {
+    display: none;
+  }
+  table.accounts tr {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  table.accounts td {
+    border-bottom: 0;
+    padding: 3px 0;
+  }
+  table.accounts td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
   }
 }

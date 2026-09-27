@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
-import os
+import math
 import re
 import time
 from contextlib import asynccontextmanager
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from omnigent.airbrx.iris.account import collect_captures
@@ -81,10 +81,51 @@ _ALLOWED_IN_A_TURN = TOOLS | _HARNESS_TOOLS
 #: recognises a refresh turn by it (docs/iris/WORKSPACE_V2.md, section 2), so
 #: it is kept byte-for-byte.
 REFRESH_FIRST_SENTENCE = "Call iris_overview and iris_audit for the selected tenant."
+#: The second sentence leaves the window to the tool (QA re-walk N1,
+#: 2026-09-26). Asked for "the last seven days", Iris worked the dates out from
+#: the local date her harness gives her, which from 17:00 to midnight Pacific is
+#: a day behind the UTC date that iris_overview and `reads_current_period` both
+#: count in. Her 09-19..09-26 was refused as "not the current period", and each
+#: page open collected again until the session's tool budget ran out. Called
+#: without dates, the tool resolves the current period on its own UTC clock and
+#: the adapter recognises the call as current without comparing any clocks, so
+#: the host's time zone no longer enters into it.
+REFRESH_WINDOW_SENTENCE = (
+    "Call iris_overview with no arguments: leave out start_date and end_date, and do not "
+    "work out dates yourself, because without them the tool reads the current period on "
+    "its own clock."
+)
 REFRESH_PROMPT = (
-    f"{REFRESH_FIRST_SENTENCE} "
+    f"{REFRESH_FIRST_SENTENCE} {REFRESH_WINDOW_SENTENCE} "
     "Summarize the measured denominator and coverage. Do not propose changes."
 )
+
+#: How long a refresh that read no current-period overview holds off the next
+#: one in the same session (QA re-walk N1). The page auto-collects whenever state
+#: answers 409, so after a collect that missed, every page open ran another: four
+#: opens spent the session's 60-call tool budget, and on a real tenant each is a
+#: warehouse read. A repeat inside this window is refused without a turn. A chat
+#: turn in between, or a refresh after the window, runs as usual.
+REPEAT_COLLECT_COOLDOWN_SECONDS = 600
+#: The 409 detail for that refusal, with `{wait}` filled in by
+#: `repeat_collect_detail`. Distinct from `BUSY_DETAIL` and from both "no
+#: overview" details (it must not start with "The collection"), so a caller can
+#: tell "not started" from "ran and missed". It says "collect", as the page's
+#: buttons do.
+REPEAT_COLLECT_DETAIL = (
+    "Iris did not start another collection, because the last one in this session read "
+    "no current-period overview. Collect again in {wait}, or ask Iris anything in chat "
+    "to lift the hold now. Open native chat to see what Iris did."
+)
+
+
+def repeat_collect_detail(seconds_left: float) -> str:
+    """`REPEAT_COLLECT_DETAIL` for a hold with `seconds_left` to run, in whole minutes."""
+    minutes = max(1, math.ceil(seconds_left / 60))
+    return REPEAT_COLLECT_DETAIL.format(
+        wait=f"about {minutes} minute" + ("" if minutes == 1 else "s")
+    )
+
 
 #: Tools whose reports a refresh bounds by its own turn marker. A refresh calls
 #: exactly these, so an older report of either is the previous capture and must
@@ -106,18 +147,8 @@ UI_ROOT = HERE / "ui"
 #: so nothing else placed under `ui/` becomes reachable, and `views/` cannot be
 #: escaped with `..` or a nested path.
 _V2_APP_FILES = re.compile(r"(?:app\.js|style\.css|views/[A-Za-z0-9_-]+\.js)")
-#: The two images still read from the pinned archive under either UI.
+#: The two images still read from the pinned archive (`ui/assets/`, D1).
 _PINNED_IMAGES = frozenset({"assets/iris-portrait.png", "assets/airbrx-logo.png"})
-
-
-def ui_version() -> str:
-    """Which workspace the asset route serves, read on every request.
-
-    `OMNIGENT_IRIS_UI=v2` serves the new UI plus the shared kernel. Anything
-    else, including unset, serves the pinned UI with `host.js` injected, as
-    before, so production is unchanged until the default is flipped (W5).
-    """
-    return "v2" if os.environ.get("OMNIGENT_IRIS_UI") == "v2" else "pinned"
 
 
 def kernel_file(name: str) -> Path | None:
@@ -125,11 +156,11 @@ def kernel_file(name: str) -> Path | None:
 
     The kernel (`omnigent.airbrx.workspace`) owns its allowlist; this only
     refuses anything outside it. Imported here rather than at module load so a
-    host without the kernel still serves the pinned UI.
+    host without the kernel 404s kernel files instead of failing to import.
     """
     try:
-        # By name: the kernel lands in its own change (W2), and this module
-        # must import, type-check and serve the pinned UI without it.
+        # By name, so this module imports and type-checks without the kernel
+        # package; a missing kernel is a 404 on its files, nothing more.
         kernel = importlib.import_module("omnigent.airbrx.workspace.assets")
     except ImportError:
         return None
@@ -171,6 +202,36 @@ def completed_answer(items: list[dict]) -> dict | None:
 #: 409s of `read_state`: a reload during the first auto-collect gets it while
 #: the orphaned refresh is still running. Kept byte-for-byte; a test pins it.
 BUSY_DETAIL = "Iris is busy; cancel or wait for the current turn"
+
+
+def _user_text(item: dict) -> str | None:
+    if item.get("type") != "message" or item.get("role") != "user":
+        return None
+    return "".join(
+        c.get("text", "") for c in item.get("content") or [] if c.get("type") == "input_text"
+    )
+
+
+def missed_collect_at(items: list[dict]) -> float | None:
+    """When the session's latest turn, a refresh, read no current-period overview.
+
+    `items` in chronological order. Returns the `created_at` of that refresh's
+    message, or None when the latest user turn is not a refresh or it found the
+    current period (by `reads_current_period`, the rule `read_state` and the
+    Accounts ranking use).
+    """
+    marker = next((i for i in reversed(items) if _user_text(i) is not None), None)
+    if marker is None or not _user_text(marker).startswith(REFRESH_FIRST_SENTENCE):
+        return None
+    at = marker.get("created_at", 0)
+    for tool, _, created_at, arguments, called_at in report_calls(items):
+        if (
+            tool == "iris_overview"
+            and created_at >= at
+            and reads_current_period(arguments, called_at)
+        ):
+            return None
+    return at
 
 
 def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
@@ -382,12 +443,32 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                 )
             )
 
+    async def refuse_a_repeat_collect(session_id, session, client):
+        """409 instead of a turn when the last refresh just missed (QA re-walk N1).
+
+        A busy session is left to `turn`, so a reload during the first collect
+        still gets `BUSY_DETAIL`.
+        """
+        lock = locks.get(session_id)
+        if (lock is not None and lock.locked()) or session["status"] in {"running", "waiting"}:
+            return
+        page = await checked(
+            await client.get(
+                f"/v1/sessions/{session_id}/items", params={"limit": 1000, "order": "desc"}
+            )
+        )
+        at = missed_collect_at(list(reversed(page["data"])))
+        left = REPEAT_COLLECT_COOLDOWN_SECONDS - (time.time() - at) if at is not None else 0
+        if left > 0:
+            raise HTTPException(409, repeat_collect_detail(left))
+
     async def read_state(request: Request, session_id: str, fresh: bool = False):
         async with session_client(request) as client:
-            _, binding = await authorize(request, session_id, client)
+            session, binding = await authorize(request, session_id, client)
             params = {"limit": 1000, "order": "desc"}
             cursor = None
             if fresh:
+                await refuse_a_repeat_collect(session_id, session, client)
                 fresh_turn = await turn(
                     request,
                     session_id,
@@ -606,13 +687,25 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
     async def refresh(request: Request, session_id: str):
         return await read_state(request, session_id, fresh=True)
 
-    def v2_asset(asset: str):
-        """The v2 workspace (WORKSPACE_V2.md, section 2, "Assets"). Everything else is 404.
+    @router.get("/iris/sessions/{session_id}/ui/{asset:path}", include_in_schema=False)
+    async def asset(request: Request, session_id: str, asset: str):
+        """The workspace (WORKSPACE_V2.md, section 2, "Assets"). Everything else is 404.
 
-        No `host.js`, no injection, and none of the pinned app's files: v2 is
-        the new UI and the kernel, plus the two pinned images. `iris-state.json`
-        and `demo-state.json` stay 404 for the reason given in `asset` below.
+        v2 is the only workspace since the cutover (W5): the new UI and the
+        kernel, plus the two pinned images. There is no switch back. The pinned
+        app is not served, and `host.js`, the adapter that was injected into it,
+        is deleted: without that adapter the pinned app boots through
+        `iris-state.json` then `demo-state.json` and answers from them locally,
+        so serving it at all would be serving synthetic data.
+
+        `iris-state.json` stays 404 because it is someone's captured tenant
+        evidence, and `demo-state.json` because a fresh tenant-bound session
+        must show its own evidence or nothing, never a complete fabricated
+        report behind a small chip. Neither is under `UI_ROOT`, and nothing but
+        the names below is served from it.
         """
+        async with session_client(request) as client:
+            await authorize(request, session_id, client)
         if not asset or asset == "index.html":
             if not (UI_ROOT / "index.html").is_file():
                 raise HTTPException(404)
@@ -636,54 +729,5 @@ def create_iris_router(*, auth_provider, agent_store, hosts_online=None):
                 source_root() / "ui" / asset, headers={"Cache-Control": "private, max-age=3600"}
             )
         raise HTTPException(404)
-
-    @router.get("/iris/sessions/{session_id}/ui/{asset:path}", include_in_schema=False)
-    async def asset(request: Request, session_id: str, asset: str):
-        async with session_client(request) as client:
-            await authorize(request, session_id, client)
-        if ui_version() == "v2":
-            return v2_asset(asset)
-        if not asset or asset == "index.html":
-            html = (source_root() / "ui/index.html").read_text()
-            html = html.replace(
-                '<script src="theme.js">', '<script src="host.js"></script><script src="theme.js">'
-            )
-            return HTMLResponse(
-                html, headers={"Cache-Control": "no-store", "X-Frame-Options": "SAMEORIGIN"}
-            )
-        if asset == "host.js":
-            # No-store, unlike the pinned assets below: this adapter is part of
-            # the host build, not the verified package, and a cached copy would
-            # keep reporting a readiness contract the server has moved past.
-            return FileResponse(
-                HERE / "host.js",
-                media_type="text/javascript",
-                headers={"Cache-Control": "no-store"},
-            )
-        # The app, not captures. `iris-state.json` is already withheld because
-        # it is someone's captured tenant evidence; `demo-state.json` is
-        # withheld for a subtler reason that is the same reason.
-        #
-        # app.js boots through a fallback chain: `api/state`, then
-        # `iris-state.json`, then `demo-state.json`. On a hosted mount the
-        # first 409s until a turn has produced an overview and the second is
-        # 404. Serving the third meant a fresh tenant-bound session opened
-        # showing a complete, entirely synthetic cache report - hit rate,
-        # findings, a tenant line - behind nothing but a small "Synthetic
-        # demo" chip, and `ask()` then answered questions from it locally
-        # without ever calling the host. A session shows its own evidence or
-        # it shows nothing and says so.
-        allowed = {
-            "app.js",
-            "theme.js",
-            "style.css",
-            "assets/iris-portrait.png",
-            "assets/airbrx-logo.png",
-        }
-        if asset not in allowed:
-            raise HTTPException(404)
-        return FileResponse(
-            source_root() / "ui" / asset, headers={"Cache-Control": "private, max-age=3600"}
-        )
 
     return router

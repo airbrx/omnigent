@@ -98,3 +98,48 @@ def test_evas_bundle_is_the_case_this_was_written_for() -> None:
     assert (bundle / "config.yaml").is_file()
     assert (bundle / "AGENTS.md").is_file()
     assert _matches(_declared_globs()["omnigent.airbrx.eva"], "bundle/config.yaml")
+
+
+def _declared_files(package: str, directory: pathlib.Path, suffixes: set[str]) -> list[str]:
+    """The files under `directory` with `suffixes`, each asserted to be package data."""
+    package_dir = REPO_ROOT.joinpath(*package.split("."))
+    files = sorted(
+        path.relative_to(package_dir).as_posix()
+        for path in directory.rglob("*")
+        if path.is_file() and path.suffix in suffixes
+    )
+    patterns = _declared_globs().get(package, [])
+    missing = [relpath for relpath in files if not _matches(patterns, relpath)]
+    assert not missing, f"{package} would ship without: {', '.join(missing)}"
+    return files
+
+
+def test_the_framed_workspaces_ship_their_ui() -> None:
+    """The kernel, Iris v2 and Eva's workspace reach the wheel, named one by one.
+
+    Since the Iris cutover (W5) these are the only workspace files served, and a
+    glob edit that drops one is a blank frame on an installed host but passes
+    every test run from a checkout. Each set is asserted non-empty and complete,
+    so a move cannot turn this into a check of nothing.
+    """
+    from omnigent.airbrx.workspace.assets import KERNEL_ASSETS
+
+    kernel = _declared_files(
+        "omnigent.airbrx.workspace", AIRBRX / "workspace" / "ui", {".js", ".css"}
+    )
+    assert {f"ui/{name}" for name in KERNEL_ASSETS} <= set(kernel)
+    assert "ui/dom.js" in kernel
+
+    iris = _declared_files(
+        "omnigent.airbrx.iris", AIRBRX / "iris" / "ui", {".html", ".js", ".css"}
+    )
+    assert {"ui/index.html", "ui/app.js", "ui/style.css"} <= set(iris)
+
+    eva = _declared_files("omnigent.airbrx.eva", AIRBRX / "eva" / "ui", {".html", ".js", ".css"})
+    assert {"ui/index.html", "ui/app.js", "ui/style.css"} <= set(eva)
+
+
+def test_the_retired_iris_adapter_is_not_package_data() -> None:
+    """`host.js` was the only top-level script in the Iris package, and it is gone (W5)."""
+    assert not (AIRBRX / "iris" / "host.js").exists()
+    assert not _matches(_declared_globs()["omnigent.airbrx.iris"], "host.js")

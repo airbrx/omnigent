@@ -5,7 +5,8 @@
 //
 // The honesty rules in docs/iris/WORKSPACE_V2.md section 5 are each one test
 // here, named "rule N: ...". They were paid for by incidents in the pinned
-// workspace and its host.js adapter, and they are what this app must keep.
+// workspace and its host.js adapter (both retired in W5), and they are what
+// this app must keep.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -270,6 +271,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
   items = [];
   sessionStatus = "idle";
   apiOptions = [];
@@ -753,6 +755,29 @@ it("a collection that produced nothing new keeps the capture, with its time, and
   expect(within(messages()).getByText("How is the cache?")).toBeInTheDocument();
 });
 
+// Review of #118/#119: a refresh 409 is "that collection produced no overview"
+// only when a collection ran and missed. When the adapter refused to start one,
+// its own detail says why and when to retry, and no collect is recorded.
+it.each([
+  ["a repeat collect inside the hold", "repeat_collect_refused"],
+  ["a busy session", "busy_session"],
+] as const)(
+  "a collect refused for %s shows the adapter's detail, not 'produced no overview'",
+  async (_, scenario) => {
+    const refusal = ADAPTER[scenario].refresh;
+    const said = (refusal.body as { detail: string }).detail.replace(/[.\s]+$/, "");
+    serve({ refresh: () => replay(refusal) });
+    await mount();
+    fireEvent.click(screen.getByRole("button", { name: "Collect a fresh overview" }));
+    await waitFor(() => expect(messages().textContent).toContain(said));
+    expect(messages().textContent).not.toContain("produced no");
+    expect(messages().textContent).not.toContain("You had Iris collect a fresh overview.");
+    expect(calls("refresh")).toHaveLength(1);
+    // The capture on screen is untouched.
+    expect(view().textContent).toContain("80.0%");
+  },
+);
+
 it("rule 9: chat and refresh run on a 330 s client deadline, and chat sends deadline 300", async () => {
   await mount();
   expect(apiOptions).toContainEqual(expect.objectContaining({ timeoutMs: 330000 }));
@@ -862,9 +887,10 @@ it("rule 12: a reload rebuilds the chat from the session, and names a refresh tu
   ];
   await mount();
   await waitFor(() => expect(messages().querySelectorAll("li.agent")).toHaveLength(2));
-  expect(
-    within(messages()).getByText("You had Iris collect a fresh overview."),
-  ).toBeInTheDocument();
+  // The record does not say who started a collect turn: most are the page's
+  // own automatic one, so a reload does not say "You had" (QA final 2026-09-27).
+  expect(within(messages()).getByText("Iris collected a fresh overview.")).toBeInTheDocument();
+  expect(messages().textContent).not.toContain("You had Iris collect");
   expect(within(messages()).getByText("Is it safe?")).toBeInTheDocument();
   expect(messages().textContent).not.toContain("I am looking at");
   expect(messages().textContent).not.toContain("Call iris_overview");
@@ -1468,6 +1494,68 @@ it("F4 (review N5): a partial current capture (3 of 7 days) is not labelled an e
   expect(strayText(view())).toEqual([]);
 });
 
+// QA final 2026-09-27 R1: a session with a capture and no period comparison
+// (every fresh session after its first collect) showed "null" on Results.
+it("R1: Results with a capture and no period comparison shows no stray 'null'", async () => {
+  serve({}, "captured");
+  await mount("#results");
+  expect(view().textContent).toContain("Baseline and now");
+  expect(view().textContent).not.toContain("Iris's own period comparison");
+  expect(strayText(view())).toEqual([]);
+  expect(view().textContent).not.toMatch(/\bnull\b/);
+});
+
+/**
+ * Text nodes on the page with the word "null" or "undefined" in them, except
+ * where the page shows Iris's words or data verbatim: her answers (li.agent)
+ * and the raw JSON of what she read (pre.json), where null is a JSON value.
+ */
+function nullishText(root: Element) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const found: string[] = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.parentElement?.closest("li.agent, pre.json, script, style")) continue;
+    if (/\b(null|undefined)\b/i.test(n.textContent ?? "")) found.push(n.textContent!);
+  }
+  return found;
+}
+
+const CAPTURED_STATE = ADAPTER.captured.state.body as State;
+const NULLISH_STATES: [string, () => State][] = [
+  ["a fresh capture with no comparison", () => structuredClone(CAPTURED_STATE)],
+  [
+    "a partial capture",
+    () => {
+      const state = structuredClone(CAPTURED_STATE);
+      Object.assign(state.overview.metrics, {
+        covered_days: 3,
+        requested_days: 7,
+        period_complete: false,
+      });
+      return state;
+    },
+  ],
+  ["a full state with a comparison and a proposal", () => makeState()],
+];
+
+// The guard for R1's whole class: an empty branch passed to a native append
+// prints "null". Every tab, for each state, in the page and the shell.
+it.each(
+  NULLISH_STATES.flatMap(([name, state]) =>
+    TABS.map(([label, id]) => [label, name, id, state] as const),
+  ),
+)("the %s tab shows no stray 'null' or 'undefined' for %s", async (label, _, id, state) => {
+  serve({ state: () => json(state()) });
+  // Opened on another tab, so the click is a switch.
+  await mount(id === "overview" ? "#accounts" : "");
+  tab(label);
+  await waitFor(() => expect(window.location.hash).toBe(`#${id}`));
+  await waitFor(() => expect(view().textContent).toContain(label));
+  if (id === "accounts")
+    await waitFor(() => expect(view().textContent).not.toContain("Reading the account."));
+  expect(nullishText(document.body)).toEqual([]);
+});
+
 it("B4 (review N1): a turn that ends while the page reads its history still shows its answer", async () => {
   items = [userItem("u1", "How is the cache?")];
   sessionStatus = "running";
@@ -1489,4 +1577,225 @@ it("B4 (review N1): a turn that ends while the page reads its history still show
   );
   await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
   expect(messages().querySelector("[role=status]")).toBeNull();
+});
+
+// ------------------------------------------------ QA re-walk 2026-09-26 N2 --
+//
+// iris_overview narrows a partial capture's dates to the days it covered: a
+// budget-cut read of the current period 09-19..09-26 comes back as 09-19..09-22
+// (or 09-23..09-26 when the first days are missing). That is the current
+// period, partially covered. The test above keeps the full period dates; these
+// use the tool's real shape.
+
+const PARTIAL = { covered_days: 3, requested_days: 7, period_complete: false };
+
+it.each([
+  ["missing its last days", "2026-09-19", "2026-09-22"],
+  ["missing its first days", "2026-09-23", "2026-09-26"],
+  ["cut short by the budget, UTC-dated", "2026-09-20", "2026-09-22"],
+])(
+  "N2: a partial capture with the tool's narrowed dates (%s) is the current period, not an earlier window",
+  async (_name, start_date, end_date) => {
+    serve({ state: () => json(withMetrics({ ...PARTIAL, start_date, end_date })) });
+    await mount();
+    expect(view().textContent).toContain(`${start_date} to ${end_date}`);
+    expect(view().textContent).toContain("3 / 7 days");
+    expect(view().textContent).toContain("Partial capture.");
+    expect(view().textContent).toContain("80.0%");
+    expect(view().textContent).not.toContain("earlier window");
+    expect(view().textContent).not.toContain("not this tenant's current period");
+    expect(strayText(view())).toEqual([]);
+  },
+);
+
+it("N2: an earlier window is still labelled when its own dates are narrowed", async () => {
+  const earlier = earlierWindow();
+  Object.assign(earlier.overview.metrics, {
+    ...PARTIAL,
+    start_date: "2026-09-15",
+    end_date: "2026-09-19",
+  });
+  serve({ state: () => json(earlier) });
+  await mount();
+  expect(view().textContent).toContain("not this tenant's current period");
+});
+
+it("N2: the live refresh of a stale capture takes a narrowed partial capture, and drops the stale label", async () => {
+  const stale = ADAPTER.stale_capture.state.body as State;
+  const fresh = structuredClone(ADAPTER.stale_capture.refresh.body) as State;
+  Object.assign(fresh.overview.metrics, { ...PARTIAL, end_date: "2026-09-22" });
+  const held = deferred<Response>();
+  serve({ state: () => json(stale), refresh: () => held.promise });
+  start();
+  await waitFor(() => expect(view().textContent).toContain("2026-09-19 to 2026-09-26"));
+  await waitFor(() => expect(calls("refresh")).toHaveLength(1));
+  held.resolve(json(fresh));
+  await waitFor(() =>
+    expect(document.getElementById("freshness")?.textContent).not.toContain("may be out of date"),
+  );
+  expect(view().textContent).toContain("2026-09-19 to 2026-09-22");
+  expect(view().textContent).toContain("3 / 7 days");
+  expect(view().textContent).not.toContain("2026-09-19 to 2026-09-26");
+  expect(view().textContent).not.toContain("earlier window");
+});
+
+// -------------------------------------- one automatic collection per session --
+//
+// QA re-walk N1: every open of a session with no current overview collected
+// again, which spent the session's 60-call tool budget, and on a live tenant
+// each one is a warehouse read. The page now collects on its own at most once
+// per session and then offers "Collect now".
+
+const collectTurn = (id: string, created_at?: number) => ({
+  ...userItem(
+    id,
+    "Call iris_overview and iris_audit for the selected tenant. Do not propose changes.",
+  ),
+  ...(created_at === undefined ? {} : { created_at }),
+});
+
+it("a session whose record already holds a collect turn does not collect on open; Collect now does", async () => {
+  items = [collectTurn("u0", CAPTURED - 600), assistantItem("a0", "No overview this time.")];
+  let collected = false;
+  serve(
+    {
+      state: () => (collected ? json(makeState()) : detail("No current-period overview yet", 409)),
+      refresh: () => {
+        collected = true;
+        return json(makeState());
+      },
+    },
+    "fresh_session",
+  );
+  start();
+  await waitFor(() => expect(view().textContent).toContain("No current overview yet"));
+  expect(view().textContent).toContain("only once per session");
+  await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
+  expect(calls("refresh")).toHaveLength(0);
+  fireEvent.click(within(view()).getByRole("button", { name: "Collect now" }));
+  await waitFor(() => expect(view().textContent).toContain("80.0%"));
+  expect(calls("refresh")).toHaveLength(1);
+});
+
+it("a reload in the same tab after a failed automatic collection does not collect again", async () => {
+  serve({ refresh: captured("first_collect_produced_nothing", "refresh") }, "fresh_session");
+  start();
+  await waitFor(() =>
+    expect(view().textContent).toContain("Iris has not collected an overview here yet"),
+  );
+  expect(calls("refresh")).toHaveLength(1);
+  expect(within(view()).getByRole("button", { name: "Collect now" })).toBeVisible();
+  // The record did not get the turn (the mock keeps no items): the tab's own
+  // marker still holds.
+  const reload = async () => {
+    document.body.innerHTML = "";
+    start();
+    await waitFor(() => expect(view().textContent).toContain("No current overview yet"));
+    await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
+  };
+  await reload();
+  await reload();
+  await reload();
+  expect(calls("refresh")).toHaveLength(1);
+  fireEvent.click(within(view()).getByRole("button", { name: "Collect now" }));
+  await waitFor(() => expect(calls("refresh")).toHaveLength(2));
+});
+
+it("a stale capture with a collect turn after it is shown labelled, and not refreshed again on open", async () => {
+  const stale = ADAPTER.stale_capture.state.body as State;
+  items = [collectTurn("u9", stale.captured_at + 300)];
+  serve({}, "stale_capture");
+  start();
+  await waitFor(() => expect(view().textContent).toContain("80.0%"));
+  await waitFor(() => expect(document.getElementById("refresh")).not.toBeDisabled());
+  expect(document.getElementById("freshness")?.textContent).toContain("may be out of date");
+  expect(document.getElementById("notice")?.textContent).toContain("only once per session");
+  expect(calls("refresh")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Collect a fresh overview" }));
+  await waitFor(() =>
+    expect(document.getElementById("freshness")?.textContent).not.toContain("may be out of date"),
+  );
+  expect(calls("refresh")).toHaveLength(1);
+  expect(document.getElementById("notice")).not.toBeVisible();
+});
+
+it("a stale capture whose only collect turn produced it is still refreshed once in the background", async () => {
+  const stale = ADAPTER.stale_capture.state.body as State;
+  items = [collectTurn("u0", stale.captured_at - 60)];
+  serve({}, "stale_capture");
+  start();
+  await waitFor(() => expect(calls("refresh")).toHaveLength(1));
+  await waitFor(() =>
+    expect(document.getElementById("freshness")?.textContent).not.toContain("may be out of date"),
+  );
+});
+
+// --------------------------------------------- QA re-walk minor items --
+
+it("a finding's Python list reads as its items, as text", async () => {
+  const state = makeState();
+  state.audit.findings[0] = {
+    ...state.audit.findings[0],
+    explanation:
+      "Rule report-cache caches ['[literal]'], for which no sensitivity classification was supplied.",
+    next_step: "Check ['orders', \"o'brien\", '<b>x</b>'] first.",
+  };
+  serve({ state: () => json(state) });
+  await mount("#findings");
+  const card = view().querySelector(`[data-finding-id="${state.audit.findings[0].id}"]`)!;
+  expect(card.textContent).toContain(
+    "Rule report-cache caches [literal], for which no sensitivity classification was supplied.",
+  );
+  expect(card.textContent).toContain("Next: Check orders, o'brien and <b>x</b> first.");
+  expect(card.textContent).not.toContain("['");
+  expect([...card.querySelectorAll("code")].map((c) => c.textContent)).toEqual([
+    "[literal]",
+    "orders",
+    "o'brien",
+    "<b>x</b>",
+  ]);
+  expect(card.querySelector("b")).toBeNull();
+});
+
+it("on a phone the Accounts table stacks, each cell named by its column", async () => {
+  await mount("#accounts");
+  await waitFor(() => expect(view().querySelector("table.accounts tbody tr")).not.toBeNull());
+  const rows = [...view().querySelectorAll("table.accounts tbody tr")];
+  const production = rows.find((r) => r.textContent?.includes("Production"))!;
+  expect([...production.querySelectorAll("td")].map((td) => td.dataset.label ?? "")).toEqual([
+    "",
+    "Hit rate",
+    "Cache misses",
+    "Requests",
+    "Coverage",
+    "Captured",
+    "",
+  ]);
+  const css = readFileSync(join(UI, "style.css"), "utf8");
+  const phone = /@media \(max-width: 560px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+  expect(phone).toMatch(/table\.accounts td \{[^}]*display: block/);
+  expect(phone).toMatch(/table\.accounts thead \{[^}]*display: none/);
+  expect(phone).toMatch(/td\[data-label\]::before \{[^}]*content: attr\(data-label\)/);
+});
+
+// QA final 2026-09-27: a question sent with Enter while the background refresh
+// of a stale capture ran never reached the server, and its text was gone from
+// the box. Send is disabled while Iris is busy; Enter now keeps the text too.
+it("Enter while a background refresh runs sends nothing and keeps the question in the box", async () => {
+  const held = deferred<Response>();
+  serve({ refresh: () => held.promise }, "stale_capture");
+  start();
+  await waitFor(() => expect(calls("refresh")).toHaveLength(1));
+  expect(document.getElementById("send")).toBeDisabled();
+  const input = screen.getByRole("textbox", { name: "Message Iris" }) as HTMLTextAreaElement;
+  fireEvent.change(input, { target: { value: "How is the cache?" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(input.value).toBe("How is the cache?");
+  expect(calls("chat")).toHaveLength(0);
+  held.resolve(replay(ADAPTER.stale_capture.refresh));
+  await waitFor(() => expect(document.getElementById("send")).not.toBeDisabled());
+  expect(input.value).toBe("How is the cache?");
+  fireEvent.keyDown(input, { key: "Enter" });
+  await waitFor(() => expect(calls("chat")).toHaveLength(1));
+  expect(chatBodies()[0].history.at(-1).content).toBe("How is the cache?");
 });

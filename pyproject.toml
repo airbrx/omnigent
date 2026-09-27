@@ -456,7 +456,7 @@ where = ["."]
 include = ["omnigent*"]
 
 [tool.setuptools.package-data]
-"omnigent.airbrx.iris" = ["*.zip", "*.json", "*.js", "ui/**/*"]
+"omnigent.airbrx.iris" = ["*.zip", "*.json", "ui/**/*"]
 # The shared workspace kernel (docs/iris/WORKSPACE_V2.md, section 3): plain
 # browser scripts and brand.css served to the Iris v2 workspace.
 "omnigent.airbrx.workspace" = ["ui/**/*"]

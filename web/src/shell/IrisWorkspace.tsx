@@ -435,7 +435,7 @@ function IrisFrame({
     <iframe
       ref={frameRef}
       title="Iris workspace"
-      // oxlint-disable-next-line iframe-missing-sandbox -- Pinned same-origin host UI needs scripts and session cookies.
+      // oxlint-disable-next-line iframe-missing-sandbox -- The same-origin Iris workspace needs scripts and session cookies.
       sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-top-navigation-by-user-activation"
       className="h-full min-h-0 w-full flex-1 border-0"
       onLoad={() =>

@@ -1,3 +1,5 @@
+> Historical: this is the description of the original integration PR (2026-09-14), which served the pinned Iris UI with `host.js`. The workspace is now v2 and `host.js` is retired; see `RUNBOOK.md` ("Workspace v2 and rollback") and `WORKSPACE_V2.md`.
+
 ## Related issue
 
 User-requested Iris integration; no separate issue.

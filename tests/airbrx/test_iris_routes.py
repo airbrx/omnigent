@@ -393,7 +393,10 @@ def test_existing_state_keys_are_unchanged(monkeypatch, tmp_path):
     assert body["monitoring"] is None
 
 
-# --- Assets under OMNIGENT_IRIS_UI (WORKSPACE_V2.md, D1 and section 2 "Assets") --------
+# --- Assets (WORKSPACE_V2.md, D1, section 2 "Assets" and section 7 step 5) --------------
+#
+# v2 is the only workspace since the cutover (W5). `OMNIGENT_IRIS_UI` is no
+# longer read: nothing it is set to brings back the pinned UI or `host.js`.
 
 UI = f"/v1/iris/sessions/{SESSION}/ui"
 
@@ -431,7 +434,8 @@ def v2_ui(tmp_path, monkeypatch):
     package.assets = assets
     monkeypatch.setitem(sys.modules, "omnigent.airbrx.workspace", package)
     monkeypatch.setitem(sys.modules, "omnigent.airbrx.workspace.assets", assets)
-    monkeypatch.setenv("OMNIGENT_IRIS_UI", "v2")
+    # v2 is the default: nothing opts in to it.
+    monkeypatch.delenv("OMNIGENT_IRIS_UI", raising=False)
     return root
 
 
@@ -513,28 +517,34 @@ def test_v2_without_the_kernel_package_404s_kernel_files(v2_ui, monkeypatch, tmp
     assert _ui_client(monkeypatch, tmp_path).get(f"{UI}/kernel/dom.js").status_code == 404
 
 
-def test_v2_is_read_per_request(v2_ui, monkeypatch, tmp_path):
-    client = _ui_client(monkeypatch, tmp_path)
-    assert "host.js" not in client.get(f"{UI}/index.html").text
-    monkeypatch.delenv("OMNIGENT_IRIS_UI")
-    assert "host.js" in client.get(f"{UI}/index.html").text
+@pytest.mark.parametrize("value", [None, "", "v2", "V2", "v1", "pinned", "1", " v2"])
+def test_v2_is_served_whatever_the_retired_switch_says(v2_ui, monkeypatch, tmp_path, value):
+    """The cutover: `/iris` is v2 with no env var, and the old switch cannot undo it.
 
-
-@pytest.mark.parametrize("value", [None, "", "V2", "v1", "pinned", "1", " v2"])
-def test_anything_but_v2_serves_the_pinned_ui_as_before(v2_ui, monkeypatch, tmp_path, value):
+    `OMNIGENT_IRIS_UI=v1` (or anything else) used to serve the pinned UI with
+    `host.js` injected. `host.js` is deleted, and the pinned app without it
+    falls back to synthetic data, so there is no v1 left to serve. Rolling back
+    is reverting the cutover commit, not setting a variable (docs/iris/RUNBOOK.md).
+    """
     if value is None:
-        monkeypatch.delenv("OMNIGENT_IRIS_UI")
+        monkeypatch.delenv("OMNIGENT_IRIS_UI", raising=False)
     else:
         monkeypatch.setenv("OMNIGENT_IRIS_UI", value)
     client = _ui_client(monkeypatch, tmp_path)
-    index = client.get(f"{UI}/index.html")
-    assert index.status_code == 200
-    assert '<script src="host.js"></script><script src="theme.js">' in index.text
-    assert index.text != (v2_ui / "index.html").read_text()
-    assert client.get(f"{UI}/host.js").status_code == 200
-    assert client.get(f"{UI}/theme.js").status_code == 200
-    for name in ("iris-state.json", "demo-state.json", "kernel/dom.js", "views/overview.js"):
+    for path in (f"{UI}/", f"{UI}/index.html"):
+        index = client.get(path)
+        assert index.status_code == 200
+        assert index.text == (v2_ui / "index.html").read_text()
+        assert "host.js" not in index.text
+    assert client.get(f"{UI}/app.js").text == "// v2 app\n"
+    assert client.get(f"{UI}/kernel/dom.js").status_code == 200
+    for name in ("host.js", "theme.js", "iris-state.json", "demo-state.json"):
         assert client.get(f"{UI}/{name}").status_code == 404, name
+
+
+def test_the_pinned_adapter_is_gone_from_the_package():
+    assert not (iris_routes.HERE / "host.js").exists()
+    assert not hasattr(iris_routes, "ui_version")
 
 
 def test_assets_still_require_an_iris_session(v2_ui, monkeypatch, tmp_path):
@@ -1043,3 +1053,243 @@ def test_report_calls_carries_when_each_call_was_made():
         (file_id, created_at, called_at)
         for _, file_id, created_at, _, called_at in report_calls([*unstamped, *straddle])
     ] == [("unstamped", 50, 50), (OVERVIEW_ID, MIDNIGHT + 4, MIDNIGHT - 2)]
+
+
+# --- N1: the current period does not depend on the host's time zone --------------------
+#
+# QA re-walk, 2026-09-26 (N1). From 17:00 Pacific to midnight the host's local
+# date is a day behind the UTC date. Asked for "the last 7 days", Iris worked the
+# dates out from the local date the harness gives her (09-19..09-26), while the
+# tool and the adapter both count UTC days (09-20..09-27). The first collect was
+# refused as "not the current period", and every page open collected again until
+# the session's tool budget was gone.
+#
+# The fix is on the prompt side: the refresh turn tells Iris to call
+# iris_overview with no dates, so the tool resolves the current period on its own
+# UTC clock and the adapter recognises the call without comparing clocks at all.
+
+import time as _time  # noqa: E402
+from datetime import date, datetime, timedelta  # noqa: E402
+
+from tests.airbrx import test_iris_workspace_fixtures as fixtures  # noqa: E402
+from tests.airbrx.test_iris_workspace_fixtures import FRESH_AUDIT_ID  # noqa: E402
+
+#: 2026-09-27T00:30:00Z, which is 17:30 on 2026-09-26 in America/Los_Angeles (PDT).
+PACIFIC_1730 = READ_AT + 9 * 60
+#: How the refresh prompt tells Iris to leave the window to the tool.
+LEAVE_DATES_OUT = "leave out start_date and end_date"
+
+
+@pytest.fixture
+def pacific_1730(monkeypatch):
+    """The execution host runs in America/Los_Angeles, and it is 17:30 there."""
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    _time.tzset()
+    # The fixture harness reads NOW at call time: the handlers' clock and the
+    # time a posted turn is recorded at both move with it.
+    monkeypatch.setattr(fixtures, "NOW", PACIFIC_1730)
+    # The host-local date, on purpose: that is the clock this test is about.
+    assert datetime.fromtimestamp(PACIFIC_1730).date() == date(2026, 9, 26)  # noqa: DTZ006
+    yield
+    monkeypatch.undo()
+    _time.tzset()
+
+
+def _local_week(at):
+    """'The last 7 days' by the host's local date, as Iris worked it out in QA."""
+    today = datetime.fromtimestamp(at).date()  # noqa: DTZ006 (the host-local date)
+    return {"start_date": str(today - timedelta(days=7)), "end_date": str(today)}
+
+
+def iris_as_observed(text, at):
+    """A refresh turn as Iris ran it in the QA re-walk.
+
+    Told to leave the dates out, she calls iris_overview without them. Otherwise
+    she passes the last seven days by the host's local date (session 0fc1cd66:
+    `{"start_date":"2026-09-19","end_date":"2026-09-26"}` at 20:47 PDT).
+    """
+    arguments = {} if LEAVE_DATES_OUT in text else _local_week(at)
+    return [
+        *_with_arguments(tool_run("iris_overview", FRESH_OVERVIEW_ID, at, "fresh-o"), arguments),
+        *tool_run("iris_audit", FRESH_AUDIT_ID, at, "fresh-a"),
+        answer_item("Hit rate 80.0% over 700 requests.", at, "a-fresh"),
+    ]
+
+
+def test_the_refresh_prompt_leaves_the_window_to_the_tool(monkeypatch, tmp_path):
+    session = IrisSession(captured(), FILES, respond)
+    assert _refresh(monkeypatch, tmp_path, session).status_code == 200
+    (posted,) = [e for e in session.posted if e["type"] == "message"]
+    text = posted["data"]["content"][0]["text"]
+    assert text.startswith("Call iris_overview and iris_audit for the selected tenant. ")
+    assert LEAVE_DATES_OUT in text
+    assert text == iris_routes.REFRESH_PROMPT
+
+
+def test_the_first_collect_at_1730_pacific_is_the_current_period(
+    pacific_1730, monkeypatch, tmp_path
+):
+    """The N1 repro: a new session's first open, on a host at 17:30 PDT."""
+    session = IrisSession([], _files(), iris_as_observed)
+    client = make_client(monkeypatch, tmp_path, session)
+    assert client.get(f"{API}/state").status_code == 409  # nothing collected yet
+    response = client.post(f"{API}/refresh", json={})
+    assert response.status_code == 200, response.text
+    assert response.json()["overview"] == FILES[FRESH_OVERVIEW_ID]
+    assert response.json()["captured_at"] == PACIFIC_1730 - 1
+    # The next page open reads it back instead of collecting again.
+    assert client.get(f"{API}/state").status_code == 200
+    assert len([e for e in session.posted if e["type"] == "message"]) == 1
+
+
+def _narrowed_partial():
+    """3 of 7 days, as the tool returns it: metric dates narrowed to the days covered."""
+    rows = summary_rows(20, "narrowed")[:3]
+    return {
+        **FILES[OVERVIEW_ID],
+        "message": "the narrowed partial capture",
+        "incomplete": True,
+        "evidence": rows,
+        "metrics": {
+            **metrics("2026-09-20", "2026-09-22", rows),
+            "covered_days": 3,
+            "requested_days": 7,
+            "period_complete": False,
+        },
+    }
+
+
+def test_a_narrowed_partial_capture_at_1730_pacific_is_current(
+    pacific_1730, monkeypatch, tmp_path
+):
+    """Called without dates, the tool covered 09-20..09-22 only; a newer comparison follows."""
+    items = [
+        user_item(iris_routes.REFRESH_PROMPT, PACIFIC_1730 - 60, "u-partial"),
+        *tool_run("iris_overview", PARTIAL_ID, PACIFIC_1730 - 50, "partial"),
+        answer_item("3 of 7 days covered.", PACIFIC_1730 - 48, "a-partial"),
+        *_compared(PACIFIC_1730 - 20),
+    ]
+    files = _files(**{PARTIAL_ID: _narrowed_partial()})
+    body = _state(monkeypatch, tmp_path, IrisSession(items, files))
+    assert body["overview"]["message"] == "the narrowed partial capture"
+    assert body["overview"]["metrics"]["end_date"] == "2026-09-22"
+    assert body["captured_at"] == PACIFIC_1730 - 50
+
+
+def test_an_older_window_at_1730_pacific_is_still_not_the_overview(
+    pacific_1730, monkeypatch, tmp_path
+):
+    """The week before, read with explicit dates, stays a comparison on any host clock."""
+    session = IrisSession(_compared(PACIFIC_1730 - 20), _files())
+    response = make_client(monkeypatch, tmp_path, session).get(f"{API}/state")
+    assert response.status_code == 409
+    assert "the comparison window" not in response.text
+
+
+# --- N1, server side: a refresh right after one that missed does not run again -----------
+
+
+def _missed_collect(at):
+    """A refresh turn at `at` whose overview read a window that is not the current period."""
+    return [
+        user_item(iris_routes.REFRESH_PROMPT, at, "u-missed"),
+        *_with_arguments(
+            tool_run("iris_overview", COMPARISON_ID, at + 5, "missed"),
+            {"start_date": "2026-09-12", "end_date": "2026-09-19"},
+        ),
+        answer_item("Read 09-12..09-19.", at + 8, "a-missed"),
+    ]
+
+
+def _turns(session):
+    return [e for e in session.posted if e["type"] == "message"]
+
+
+def test_page_opens_after_a_missed_collect_do_not_collect_again(monkeypatch, tmp_path):
+    """Four page opens in QA made four collects and spent the session's 60-call budget."""
+
+    def always_misses(text, at):
+        return _missed_collect(at)[1:]
+
+    session = IrisSession([], _files(), always_misses)
+    client = make_client(monkeypatch, tmp_path, session)
+    answers = []
+    for _ in range(4):  # each open: state 409, then the first-open auto-collect
+        assert client.get(f"{API}/state").status_code == 409
+        answers.append(client.post(f"{API}/refresh", json={}))
+    assert [a.status_code for a in answers] == [409, 409, 409, 409]
+    assert len(_turns(session)) == 1
+    # The clock is frozen, so each refusal comes the moment after the miss.
+    assert answers[1].json() == {"detail": iris_routes.repeat_collect_detail(600)}
+    assert "about 10 minutes" in answers[1].json()["detail"]
+    assert "no overview" not in iris_routes.REPEAT_COLLECT_DETAIL
+    assert iris_routes.REPEAT_COLLECT_DETAIL != iris_routes.BUSY_DETAIL
+
+
+def test_a_refresh_right_after_a_collect_that_read_nothing_does_not_run(monkeypatch, tmp_path):
+    items = [
+        user_item(iris_routes.REFRESH_PROMPT, NOW - 120, "u-nothing"),
+        answer_item("I could not reach the tenant's gateway.", NOW - 110, "a-nothing"),
+    ]
+    session = IrisSession(items, _files(), respond)
+    response = _refresh(monkeypatch, tmp_path, session)
+    assert response.status_code == 409
+    assert response.json() == {"detail": iris_routes.repeat_collect_detail(480)}
+    assert _turns(session) == []
+
+
+def test_the_repeat_collect_refusal_says_collect_when_and_how_the_hold_lifts(
+    monkeypatch, tmp_path
+):
+    """Review N1/N2 on #119: the page's buttons say "collect", and a wait needs a length."""
+    session = IrisSession(_missed_collect(NOW - 120), _files(), respond)
+    detail = _refresh(monkeypatch, tmp_path, session).json()["detail"]
+    assert "about 8 minutes" in detail  # 600 s hold, missed 120 s ago
+    assert "collect again" in detail.lower()
+    assert "ask Iris anything in chat" in detail
+    assert "refresh" not in detail.lower()
+    # The page keeps "produced no overview" for these two prefixes only.
+    assert not detail.startswith("The collection produced no overview")
+    assert not detail.startswith("The collection read no current-period overview")
+    assert _turns(session) == []
+
+
+def test_the_repeat_collect_refusal_never_says_less_than_a_minute(monkeypatch, tmp_path):
+    at = NOW - iris_routes.REPEAT_COLLECT_COOLDOWN_SECONDS + 5
+    session = IrisSession(_missed_collect(at), _files(), respond)
+    detail = _refresh(monkeypatch, tmp_path, session).json()["detail"]
+    assert "about 1 minute," in detail
+
+
+def test_a_refresh_after_the_cooldown_runs_again(monkeypatch, tmp_path):
+    at = NOW - iris_routes.REPEAT_COLLECT_COOLDOWN_SECONDS - 1
+    session = IrisSession(_missed_collect(at), _files(), respond)
+    response = _refresh(monkeypatch, tmp_path, session)
+    assert response.status_code == 200, response.text
+    assert len(_turns(session)) == 1
+
+
+def test_a_chat_turn_after_a_missed_collect_lets_the_next_refresh_run(monkeypatch, tmp_path):
+    items = [
+        *_missed_collect(NOW - 120),
+        user_item("Why was that the wrong week?", NOW - 60, "u-why"),
+        answer_item("I passed dates.", NOW - 55, "a-why"),
+    ]
+    session = IrisSession(items, _files(), respond)
+    response = _refresh(monkeypatch, tmp_path, session)
+    assert response.status_code == 200, response.text
+    assert len(_turns(session)) == 1
+
+
+def test_a_refresh_after_a_collect_that_found_the_current_period_still_runs(monkeypatch, tmp_path):
+    """Refresh after a good capture 28 s ago is a real refresh, not a repeat."""
+    session = IrisSession(captured(), FILES, respond)
+    assert _refresh(monkeypatch, tmp_path, session).status_code == 200
+    assert len(_turns(session)) == 1
+
+
+def test_a_busy_session_after_a_missed_collect_still_answers_busy(monkeypatch, tmp_path):
+    session = IrisSession(_missed_collect(NOW - 120), _files(), respond, status="running")
+    response = _refresh(monkeypatch, tmp_path, session)
+    assert response.status_code == 409
+    assert response.json() == {"detail": iris_routes.BUSY_DETAIL}

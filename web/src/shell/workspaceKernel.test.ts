@@ -211,6 +211,49 @@ describe("markdown", () => {
     expect(root.querySelector("ol")?.getAttribute("start")).toBe("7");
   });
 
+  // QA re-walk 2026-09-26: a leading "> " and "---" rules showed as literal text.
+  it("renders blockquotes and horizontal rules as elements, their text as text", () => {
+    const root = holder(
+      AW.markdown(
+        "> **Short answer:** yes.\n> second line\n\n---\n\nAfter the rule.\n***\n> > nested\n> - item",
+      ),
+    );
+    const quotes = root.querySelectorAll(":scope > blockquote");
+    expect(quotes).toHaveLength(2);
+    expect(quotes[0].querySelector("p > strong")?.textContent).toBe("Short answer:");
+    expect(quotes[0].textContent).toBe("Short answer: yes.second line");
+    expect(quotes[0].querySelector("br")).not.toBeNull();
+    expect(root.querySelectorAll(":scope > hr")).toHaveLength(2);
+    expect(root.querySelector(":scope > p")?.textContent).toBe("After the rule.");
+    expect(quotes[1].querySelector(":scope > blockquote")?.textContent).toBe("nested");
+    expect(quotes[1].querySelector(":scope > ul > li")?.textContent).toBe("item");
+    expect(root.textContent).not.toContain(">");
+    expect(root.textContent).not.toContain("---");
+    expect(root.textContent).not.toContain("***");
+  });
+
+  it("markup in a blockquote stays text, and quotes nest at most two deep", () => {
+    const root = holder(
+      AW.markdown('> <img src=x onerror="window.pwned=1">\n\n> > > deep\n\n-- not a rule\n- - -'),
+    );
+    const { tags, attrs } = shape(root);
+    for (const tag of tags) expect([...SAFE_TAGS, "blockquote", "hr"]).toContain(tag);
+    expect(attrs).toEqual([]);
+    expect(root.querySelector("blockquote")?.textContent).toContain("<img");
+    expect((window as any).pwned).toBeUndefined();
+    // Deeper marks than two show as written.
+    expect(root.querySelector("blockquote blockquote")?.textContent).toBe("> deep");
+    expect(root.textContent).toContain("-- not a rule");
+    expect(root.querySelectorAll("hr")).toHaveLength(1);
+  });
+
+  it("a long line of quote marks or rule characters is handled", () => {
+    const start = performance.now();
+    const root = holder(AW.markdown(`${">".repeat(50000)} x\n${"- ".repeat(50000)}y`));
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(root.querySelectorAll("blockquote")).toHaveLength(2);
+  });
+
   it("inline returns nodes only", () => {
     const nodes = AW.inline("a **b** <i>c</i>");
     for (const node of nodes) expect(node).toBeInstanceOf(Node);
@@ -361,6 +404,7 @@ const itemReads = () =>
   fetchMock.mock.calls.filter(([url]) => String(url).includes("/items")).length;
 
 const REFRESH = "Call iris_overview and iris_audit for the selected tenant.";
+let recognised: Item[] = [];
 
 function streamFixture() {
   const { list, transcript } = transcriptFixture();
@@ -368,8 +412,10 @@ function streamFixture() {
     sessionId: "s1",
     pollMs: 10,
     doing: { iris_overview: "Reading the tenant's traffic", ToolSearch: "Getting her tools ready" },
-    recognise: (text: string) =>
-      text.startsWith(REFRESH) ? "You had Iris collect a fresh overview." : null,
+    recognise: (text: string, item: Item) => {
+      recognised.push(item);
+      return text.startsWith(REFRESH) ? "You had Iris collect a fresh overview." : null;
+    },
     stripUser: (text: string) => text.replace(/\n\n\(context\)$/, ""),
     transcript,
   });
@@ -408,8 +454,11 @@ describe("stream", () => {
       { id: "o1", type: "function_call_output", output: "{}" },
       assistant("a1", "Hit rate is **80%**."),
     ];
+    recognised = [];
     const { list, stream } = streamFixture();
     await expect(stream.loadHistory()).resolves.toBe(true);
+    // recognise() is handed the item too, so an app can read its time.
+    expect(recognised.map((i) => i.id)).toEqual(["u0", "u1"]);
     expect(lines(list)).toEqual([
       ["system", "Earlier messages are in native chat."],
       ["system", "You had Iris collect a fresh overview."],

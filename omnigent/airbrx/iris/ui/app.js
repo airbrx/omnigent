@@ -1,5 +1,5 @@
 // Iris's workspace. Framed by Omnigent at /iris/:sessionId and served per
-// session at /v1/iris/sessions/{id}/ui/ when OMNIGENT_IRIS_UI=v2. It runs on
+// session at /v1/iris/sessions/{id}/ui/ (the only workspace since W5). It runs on
 // the shared workspace kernel (window.AirbrxWorkspace, loaded from kernel/
 // before this file) and declares only what is Iris's own: her tabs, her words
 // and her honesty rules.
@@ -40,6 +40,18 @@
     ToolSearch: "Getting her tools ready",
   };
   const DOWNLOADS = ["report.json", "report.md", "proposal.json"];
+  const ONCE_PER_SESSION =
+    "The page collects on its own only once per session, because each collection reads the warehouse. Collect again when you want a new one.";
+  // Refresh 409s (docs/iris/WORKSPACE_V2.md section 2). Only these two details
+  // mean a collection ran and read no overview; the page's own sentences are
+  // for them. Any other 409 is shown as the adapter words it.
+  const RAN_AND_MISSED =
+    /^The collection (produced no overview|read no current-period overview)/;
+  // These mean no turn was started: BUSY_DETAIL and REPEAT_COLLECT_DETAIL.
+  const NOT_STARTED = /^(Iris is busy|Iris did not start another collection)/;
+  // This tab's record of the automatic collection, for when the session's
+  // record cannot be read or the turn never reached it.
+  const AUTO_KEY = `iris.autoCollected.${SESSION_ID}`;
 
   // ------------------------------------------------------------- state --
 
@@ -51,6 +63,13 @@
   let collecting = "";
   // One automatic collection per page load, however often state is re-read.
   let autoCollected = false;
+  // "first" or "stale" when this load did not collect on its own because this
+  // session already had its automatic collection (QA N1): each one is a
+  // warehouse read, so after it the page offers "Collect now" instead.
+  let autoSkipped = "";
+  // The newest collect turn in the session's own record, epoch seconds:
+  // -Infinity when there is none, Infinity when one carries no time.
+  let lastCollectTurn = -Infinity;
   let refused = ""; // why the adapter's state was not drawn, in plain words
   // collect mode only: an out-of-date capture exists but is not drawn.
   let heldStale = false;
@@ -371,6 +390,10 @@
       head = "The last capture is out of date";
       body =
         "This workspace is set to show only a fresh capture, and the last collection did not produce one.";
+      if (autoSkipped) body += ` ${ONCE_PER_SESSION}`;
+    } else if (autoSkipped) {
+      head = "No current overview yet";
+      body = `Iris has already collected in this session, and it left no overview of this tenant's current period. ${ONCE_PER_SESSION}`;
     } else {
       head = "Iris has not collected an overview here yet";
       body =
@@ -396,9 +419,13 @@
                   disabled: busy,
                   onclick: () => void refresh(),
                 },
-                heldStale
-                  ? "Collect a fresh overview"
-                  : "Collect the first overview",
+                autoSkipped
+                  ? "Collect now"
+                  : heldStale
+                    ? "Collect a fresh overview"
+                    : autoCollected
+                      ? "Collect now"
+                      : "Collect the first overview",
               ),
             ),
       ),
@@ -508,6 +535,39 @@
     );
   }
 
+  // A Python list of strings as Iris's audit writes it into a finding's text
+  // (`{tables!r}`): ['a', "b's"]. The two alternatives in each string are
+  // disjoint, so matching stays linear.
+  const PY_STRING = String.raw`'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"`;
+  const PY_LIST = new RegExp(
+    String.raw`\[(?:${PY_STRING})(?:, (?:${PY_STRING}))*\]`,
+    "g",
+  );
+
+  /**
+   * A finding's sentence with each Python list in it shown as its items, each
+   * as code, joined in words: "caches ['a', 'b']" reads "caches a and b". The
+   * items are text nodes, never markup.
+   */
+  function readable(text) {
+    const out = [];
+    let at = 0;
+    const source = String(text);
+    for (const match of source.matchAll(PY_LIST)) {
+      if (match.index > at) out.push(source.slice(at, match.index));
+      const items = [...match[0].matchAll(new RegExp(PY_STRING, "g"))].map(
+        ([quoted]) => quoted.slice(1, -1).replace(/\\(.)/g, "$1"),
+      );
+      items.forEach((item, i) => {
+        if (i) out.push(i === items.length - 1 ? " and " : ", ");
+        out.push(el("code", {}, item));
+      });
+      at = match.index + match[0].length;
+    }
+    if (at < source.length) out.push(source.slice(at));
+    return out;
+  }
+
   function findingCard(f, full) {
     const ids = Array.isArray(f.evidence_ids) ? f.evidence_ids : [];
     const note = notes.get(f.id) || "";
@@ -526,8 +586,10 @@
         { class: "muted small" },
         f.rule_id ? `Rule ${f.rule_id}` : "Tenant-wide",
       ),
-      f.explanation ? el("p", {}, f.explanation) : null,
-      f.next_step ? el("p", { class: "small" }, `Next: ${f.next_step}`) : null,
+      f.explanation ? el("p", {}, readable(f.explanation)) : null,
+      f.next_step
+        ? el("p", { class: "small" }, "Next: ", readable(f.next_step))
+        : null,
       ids.length
         ? el(
             "div",
@@ -1080,7 +1142,7 @@
                 inv.current,
               ),
             )
-          : null,
+          : "",
         el(
           "div",
           { class: "asks" },
@@ -1118,68 +1180,80 @@
         );
       const rows = orderedRows(accounts.tenants, accounts.account);
       const generated = accounts.account && accounts.account.generated_at;
+      const headers = [
+        "Tenant",
+        "Hit rate",
+        "Cache misses",
+        "Requests",
+        "Coverage",
+        "Captured",
+        "Open",
+      ];
       container.append(
         el(
           "div",
           { class: "card table-wrap" },
           el(
             "table",
-            { "aria-label": "Tenants in this account" },
+            { class: "accounts", "aria-label": "Tenants in this account" },
             el(
               "thead",
               {},
               el(
                 "tr",
                 {},
-                [
-                  "Tenant",
-                  "Hit rate",
-                  "Cache misses",
-                  "Requests",
-                  "Coverage",
-                  "Captured",
-                  "Open",
-                ].map((h) => el("th", {}, h)),
+                headers.map((h) => el("th", {}, h)),
               ),
             ),
             el(
               "tbody",
               {},
               rows.map((entry) =>
-                el(
-                  "tr",
-                  { "data-tenant-id": entry.tenant_id },
+                labelled(
+                  headers,
                   el(
-                    "td",
-                    {},
-                    el("strong", {}, entry.name || entry.tenant_id),
+                    "tr",
+                    { "data-tenant-id": entry.tenant_id },
                     el(
-                      "div",
-                      { class: "muted small mono" },
-                      entry.tenant_id.length > 20
-                        ? entry.tenant_id.slice(0, 8)
-                        : entry.tenant_id,
+                      "td",
+                      {},
+                      el("strong", {}, entry.name || entry.tenant_id),
+                      el(
+                        "div",
+                        { class: "muted small mono" },
+                        entry.tenant_id.length > 20
+                          ? entry.tenant_id.slice(0, 8)
+                          : entry.tenant_id,
+                      ),
                     ),
-                  ),
-                  standing(entry, generated),
-                  el(
-                    "td",
-                    {},
-                    entry.tenant_id === here
-                      ? el("span", { class: "badge accent" }, "This session")
-                      : !here
-                        ? el("span", { class: "muted small" }, "Not available")
-                        : entry.host_online === false
-                          ? el("span", { class: "muted small" }, "Host offline")
-                          : el(
-                              "button",
-                              {
-                                type: "button",
-                                class: "chip",
-                                onclick: () => openTenant(entry.tenant_id),
-                              },
-                              "Open",
-                            ),
+                    standing(entry, generated),
+                    el(
+                      "td",
+                      {},
+                      entry.tenant_id === here
+                        ? el("span", { class: "badge accent" }, "This session")
+                        : !here
+                          ? el(
+                              "span",
+                              { class: "muted small" },
+                              "Not available",
+                            )
+                          : entry.host_online === false
+                            ? el(
+                                "span",
+                                { class: "muted small" },
+                                "Host offline",
+                              )
+                            : el(
+                                "button",
+                                {
+                                  type: "button",
+                                  class: "chip",
+                                  onclick: () => openTenant(entry.tenant_id),
+                                },
+                                "Open",
+                              ),
+                    ),
                   ),
                 ),
               ),
@@ -1189,6 +1263,23 @@
       );
     },
   };
+
+  /**
+   * Name each cell of a row by its column, for the stacked layout on a phone
+   * (style.css): a cell that spans columns says what it is by itself, and so
+   * do the tenant and Open cells. The label is an attribute, shown by CSS.
+   */
+  function labelled(headers, row) {
+    let column = 0;
+    for (const cell of row.children) {
+      const span = Number(cell.getAttribute("colspan")) || 1;
+      const name = headers[column];
+      if (span === 1 && column > 0 && column < headers.length - 1)
+        cell.dataset.label = name;
+      column += span;
+    }
+    return row;
+  }
 
   function comparisonProblem(x, y) {
     if (!x || !y) return "A capture is missing its numbers.";
@@ -1729,10 +1820,13 @@
     sessionId: SESSION_ID,
     pollMs: POLL_MS,
     doing: DOING,
-    recognise: (text) =>
-      String(text).startsWith(REFRESH_SENTENCE)
-        ? "You had Iris collect a fresh overview."
-        : null,
+    recognise: (text, item) => {
+      if (!String(text).startsWith(REFRESH_SENTENCE)) return null;
+      const at = item && finite(item.created_at) ? item.created_at : Infinity;
+      lastCollectTurn = Math.max(lastCollectTurn, at);
+      // The record does not say who started it; most are the page's own.
+      return "Iris collected a fresh overview.";
+    },
     stripUser: (text) => String(text).replace(CONTEXT_NOTE, ""),
     transcript,
   });
@@ -1789,10 +1883,17 @@
   };
 
   /**
-   * An overview Iris read for a window that ended well before she read it:
-   * for a comparison, not the tenant's current period. "Well before" is at
-   * least the window's own length, and never less than three days, so a
-   * current period that lags a day or two behind its capture is not one.
+   * An overview Iris read for a window that ended before the tenant's current
+   * period: for a comparison, not the current period. The current period is
+   * the `requested_days` completed days before the capture day, or the day
+   * before that when the host dates it by a local calendar behind UTC.
+   *
+   * Decided from where the window starts and ends, never from how much of it
+   * was covered: iris_overview narrows a partial capture's dates to the days
+   * it covered (09-20..22 of 09-20..27), and that is still the current
+   * period (QA N2). A window that starts in the current period, or lies
+   * within it, is current. Only one that starts before the current period and
+   * ends by its start is earlier.
    */
   function earlierWindow(s) {
     const m = metricsOf(s);
@@ -1801,19 +1902,25 @@
     if (start === null || end === null || !s || !finite(s.captured_at))
       return false;
     const captured = Math.floor((s.captured_at * 1000) / DAY_MS) * DAY_MS;
-    return captured - end >= Math.max(end - start, 3 * DAY_MS);
+    const days =
+      finite(m.requested_days) && m.requested_days > 0
+        ? m.requested_days
+        : Math.max(1, Math.round((end - start) / DAY_MS));
+    // The earliest start of the current period: a day's lag allowed.
+    const periodStart = captured - (days + 1) * DAY_MS;
+    return start < periodStart && end <= periodStart + DAY_MS;
   }
 
   /**
    * The Overview stays on the tenant's current period. When a turn leaves an
    * overview for an earlier window (a "compare with last week"), the one on
    * screen is kept with its own time, and the rest of the new state is taken.
+   * A current-period capture always replaces it, partial or not, even when
+   * its narrowed dates end before the shown capture's (QA N2).
    */
   function keepCurrentPeriod(next) {
     if (!state || !next || !next.overview) return next;
-    const shown = dayOf(metricsOf(state).end_date);
-    const incoming = dayOf(metricsOf(next).end_date);
-    if (shown === null || incoming === null || incoming >= shown) return next;
+    if (!earlierWindow(next) || earlierWindow(state)) return next;
     return {
       ...next,
       overview: state.overview,
@@ -1932,9 +2039,11 @@
 
   /**
    * One collection turn. It answers with the state itself, or 409 when the
-   * turn produced no overview. The chat is kept either way.
+   * turn produced no overview or was not started. The chat is kept either way.
+   * `pressed` is the transcript line that recorded a manual press; it is taken
+   * back when the adapter refused to start the collection.
    */
-  async function collect() {
+  async function collect(pressed) {
     setBusy(true);
     await watch();
     try {
@@ -1944,7 +2053,8 @@
       return true;
     } catch (error) {
       await stopTurn();
-      if (error.status === 409)
+      const said = typeof error.detail === "string" ? error.detail : "";
+      if (error.status === 409 && RAN_AND_MISSED.test(said))
         transcript.add(
           "system",
           state
@@ -1953,7 +2063,10 @@
               ? "That collection produced no new overview. The last capture is out of date and is not shown here. Ask Iris in the chat what went wrong."
               : "That collection produced no overview, so there is nothing to show yet. Ask Iris in the chat what went wrong.",
         );
-      else
+      else if (error.status === 409) {
+        if (pressed && NOT_STARTED.test(said)) pressed.remove();
+        transcript.add("system", `${reason(error)}.`);
+      } else
         transcript.add(
           "error",
           `Iris could not collect an overview. ${reason(error)}. Nothing has been computed in her place.`,
@@ -1968,14 +2081,52 @@
 
   async function refresh() {
     if (busy) return;
-    transcript.add("system", "You had Iris collect a fresh overview.");
-    await collect();
+    notice("");
+    await collect(
+      transcript.add("system", "You had Iris collect a fresh overview."),
+    );
     render();
   }
 
-  async function autoCollect(kind) {
+  /**
+   * Whether this load may collect on its own. At most once per session: not
+   * when the session's record already holds a collect turn newer than the
+   * capture it would replace (any collect turn, when there is no capture),
+   * and not when this tab already started one for it. The record is on the
+   * server, so another tab or device sees the same marker.
+   */
+  function mayAutoCollect(capturedAt) {
+    const since = finite(capturedAt) ? capturedAt : -Infinity;
+    if (lastCollectTurn > since) return false;
+    try {
+      if (sessionStorage.getItem(AUTO_KEY) === String(since)) return false;
+    } catch {
+      // Without storage the session's record still decides.
+    }
+    return true;
+  }
+
+  async function autoCollect(kind, capture) {
     if (autoCollected) return;
+    const capturedAt = capture && capture.captured_at;
+    if (!mayAutoCollect(capturedAt)) {
+      autoSkipped = kind;
+      if (state && kind === "stale")
+        notice(
+          `This capture may be out of date. Iris has already collected in this session since it was taken. ${ONCE_PER_SESSION}`,
+        );
+      render();
+      return;
+    }
     autoCollected = true;
+    try {
+      sessionStorage.setItem(
+        AUTO_KEY,
+        String(finite(capturedAt) ? capturedAt : -Infinity),
+      );
+    } catch {
+      // The session's record still holds the collect turn.
+    }
     collecting = kind;
     render();
     await collect();
@@ -2053,10 +2204,10 @@
       // Shown with its label while one fresh collection runs behind it.
       accept(first);
       render();
-      return mayCollect ? autoCollect("stale") : undefined;
+      return mayCollect ? autoCollect("stale", first) : undefined;
     }
     heldStale = true;
-    return mayCollect ? autoCollect("stale") : render();
+    return mayCollect ? autoCollect("stale", first) : render();
   }
 
   // ------------------------------------------------------------ wiring --
@@ -2064,6 +2215,8 @@
   $("native-chat").setAttribute("href", `/c/${encodeURIComponent(SESSION_ID)}`);
   $("composer").addEventListener("submit", (event) => {
     event.preventDefault();
+    // Enter still submits while Send is disabled: keep the question unsent.
+    if (busy) return;
     const input = $("input");
     const text = input.value;
     input.value = "";
