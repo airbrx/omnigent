@@ -456,9 +456,9 @@ it("does not offer Resume or New for a tenant whose host is offline", async () =
 });
 
 describe("the iris.openTenant handoff from the framed workspace", () => {
-  async function mounted() {
+  async function mounted(overrides: Record<string, () => Response> = {}) {
     routing.params = { sessionId: "owned-session" };
-    serve();
+    serve(overrides);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={client}>
@@ -529,6 +529,54 @@ describe("the iris.openTenant handoff from the framed workspace", () => {
     post(open("fixture"));
     await waitFor(() => expect(posts()).toHaveLength(1));
     expect(JSON.parse(posts()[0][1]?.body as string).workspace).toBe("/approved");
+  });
+
+  it("opens one session for a burst of messages, and takes the next one after it settles", async () => {
+    // Review of #108: five quick messages created five sessions.
+    let finish: (response: Response) => void = () => {};
+    await mounted({
+      "/v1/sessions": () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }) as unknown as Response,
+    });
+    for (let i = 0; i < 5; i++) post(open("live-tenant"));
+    post(open("fixture"));
+    await act(async () => {});
+    expect(posts()).toHaveLength(1);
+    await act(async () => {
+      finish(new Response(JSON.stringify({ id: "native-session" }), { status: 201 }));
+    });
+    await waitFor(() => expect(routing.navigate).toHaveBeenCalledTimes(1));
+    expect(routing.navigate).toHaveBeenCalledWith("/iris/native-session");
+    // The guard is released once create() settles, so it is not a one-shot.
+    post(open("fixture"));
+    await waitFor(() => expect(posts()).toHaveLength(2));
+  });
+
+  it("says so on the session page when opening the tenant fails, without reloading the workspace", async () => {
+    // Review of #108: create() set the error, but only the landing rendered it.
+    const frame = await mounted({
+      "/v1/sessions": () =>
+        new Response(JSON.stringify({ detail: "host said no" }), { status: 500 }),
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    post(open("live-tenant"));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Iris could not open that tenant in a new session. Could not start Iris. Check that the selected host is online.",
+    );
+    // Host error text is never shown.
+    expect(alert).not.toHaveTextContent("host said no");
+    expect(routing.navigate).not.toHaveBeenCalled();
+    // Same iframe element: showing the error did not remount (and reload) it.
+    expect(screen.getByTitle("Iris workspace")).toBe(frame);
+    fireEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByTitle("Iris workspace")).toBe(frame);
+    // A failed open releases the guard too.
+    post(open("live-tenant"));
+    await waitFor(() => expect(posts()).toHaveLength(2));
   });
 });
 

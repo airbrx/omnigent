@@ -176,6 +176,10 @@ export function IrisWorkspace() {
   // The pinned UI never posts this, so without v2 the listener stays idle.
   const openTenant = useRef(create);
   openTenant.current = create;
+  // One open at a time. A burst of messages (a double click in the frame, or
+  // a page that posts in a loop) arrives before React re-renders, so `busy`
+  // state would still read false for every one of them; a ref does not.
+  const opening = useRef(false);
   useEffect(() => {
     if (!sessionId) return;
     const bound = new Set(data?.bindings.map((b) => b.tenant_id) ?? []);
@@ -186,7 +190,11 @@ export function IrisWorkspace() {
       if (typeof message !== "object" || message === null) return;
       const { type, tenant_id: tenantId } = message as { type?: unknown; tenant_id?: unknown };
       if (type !== OPEN_TENANT || typeof tenantId !== "string" || !bound.has(tenantId)) return;
-      void openTenant.current(tenantId);
+      if (opening.current) return;
+      opening.current = true;
+      void openTenant.current(tenantId).finally(() => {
+        opening.current = false;
+      });
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
@@ -212,19 +220,38 @@ export function IrisWorkspace() {
         <p>It is the same Iris session, with the same history.</p>
       </main>
     );
+  // The slot before the frame is always rendered (null when there is no
+  // error) so the iframe keeps its position: moving it would remount it and
+  // reload the workspace, losing the conversation inside.
   if (sessionId)
     return (
-      <iframe
-        ref={frame}
-        title="Iris workspace"
-        // oxlint-disable-next-line iframe-missing-sandbox -- Pinned same-origin host UI needs scripts and session cookies.
-        sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-top-navigation-by-user-activation"
-        className="h-full min-h-0 w-full flex-1 border-0"
-        onLoad={() =>
-          frame.current?.contentWindow?.postMessage({ irisHostTheme: mode }, window.location.origin)
-        }
-        src={`/v1/iris/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}`}
-      />
+      <>
+        {error ? (
+          <div
+            role="alert"
+            className="flex shrink-0 items-center justify-between gap-3 border-b bg-[#FEF2F2] px-4 py-2 text-[#991B1B] text-sm dark:bg-[#2A1515] dark:text-[#FCA5A5]"
+          >
+            <span>Iris could not open that tenant in a new session. {error}</span>
+            <button type="button" className="shrink-0 underline" onClick={() => setError("")}>
+              Dismiss
+            </button>
+          </div>
+        ) : null}
+        <iframe
+          ref={frame}
+          title="Iris workspace"
+          // oxlint-disable-next-line iframe-missing-sandbox -- Pinned same-origin host UI needs scripts and session cookies.
+          sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-top-navigation-by-user-activation"
+          className="h-full min-h-0 w-full flex-1 border-0"
+          onLoad={() =>
+            frame.current?.contentWindow?.postMessage(
+              { irisHostTheme: mode },
+              window.location.origin,
+            )
+          }
+          src={`/v1/iris/sessions/${encodeURIComponent(sessionId)}/ui/?theme=${mountTheme}`}
+        />
+      </>
     );
   return (
     <div
