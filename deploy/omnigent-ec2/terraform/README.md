@@ -61,6 +61,7 @@ terraform import aws_rds_cluster.this omnigent-pg
 terraform import aws_rds_cluster_instance.this omnigent-pg-1
 terraform import aws_db_subnet_group.this omnigent-pg-subnets
 terraform import aws_security_group.rds sg-09785e493a94bd66b
+terraform import aws_rds_cluster_parameter_group.this omnigent-aurora-pg16  # AIR-2156, created by CLI
 # random_password.db / random_id.cookie cannot be imported — Terraform will
 # generate NEW values. Either accept a password rotation (update the running
 # server's DATABASE_URL to match) or refactor these to a data source / SSM

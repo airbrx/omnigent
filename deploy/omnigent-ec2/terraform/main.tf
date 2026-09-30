@@ -68,11 +68,41 @@ resource "aws_security_group" "rds" {
   }
 }
 
+# Aurora PostgreSQL defaults rds.force_ssl to 0 (even on 16), and default
+# groups can't be edited, so TLS enforcement + pgaudit need a custom group
+# (AIR-2156; Vanta aws-rds-instance-ssl-enforced / aws-rds-pgaudit-enabled).
+# shared_preload_libraries is static: changing it needs an instance reboot, then
+# `CREATE EXTENSION pgaudit;` once in the omnigent database.
+resource "aws_rds_cluster_parameter_group" "this" {
+  name        = "omnigent-aurora-pg16"
+  family      = "aurora-postgresql16"
+  description = "omnigent-pg: force_ssl + pgaudit (AIR-2156)"
+  tags        = var.tags
+
+  parameter {
+    name  = "rds.force_ssl"
+    value = "1"
+  }
+
+  parameter {
+    name         = "shared_preload_libraries"
+    value        = "pg_stat_statements,pgaudit"
+    apply_method = "pending-reboot"
+  }
+
+  parameter {
+    name  = "pgaudit.log"
+    value = "ddl,role,write"
+  }
+}
+
 resource "aws_rds_cluster" "this" {
   cluster_identifier = "omnigent-pg"
   engine             = "aurora-postgresql"
   engine_mode        = "provisioned" # Serverless v2 runs under the provisioned engine
   engine_version     = var.db_engine_version
+
+  db_cluster_parameter_group_name = aws_rds_cluster_parameter_group.this.name
 
   database_name   = "omnigent"
   master_username = "omnigent"
