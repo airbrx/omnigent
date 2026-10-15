@@ -592,6 +592,7 @@ def register_core_routes(
         from omnigent.runner.identity import token_bound_runner_id
         from omnigent.server.routes._host_launch import (
             LAUNCH_TIMEOUT_ENV_VAR,
+            launch_env_fields,
             resolve_host_launch,
             resolve_launch_timeout_s,
         )
@@ -658,6 +659,17 @@ def register_core_routes(
                     target.conv.inference_snapshot["runtime_config"]
                     if target.conv.inference_snapshot
                     else None
+                ),
+                # What this agent needs in its runner's environment, for this
+                # session only. Secret references travel and values do not: the
+                # host resolves them from its own store, so a credential
+                # belonging to one rep's machine never reaches this process.
+                # See omnigent.runtime.launch_env.
+                **launch_env_fields(
+                    agent_id=target.conv.agent_id,
+                    user_id=user_id,
+                    host_owner=target.host.user_id,
+                    agent_store=agent_store,
                 ),
             )
         )

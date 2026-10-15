@@ -104,6 +104,7 @@ from omnigent.server.performance_metrics import (
     set_request_user_agent_for_access_log,
 )
 from omnigent.server.routes.admin import create_admin_router
+from omnigent.server.routes.agent_avatars import create_agent_avatars_router
 from omnigent.server.routes.builtin_agents import create_builtin_agents_router
 from omnigent.server.routes.comments import create_comments_router
 from omnigent.server.routes.default_policies import create_default_policies_router
@@ -142,6 +143,7 @@ from omnigent.stores import (
     ConversationStore,
     FileStore,
 )
+from omnigent.stores.agent_avatar_store import AgentAvatarStore
 from omnigent.stores.comment_store import CommentStore
 from omnigent.stores.conversation_store import (
     ConversationNotFoundError,
@@ -1329,6 +1331,7 @@ def create_app(
     project_store: ProjectStore | None = None,
     auth_provider: AuthProvider | None = None,
     host_store: HostStore | None = None,
+    agent_avatar_store: AgentAvatarStore | None = None,
     account_store: Any | None = None,  # SqlAlchemyAccountStore — accounts mode only
     extra_routers: list[tuple[Any, str, list[str]]] | None = None,
     policy_modules: list[str] | None = None,
@@ -3365,6 +3368,50 @@ def create_app(
         prefix="/v1",
         tags=["usage"],
     )
+    from omnigent.airbrx.iris.routes import create_iris_router
+
+    app.include_router(
+        create_iris_router(
+            auth_provider=auth_provider,
+            agent_store=agent_store,
+            hosts_online=_bulk_hosts_online,
+        ),
+        prefix="/v1",
+        tags=["iris"],
+    )
+    # Eva, the outreach agent: catalog, readiness and her workspace adapter,
+    # shaped like Iris's. Mounted unconditionally; with no bindings the catalog
+    # is empty and readiness 404s, so an unconfigured server gets an inert
+    # feature rather than a broken one.
+    from omnigent.airbrx.eva.proxy import create_eva_app_router
+    from omnigent.airbrx.eva.routes import create_eva_router
+
+    app.include_router(
+        create_eva_router(auth_provider=auth_provider, agent_store=agent_store),
+        prefix="/v1",
+        tags=["eva"],
+    )
+    # The co-located outreach app at /eva/app, with a signed identity. Answers
+    # 503 until OUTREACH_IDENTITY_SECRET is set. See docs/eva/WORKSPACE.md.
+    app.include_router(create_eva_app_router(auth_provider=auth_provider), tags=["eva"])
+    # Tally, the read-only control-plane agent: catalog, readiness and her
+    # workspace adapter, shaped like Eva's and inert with no bindings. Her tabs
+    # frame the portal through the gateway proxy mounted below.
+    from omnigent.airbrx.tally.routes import create_tally_router
+
+    app.include_router(
+        create_tally_router(auth_provider=auth_provider, agent_store=agent_store),
+        prefix="/v1",
+        tags=["tally"],
+    )
+    from omnigent.airbrx.gateway.proxy import create_gateway_app_router
+
+    app.include_router(create_gateway_app_router(auth_provider=auth_provider), tags=["gateway"])
+    # Airbrx Superset at /superset/app, prefix kept upstream, signed identity.
+    # Answers 503 until AIRBRX_SUPERSET_IDENTITY_SECRET is set.
+    from omnigent.airbrx.superset.proxy import create_superset_app_router
+
+    app.include_router(create_superset_app_router(auth_provider=auth_provider), tags=["superset"])
     # Server agent discovery for the new-session picker
     # (designs/BUILTIN_AGENTS.md), plus user agents (``omnigent agent add``).
     app.include_router(
@@ -3383,6 +3430,16 @@ def create_app(
         prefix="/v1",
         tags=["harnesses"],
     )
+    if agent_avatar_store is not None:
+        app.include_router(
+            create_agent_avatars_router(
+                agent_avatar_store,
+                auth_provider=auth_provider,
+                agent_store=agent_store,
+            ),
+            prefix="/v1",
+            tags=["agent-avatars"],
+        )
     app.include_router(
         create_extensions_router(
             resolved_extension_state,

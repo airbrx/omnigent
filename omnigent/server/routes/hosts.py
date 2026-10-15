@@ -71,6 +71,7 @@ from omnigent.server.routes._auth_helpers import require_user
 from omnigent.server.routes._host_launch import (
     LAUNCH_TIMEOUT_ENV_VAR,
     host_absent_error,
+    launch_env_fields,
     resolve_host_launch,
     resolve_launch_timeout_s,
 )
@@ -1258,6 +1259,15 @@ def create_hosts_router(
                     target.conv.inference_snapshot["runtime_config"]
                     if target.conv.inference_snapshot
                     else None
+                ),
+                # Resume, switch host and fork launch through here; without
+                # this an agent whose credential is a host secret reference
+                # starts with no credential. See launch_env_fields.
+                **launch_env_fields(
+                    agent_id=target.conv.agent_id,
+                    user_id=user_id,
+                    host_owner=target.host.user_id,
+                    agent_store=agent_store,
                 ),
             )
         )

@@ -54,7 +54,13 @@ async def collect_captures(get, *, agent_id: str, bindings) -> dict[str, dict | 
     failed: dict[str, str] = {}
     after = None
     while True:
-        params = {"agent_id": agent_id, "limit": _PAGE, "kind": "any", "include_archived": "true"}
+        params = {
+            "agent_id": agent_id,
+            "limit": _PAGE,
+            "kind": "any",
+            "include_archived": "true",
+            "visibility": "all",
+        }
         if after:
             params["after"] = after
         listing = await get("/v1/sessions", params=params)

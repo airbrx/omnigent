@@ -33,7 +33,7 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from omnigent._platform import IS_LINUX, IS_WINDOWS, resolve_repo_symlink
+from omnigent._platform import IS_WINDOWS, resolve_repo_symlink
 from omnigent._startup_events import capture_cli_entry, record_startup_event
 from omnigent.cli_common import (
     RESUME_PICKER_SENTINEL as _RESUME_PICKER_SENTINEL,
@@ -1578,7 +1578,16 @@ def _preregister_agent(  # type: ignore[explicit-any]  # agent_store / artifact_
 
         # Validate via the materialized directory directly — cheaper
         # than round-tripping through extract.
-        spec = load(bundle_dir)
+        # expand_env=False because this call exists to read ``spec.name`` and
+        # to reject a malformed bundle, and neither needs a secret. Expanding
+        # here made the coordinator require every registered agent's
+        # credentials in its OWN environment, which took omnigent.airbrx.ai
+        # down: Eva's bundle names ${OUTREACH_MCP_TOKEN}, that token lives on
+        # the execution host by design, and startup refused the bundle it was
+        # only trying to learn the name of. The artifact stored below is the
+        # unexpanded tarball either way, and the runner expands it against its
+        # own environment, so nothing downstream loses a value by this.
+        spec = load(bundle_dir, expand_env=False)
 
     if spec.name is None:
         click.echo(f"  warning: {agent_source} has no name, skipping")
@@ -4552,6 +4561,96 @@ def server(
 
     host_store = HostStore(db_uri)
 
+    from omnigent.stores.agent_avatar_store import AgentAvatarStore
+
+    agent_avatar_store = AgentAvatarStore(db_uri, artifact_store)
+    from omnigent.airbrx.iris.config import bindings as iris_bindings
+    from omnigent.airbrx.iris.package import bundle_root as iris_bundle
+    from omnigent.airbrx.iris.package import source_root as iris_source
+
+    if iris_bindings():
+        # A failed registration must cost Iris her place in the catalog and the
+        # drawer, and nothing else. Same posture as Eva below: one agent's bad
+        # bundle or failed archive integrity check must not crash-loop a
+        # coordinator that also serves every ordinary session. The portrait is
+        # inside the try because it comes out of the same pinned archive, so a
+        # digest failure would otherwise take the server down one line later.
+        # The operator still gets the reason, in the log, on a running box.
+        try:
+            _preregister_agent(iris_bundle(), agent_store, artifact_store, agent_cache)
+            if agent_avatar_store.get("iris") is None:
+                agent_avatar_store.put(
+                    "iris",
+                    (iris_source() / "ui/assets/iris-portrait.png").read_bytes(),
+                    "image/png",
+                )
+        except Exception as exc:  # noqa: BLE001 - one agent must not take the server down
+            click.echo(
+                "  warning: Iris is bound but did not register, so she will be absent "
+                f"from the agent catalog and drawer: {exc}",
+                err=True,
+            )
+
+    # Eva, the outreach agent. Same shape as the Iris block above and gated the
+    # same way: no bindings means no registration, so an operator who has not
+    # written OMNIGENT_EVA_CONFIG gets an inert feature rather than an agent
+    # nobody is authorized to open.
+    #
+    # There is no source_root(). Eva vendors no package: her bundle is two
+    # tracked files read where they lie, and her portrait is a tracked asset
+    # rather than a member of an archive, which is the one place her shape
+    # differs from Iris's here.
+    from omnigent.airbrx.eva.config import bindings as eva_bindings
+    from omnigent.airbrx.eva.package import bundle_root as eva_bundle
+    from omnigent.airbrx.eva.package import portrait_path as eva_portrait
+
+    if eva_bindings():
+        # Her runner needs OUTREACH_MCP_URL and a resolvable reference to her
+        # bearer token, per session. Registered here rather than at import so an
+        # unbound Eva contributes nothing, and next to her agent registration so
+        # the two cannot get out of step.
+        from omnigent.airbrx.eva.runtime import launch_env as eva_launch_env
+        from omnigent.runtime.launch_env import register as register_launch_env
+
+        register_launch_env(eva_launch_env)
+
+        if agent_avatar_store.get("eva") is None:
+            agent_avatar_store.put("eva", eva_portrait().read_bytes(), "image/png")
+
+        # A failed registration must cost Eva her place in the drawer and
+        # nothing else. She is one agent on a coordinator that also serves
+        # Iris and every ordinary session, and twice in one night a problem
+        # with her configuration crash-looped the whole server instead. The
+        # operator still gets the reason, in the log, on a running box.
+        try:
+            _preregister_agent(eva_bundle(), agent_store, artifact_store, agent_cache)
+        except Exception as exc:  # noqa: BLE001 - one agent must not take the server down
+            click.echo(f"  warning: Eva is bound but did not register: {exc}", err=True)
+
+    # Tally, the read-only control-plane chief of staff. Eva's block, with
+    # Tally's names: no bindings means no registration and no launch provider.
+    from omnigent.airbrx.tally.config import bindings as tally_bindings
+    from omnigent.airbrx.tally.package import bundle_root as tally_bundle
+    from omnigent.airbrx.tally.package import portrait_path as tally_portrait
+
+    if tally_bindings():
+        # Her runner needs TALLY_PORTAL_MCP_URL and a resolvable reference to
+        # her portal read token, per session.
+        from omnigent.airbrx.tally.runtime import launch_env as tally_launch_env
+        from omnigent.runtime.launch_env import register as register_launch_env
+
+        register_launch_env(tally_launch_env)
+
+        if agent_avatar_store.get("tally") is None:
+            agent_avatar_store.put("tally", tally_portrait().read_bytes(), "image/png")
+
+        # One agent's bad bundle must cost it its place in the drawer and
+        # nothing else, the same posture as Iris and Eva above.
+        try:
+            _preregister_agent(tally_bundle(), agent_store, artifact_store, agent_cache)
+        except Exception as exc:  # noqa: BLE001 - one agent must not take the server down
+            click.echo(f"  warning: Tally is bound but did not register: {exc}", err=True)
+
     # Managed sandbox hosts (host_type="managed" sessions): parse the
     # config's `sandbox:` section up front so an operator typo stops
     # startup instead of 502-ing the first managed session.
@@ -4691,6 +4790,7 @@ def server(
         project_store=project_store,
         auth_provider=auth_provider,
         host_store=host_store,
+        agent_avatar_store=agent_avatar_store,
         account_store=account_store,
         policy_modules=cfg.get("policy_modules"),
         debug_router_modules=config_str_list(cfg.get("debug_router_modules")),
@@ -10931,101 +11031,6 @@ def host_stop_session(
             click.echo(f"Failed to stop session {session_id!r}.", err=True)
             continue
         click.echo(f"Stopped session {session_id}.")
-
-
-@host.command("install")
-@click.option("--server", default=None, help="Remote omnigent server URL to supervise.")
-@_host_runtime_options
-@click.option(
-    "--no-linger",
-    is_flag=True,
-    default=False,
-    help="Linux: skip `loginctl enable-linger` (service then stops at logout).",
-)
-@click.option(
-    "--restart-sec",
-    type=int,
-    default=5,
-    show_default=True,
-    help="Seconds a crashed host waits before the supervisor relaunches it.",
-)
-@click.pass_context
-def host_install(
-    ctx: click.Context,
-    server: str | None,
-    auto_upgrade: bool,
-    shared: bool,
-    workroot: str | None,
-    no_linger: bool,
-    restart_sec: int,
-) -> None:
-    """
-    Install this host as a user-scoped, self-restarting service.
-
-    Writes a systemd ``--user`` unit (Linux) or launchd LaunchAgent (macOS) that
-    supervises ``omnigent host --server ... --non-interactive`` and relaunches it
-    on crash. User-scoped so the host keeps the user's ``$HOME`` (``~/.claude`` /
-    ``~/.codex`` credentials). v1 supervises remote (``--server``) hosts only.
-
-    :param ctx: Click context carrying group-level options.
-    :param server: Remote server URL to supervise. Falls back to the group
-        ``--server`` / config.
-    :param auto_upgrade: Bake ``--auto-upgrade`` into the supervised host.
-    :param shared: Bake ``--shared`` in — requires an explicit ``--workroot``.
-    :param workroot: Jail dir for a shared host (required with ``--shared``).
-    :param no_linger: Linux — skip ``loginctl enable-linger``.
-    :param restart_sec: Seconds before relaunching a crashed host.
-    """
-    from omnigent.host import service as host_service
-
-    if server is None:
-        server = _host_group_option(ctx, "server")
-    resolved = _resolve_host_server(server)
-    if not resolved:
-        raise click.ClickException(
-            "`host install` requires a remote --server URL (local-mode installs "
-            "are not supported in v1)."
-        )
-    try:
-        config = host_service.HostServiceConfig(
-            server_url=resolved,
-            exec_path=host_service.resolve_omnigent_bin(),
-            auto_upgrade=auto_upgrade,
-            shared=shared,
-            workroot=(str(Path(workroot).expanduser().resolve()) if workroot else None),
-            environment=_build_host_daemon_env(server_url=resolved),
-            restart_sec=restart_sec,
-        )
-        result = host_service.install_service(config, enable_linger=not no_linger)
-    except host_service.HostServiceError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    click.echo(f"Installed self-restarting host service → {result.unit_path}")
-    if not no_linger and not result.linger_enabled and IS_LINUX:
-        click.echo(
-            "  note: could not enable linger; the service stops at logout. "
-            "Run `loginctl enable-linger` manually to keep it running.",
-            err=True,
-        )
-    click.echo(f"  check: {result.status_cmd}")
-    click.echo(f"  stop:  {result.stop_cmd}")
-
-
-@host.command("uninstall")
-def host_uninstall() -> None:
-    """
-    Remove the self-restarting host service installed by ``host install``.
-
-    Stops and deletes the unit/plist, and drops ``enable-linger`` only if
-    ``install`` set it.
-    """
-    from omnigent.host import service as host_service
-
-    try:
-        removed = host_service.uninstall_service()
-    except host_service.HostServiceError as exc:
-        raise click.ClickException(str(exc)) from exc
-    click.echo("Removed the host service." if removed else "No host service was installed.")
 
 
 @host.command("reset-id")
