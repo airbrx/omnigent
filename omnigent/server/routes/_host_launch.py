@@ -216,6 +216,93 @@ def host_absent_error(host: Host, *, sharded: bool | None = None) -> OmnigentErr
     return OmnigentError("host is offline", code=ErrorCode.CONFLICT)
 
 
+_EMPTY_LAUNCH_ENV: dict[str, dict[str, str] | None] = {"agent_env": None, "agent_secret_env": None}
+
+
+def launch_env_fields(
+    *,
+    agent_id: str | None,
+    user_id: str | None,
+    host_owner: str | None,
+    identity_established: bool = True,
+    agent_store: object | None = None,
+) -> dict[str, dict[str, str] | None]:
+    """The ``agent_env`` / ``agent_secret_env`` of a runner launch frame.
+
+    **Every site that builds a** :class:`~omnigent.host.frames.HostLaunchRunnerFrame`
+    **spreads this into it**, and ``tests/server/test_launch_env_every_path.py``
+    fails the build if one does not. The first version of the mechanism (#78)
+    collected the environment at one launch site of three: session create with
+    a host. ``POST /v1/hosts/{id}/runners`` (resume, switch host, fork) and the
+    relaunch that runs when a message arrives for a session whose runner is gone
+    sent nothing, and nothing in the suite noticed because the one test covered
+    the one site that worked.
+
+    **Sent only to the host owner's own runners.** A secret reference is
+    resolved on the host from the host's own store, so whatever it names is the
+    host OWNER's secret. On a host shared with other users (``--shared``), a
+    non-owner's session would otherwise receive the owner's credential and act
+    as the owner in whatever that credential opens: for Eva, the owner's
+    outreach account. So the environment goes out only when the acting user is
+    the host owner; otherwise nothing is sent and the reason is logged, and the
+    agent fails turn setup for want of a credential rather than running with
+    someone else's. A missing credential is an error; a wrong one is an
+    incident.
+
+    :param agent_id: The session's agent, e.g. ``conv.agent_id``. ``None``
+        (no resolvable agent) collects nothing.
+    :param user_id: The user the runner acts for, as established by the caller.
+        ``None`` only when auth is disabled (single-user server), which is
+        allowed: there is no other user whose credential could be sent.
+    :param host_owner: The host's owner (``Host.user_id`` or
+        ``HostConnection.owner``). ``None`` only when auth is disabled.
+    :param identity_established: ``False`` when the caller could not establish
+        who the runner acts for. The relaunch path passes it on a shared host,
+        where a session's owner is not knowable from the host connection; the
+        environment is then withheld.
+    :param agent_store: Store to resolve ``agent_id`` to a name. ``None`` uses
+        the runtime's store; a server whose runtime is not initialized
+        collects nothing. Any other store failure propagates.
+    :returns: ``{"agent_env": ..., "agent_secret_env": ...}``, each ``None``
+        when empty, ready to spread into the frame.
+    """
+    from omnigent.runtime.launch_env import collect
+
+    if agent_id is None:
+        return dict(_EMPTY_LAUNCH_ENV)
+    store = agent_store
+    if store is None:
+        from omnigent.runtime import get_agent_store
+
+        try:
+            store = get_agent_store()
+        except RuntimeError:
+            return dict(_EMPTY_LAUNCH_ENV)
+    row = store.get(agent_id)  # type: ignore[attr-defined]
+    agent_name = getattr(row, "name", None) if row is not None else None
+    if agent_name is None:
+        return dict(_EMPTY_LAUNCH_ENV)
+
+    acting = user_id if identity_established else host_owner
+    launch = collect(agent_name, acting)
+    if launch.is_empty():
+        return dict(_EMPTY_LAUNCH_ENV)
+    if not identity_established or (user_id is not None and user_id != host_owner):
+        _logger.warning(
+            "launch environment for agent %r withheld: the runner acts for %s on a host "
+            "owned by %r, and a secret reference resolves from the host owner's own store. "
+            "The agent will fail turn setup for want of its credential.",
+            agent_name,
+            repr(user_id) if identity_established else "a user this launch path cannot establish",
+            host_owner,
+        )
+        return dict(_EMPTY_LAUNCH_ENV)
+    return {
+        "agent_env": launch.env or None,
+        "agent_secret_env": launch.secret_refs or None,
+    }
+
+
 def resolve_host_launch(
     *,
     user_id: str | None,
