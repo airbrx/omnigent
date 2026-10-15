@@ -5,11 +5,11 @@
 //     — pink folder by default, the chosen emoji in a gray tile once set, with
 //     hover-revealed edit/remove affordances (the OMNI-3742 design).
 
-import { lazy, Suspense, useState } from "react";
-import { useTheme } from "next-themes";
-import { FolderIcon, PencilIcon, Trash2Icon } from "lucide-react";
+import { type CSSProperties, lazy, Suspense, useState } from "react";
+import { FolderIcon, Loader2Icon, PencilIcon, Trash2Icon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useResolvedThemeMode } from "@/components/theme/useResolvedThemeMode";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { useUpdateProjectConfig } from "@/hooks/useConversations";
 import type { ProjectConfig } from "@/lib/projectsApi";
@@ -23,13 +23,13 @@ const loadEmojiData = async () => (await import("@emoji-mart/data")).default;
 
 /** A themed emoji-mart picker. Calls `onSelect` with the chosen unicode glyph. */
 export function EmojiPicker({ onSelect }: { onSelect: (native: string) => void }) {
-  const { resolvedTheme } = useTheme();
+  const mode = useResolvedThemeMode();
   return (
     <Suspense fallback={<div className="h-[420px] w-[352px]" aria-hidden />}>
       <Picker
         data={loadEmojiData}
         onEmojiSelect={(emoji: { native: string }) => onSelect(emoji.native)}
-        theme={resolvedTheme === "dark" ? "dark" : "light"}
+        theme={mode}
         navPosition="top"
         previewPosition="none"
         skinTonePosition="none"
@@ -124,11 +124,13 @@ export function ProjectLandingIcon({
             data-testid="project-icon-tile"
             onClick={openPicker}
             className={cn(
-              "flex size-14 items-center justify-center rounded-xl transition-colors",
+              "flex size-14 cursor-pointer items-center justify-center rounded-xl transition-colors",
               icon ? "bg-muted" : "bg-tag-pink",
             )}
           >
-            {icon ? (
+            {update.isPending ? (
+              <Loader2Icon className="size-6 animate-spin text-muted-foreground" />
+            ) : icon ? (
               <span className="text-[30px] leading-none">{icon}</span>
             ) : (
               <FolderIcon className="size-6 text-brand-accent" />
@@ -137,7 +139,16 @@ export function ProjectLandingIcon({
         </PopoverAnchor>
         <PopoverContent
           align="center"
-          className="w-auto border-0 bg-transparent p-0 shadow-none ring-0"
+          // Publish the collision-aware available viewport height (capped at the
+          // picker's natural size) so the .emoji-picker-popover rule in index.css
+          // shrinks emoji-mart to fit and it scrolls internally on short screens.
+          collisionPadding={8}
+          style={
+            {
+              "--emoji-picker-height": "min(420px, var(--radix-popover-content-available-height))",
+            } as CSSProperties
+          }
+          className="emoji-picker-popover w-auto border-0 bg-transparent p-0 shadow-none ring-0"
         >
           <EmojiPicker onSelect={save} />
         </PopoverContent>
