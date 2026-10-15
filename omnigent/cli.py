@@ -10578,17 +10578,24 @@ def _echo_daemon_payloads(payloads: list[_HostPayload]) -> None:
     default=False,
     help="Do not launch browser sign-in while preparing the service.",
 )
+@_host_runtime_options
 @click.pass_context
 def host_enable(
     ctx: click.Context,
     server: str | None,
     non_interactive: bool,
+    auto_upgrade: bool,
+    shared: bool,
+    workroot: str | None,
 ) -> None:
     """Install and start the host as a per-user system service.
 
     :param ctx: Click context carrying group-level options.
     :param server: Optional server target; empty selects local mode.
     :param non_interactive: Fail instead of launching browser sign-in.
+    :param auto_upgrade: Bake ``--auto-upgrade`` into the supervised host.
+    :param shared: Bake ``--shared`` in — requires an explicit ``--workroot``.
+    :param workroot: Jail dir for a shared host (required with ``--shared``).
     """
     if server is None:
         server = _host_group_option(ctx, "server")
@@ -10612,6 +10619,9 @@ def host_enable(
         service = enable_user_host_service(
             resolved_server,
             environment=_build_host_daemon_env(server_url=resolved_server),
+            auto_upgrade=auto_upgrade,
+            shared=shared,
+            workroot=(str(Path(workroot).expanduser().resolve()) if workroot else None),
         )
     except HostServiceError as exc:
         raise click.ClickException(str(exc)) from exc

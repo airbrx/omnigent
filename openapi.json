@@ -420,6 +420,20 @@
         "title": "BackgroundTaskInfo",
         "type": "object"
       },
+      "Body_put_agent_avatar_v1_agent_avatars__agent_name__put": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_put_agent_avatar_v1_agent_avatars__agent_name__put",
+        "type": "object"
+      },
       "Body_update_session_agent_v1_sessions__session_id__agent_put": {
         "properties": {
           "bundle": {
@@ -613,6 +627,53 @@
           "response"
         ],
         "title": "CancelledEvent",
+        "type": "object"
+      },
+      "ChatMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 16000,
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "ChatMessage",
+        "type": "object"
+      },
+      "ChatRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "deadline": {
+            "default": 300,
+            "format": "int64",
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Deadline",
+            "type": "integer"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            },
+            "maxItems": 24,
+            "minItems": 1,
+            "title": "History",
+            "type": "array"
+          }
+        },
+        "required": [
+          "history"
+        ],
+        "title": "ChatRequest",
         "type": "object"
       },
       "ChildSessionList": {
@@ -9760,6 +9821,190 @@
         ]
       }
     },
+    "/v1/agent-avatars": {
+      "get": {
+        "description": "List avatars for agents that still exist.",
+        "operationId": "list_agent_avatars_v1_agent_avatars_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Agent Avatars V1 Agent Avatars Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Agent Avatars",
+        "tags": [
+          "agent-avatars"
+        ]
+      }
+    },
+    "/v1/agent-avatars/{agent_name}": {
+      "delete": {
+        "operationId": "delete_agent_avatar_v1_agent_avatars__agent_name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_name",
+            "required": true,
+            "schema": {
+              "title": "Agent Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Avatar deleted"
+          },
+          "400": {
+            "description": "agent_name failed validation"
+          },
+          "404": {
+            "description": "No avatar stored for that agent"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Agent Avatar",
+        "tags": [
+          "agent-avatars"
+        ]
+      },
+      "get": {
+        "operationId": "get_agent_avatar_v1_agent_avatars__agent_name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_name",
+            "required": true,
+            "schema": {
+              "title": "Agent Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/gif": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The agent's avatar image"
+          },
+          "400": {
+            "description": "agent_name failed validation"
+          },
+          "404": {
+            "description": "No avatar stored for that agent"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent Avatar",
+        "tags": [
+          "agent-avatars"
+        ]
+      },
+      "put": {
+        "operationId": "put_agent_avatar_v1_agent_avatars__agent_name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_name",
+            "required": true,
+            "schema": {
+              "title": "Agent Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_put_agent_avatar_v1_agent_avatars__agent_name__put"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "agent_name failed validation, unsupported content type, or the bytes match no supported image signature"
+          },
+          "413": {
+            "description": "Upload exceeds the maximum avatar size"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Agent Avatar",
+        "tags": [
+          "agent-avatars"
+        ]
+      }
+    },
     "/v1/agents": {
       "get": {
         "description": "List server agents, or with `scope=user` the caller's own agents.\n\nServer agents come from `agent_store.list()`, which never returns\nuser agents. `scope=user` returns the caller's user agents newest\nfirst, at most 50 per page and paged with `after` only; `last_id`\nis the last row the server read, which may not be in `data`.\n\n**Returns:** A `PaginatedList` of agents.",
@@ -10054,6 +10299,310 @@
           }
         },
         "summary": "Branding Logo"
+      }
+    },
+    "/v1/eva": {
+      "get": {
+        "operationId": "catalog_v1_eva_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Catalog V1 Eva Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Catalog",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
+    "/v1/eva/readiness": {
+      "get": {
+        "description": "Is the outreach app behind this binding actually usable?\n\nThree answers, and the third is the one that matters:\n\n`reachable`   the app responded at all.\n`healthy`     its own `/readyz` says ok, with a repository bound.\n`carries_crm_data`  the app reports leads, and none of them is a\n                fixture. **An app can be reachable and healthy and\n                still be showing invented rows.** That is not\n                hypothetical; it is what shipped. `sync_runs` rides\n                beside it and is not the same fact.\n\nAnything this cannot establish is reported as `null` and never as\n`true`. A readiness check that guesses optimistically is worse than\nnone, because it is believed.",
+        "operationId": "readiness_v1_eva_readiness_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Label"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Readiness V1 Eva Readiness Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
+    "/v1/eva/sessions/{session_id}/ui/api/cancel": {
+      "post": {
+        "operationId": "cancel_v1_eva_sessions__session_id__ui_api_cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Cancel V1 Eva Sessions  Session Id  Ui Api Cancel Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
+    "/v1/eva/sessions/{session_id}/ui/api/chat": {
+      "post": {
+        "operationId": "chat_v1_eva_sessions__session_id__ui_api_chat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Chat V1 Eva Sessions  Session Id  Ui Api Chat Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
+    "/v1/eva/sessions/{session_id}/ui/api/readiness": {
+      "get": {
+        "description": "What has actually been checked about this session. Not a prediction.",
+        "operationId": "readiness_v1_eva_sessions__session_id__ui_api_readiness_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Readiness V1 Eva Sessions  Session Id  Ui Api Readiness Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
+    "/v1/eva/sessions/{session_id}/ui/api/refresh": {
+      "post": {
+        "operationId": "refresh_v1_eva_sessions__session_id__ui_api_refresh_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Refresh V1 Eva Sessions  Session Id  Ui Api Refresh Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh",
+        "tags": [
+          "eva"
+        ]
+      }
+    },
+    "/v1/eva/sessions/{session_id}/ui/api/state": {
+      "get": {
+        "operationId": "state_v1_eva_sessions__session_id__ui_api_state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response State V1 Eva Sessions  Session Id  Ui Api State Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "State",
+        "tags": [
+          "eva"
+        ]
       }
     },
     "/v1/extensions": {
@@ -11427,6 +11976,256 @@
         "summary": "Info",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/v1/iris": {
+      "get": {
+        "operationId": "catalog_v1_iris_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Catalog",
+        "tags": [
+          "iris"
+        ]
+      }
+    },
+    "/v1/iris/account": {
+      "get": {
+        "description": "The caller's bound tenants, ranked by the value at stake, or quarantined with a reason.\n\nDeterministic: no model runs here. The tenant set is the caller's\nbindings \u2014 the coordinator holds no PAT, so it cannot ask the\nAirbrx manifest, and a tenant with no binding could not be drilled\ninto anyway. Captures come from the caller's own Iris sessions\n(`collect_captures`), and only `tenant_id` and `metrics` are read out\nof a report. Ranking is `iris.account.rank`, pinned in the archive,\nso what a figure *means* is versioned and hash-verified with the rest\nof Iris.",
+        "operationId": "account_v1_iris_account_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Account",
+        "tags": [
+          "iris"
+        ]
+      }
+    },
+    "/v1/iris/sessions/{session_id}/ui/api/cancel": {
+      "post": {
+        "operationId": "cancel_v1_iris_sessions__session_id__ui_api_cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel",
+        "tags": [
+          "iris"
+        ]
+      }
+    },
+    "/v1/iris/sessions/{session_id}/ui/api/chat": {
+      "post": {
+        "operationId": "chat_v1_iris_sessions__session_id__ui_api_chat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat",
+        "tags": [
+          "iris"
+        ]
+      }
+    },
+    "/v1/iris/sessions/{session_id}/ui/api/readiness": {
+      "get": {
+        "description": "What this host has actually checked about running a turn here.\n\nDeliberately not a prediction. Whether the execution host can reach the\nmodel is not knowable from the server side until a turn runs, so this\nreports the preconditions it did verify, whether a turn has ever\ncompleted in this session, and whether the session recorded a failure \u2014\nand names the rest as unverified rather than letting the workspace show\na hopeful spinner over an unproven connection.\n\nThe host's own error text is deliberately not forwarded: the rest of\nthis module refuses to reflect execution diagnostics, which can carry\ncredential material. The workspace is told a failure happened and where\nthe authoritative record is, which is what it needs to stop claiming.",
+        "operationId": "readiness_v1_iris_sessions__session_id__ui_api_readiness_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "iris"
+        ]
+      }
+    },
+    "/v1/iris/sessions/{session_id}/ui/api/refresh": {
+      "post": {
+        "operationId": "refresh_v1_iris_sessions__session_id__ui_api_refresh_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh",
+        "tags": [
+          "iris"
+        ]
+      }
+    },
+    "/v1/iris/sessions/{session_id}/ui/api/state": {
+      "get": {
+        "operationId": "state_v1_iris_sessions__session_id__ui_api_state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "State",
+        "tags": [
+          "iris"
         ]
       }
     },
@@ -16618,6 +17417,310 @@
         "summary": "Get Skills",
         "tags": [
           "skills"
+        ]
+      }
+    },
+    "/v1/tally": {
+      "get": {
+        "operationId": "catalog_v1_tally_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Catalog V1 Tally Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Catalog",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/readiness": {
+      "get": {
+        "description": "Is the portal's MCP endpoint behind this binding actually there?\n\n`reachable`   the portal responded at all.\n`mcp_mounted` `GET /mcp` answered 405, the portal's own signal.\n`token_accepted` always `null` here: this route holds no token.\n\nAnything this cannot establish is `null` and never `true`.",
+        "operationId": "readiness_v1_tally_readiness_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Label"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Readiness V1 Tally Readiness Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/sessions/{session_id}/ui/api/cancel": {
+      "post": {
+        "operationId": "cancel_v1_tally_sessions__session_id__ui_api_cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Cancel V1 Tally Sessions  Session Id  Ui Api Cancel Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/sessions/{session_id}/ui/api/chat": {
+      "post": {
+        "operationId": "chat_v1_tally_sessions__session_id__ui_api_chat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Chat V1 Tally Sessions  Session Id  Ui Api Chat Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/sessions/{session_id}/ui/api/readiness": {
+      "get": {
+        "description": "What has actually been checked about this session. Not a prediction.",
+        "operationId": "readiness_v1_tally_sessions__session_id__ui_api_readiness_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Readiness V1 Tally Sessions  Session Id  Ui Api Readiness Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/sessions/{session_id}/ui/api/refresh": {
+      "post": {
+        "operationId": "refresh_v1_tally_sessions__session_id__ui_api_refresh_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Refresh V1 Tally Sessions  Session Id  Ui Api Refresh Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh",
+        "tags": [
+          "tally"
+        ]
+      }
+    },
+    "/v1/tally/sessions/{session_id}/ui/api/state": {
+      "get": {
+        "operationId": "state_v1_tally_sessions__session_id__ui_api_state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response State V1 Tally Sessions  Session Id  Ui Api State Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "State",
+        "tags": [
+          "tally"
         ]
       }
     },
