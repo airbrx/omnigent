@@ -1634,19 +1634,20 @@ async def test_shared_host_confines_non_owner_to_workroot(
         )
         assert browse_out.status_code == 403, browse_out.text
 
-        # Non-owner, INSIDE workroot -> passes the jail, then 400 WRONG_REPLICA
-        # (host is live but its tunnel isn't on this replica).
+        # Non-owner, INSIDE workroot -> passes the jail, then 409 (host offline —
+        # single-replica deployments return CONFLICT, not WRONG_REPLICA, for an
+        # absent host tunnel; see host_absent_error).
         inside = await client.post(
             "/v1/hosts/e796741f1db43f1a80d4c39e7f07c0a3/directories",
             headers={"x-test-user": "bob@test.com"},
             json={"path": "/srv/work/sub"},
         )
-        assert inside.status_code == 400, inside.text
+        assert inside.status_code == 409, inside.text
 
-        # Owner is NOT jailed: /etc passes the (absent) jail, then WRONG_REPLICA.
+        # Owner is NOT jailed: /etc passes the (absent) jail, then 409 offline.
         owner_out = await client.post(
             "/v1/hosts/e796741f1db43f1a80d4c39e7f07c0a3/directories",
             headers={"x-test-user": "alice@test.com"},
             json={"path": "/etc/mine"},
         )
-        assert owner_out.status_code == 400, owner_out.text
+        assert owner_out.status_code == 409, owner_out.text
