@@ -138,6 +138,7 @@ dependencies = [
 # Retained as no-op aliases so existing `--extra` invocations keep
 # working; the underlying packages are now default deps above.
 claude-sdk = []
+iris = []
 openai-agents = []
 cockroachdb = [
     "psycopg[binary]>=3.1,<4",
