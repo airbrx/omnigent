@@ -30,12 +30,12 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
+mlflow-skinny = "2026-09-05T00:00:00Z"
 cwsandbox = "2026-06-12T00:00:00Z"
 google-antigravity = "2026-06-12T00:00:00Z"
 mlflow = "2026-09-05T00:00:00Z"
-mlflow-skinny = "2026-09-05T00:00:00Z"
-mlflow-tracing = "2026-09-05T00:00:00Z"
 nimble-python = "2026-07-29T00:00:00Z"
+mlflow-tracing = "2026-09-05T00:00:00Z"
 
 [manifest]
 members = [
@@ -3453,7 +3453,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=10.4,<15" },
     { name = "zstandard", specifier = ">=0.22,<1" },
 ]
-provides-extras = ["claude-sdk", "openai-agents", "cockroachdb", "all", "bedrock", "kms", "s3", "vertex", "modal", "daytona", "blaxel", "boxlite", "microsandbox", "cwsandbox", "e2b", "islo", "openshell", "kubernetes", "vault", "tracing", "agents-sdk", "antigravity", "copilot", "dictation", "cursor", "hindsight", "nimble", "slack", "postgres", "databricks", "loadtest"]
+provides-extras = ["claude-sdk", "iris", "openai-agents", "cockroachdb", "all", "bedrock", "kms", "s3", "vertex", "modal", "daytona", "blaxel", "boxlite", "microsandbox", "cwsandbox", "e2b", "islo", "openshell", "kubernetes", "vault", "tracing", "agents-sdk", "antigravity", "copilot", "dictation", "cursor", "hindsight", "nimble", "slack", "postgres", "databricks", "loadtest"]
 
 [package.metadata.requires-dev]
 dev = [
