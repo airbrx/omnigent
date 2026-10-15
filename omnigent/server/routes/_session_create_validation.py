@@ -218,6 +218,22 @@ def validate_session_model_metadata(
     return validated_model, validated_effort
 
 
+def require_user_agent_visible(agent: Any, user_id: str | None) -> None:
+    """404 a user agent no session uses (an install, or one whose sessions were
+    deleted) for anyone but its owner.
+
+    Mirrors the ``GET /v1/agents?scope=user`` owner filter, so an agent id
+    guessed or copied from another user cannot be bound either; an unowned one
+    binds for no one. Server agents pass through, and so do agents a session
+    uses: those are authorized against that session instead.
+    """
+    # Single-user schedules store the local owner as None; installs stamp "local".
+    if user_id is None and local_single_user_enabled():
+        user_id = RESERVED_USER_LOCAL
+    if not agent.operator_authored and agent.session_id is None and agent.created_by != user_id:
+        raise OmnigentError(f"Agent not found: {agent.id!r}", code=ErrorCode.NOT_FOUND)
+
+
 async def validate_session_agent(
     *,
     user_id: str | None,
@@ -233,6 +249,7 @@ async def validate_session_agent(
             f"Agent not found: {agent_id!r}",
             code=ErrorCode.NOT_FOUND,
         )
+    require_user_agent_visible(agent, user_id)
 
     # Session-scoped agents belong to a specific session. The caller must have
     # at least READ access to that owning session — otherwise they can execute
@@ -247,14 +264,52 @@ async def validate_session_agent(
         access_user = user_id
         if access_user is None and local_single_user_enabled():
             access_user = RESERVED_USER_LOCAL
-        await require_access(
-            access_user,
-            agent.session_id,
-            LEVEL_READ,
-            permission_store,
-            conversation_store,
-        )
+        if agent.created_by is not None and agent.created_by == access_user:
+            return agent  # Its owner can always use it.
+        try:
+            await require_access(
+                access_user,
+                agent.session_id,
+                LEVEL_READ,
+                permission_store,
+                conversation_store,
+            )
+        except OmnigentError as denied:
+            if denied.code not in (ErrorCode.FORBIDDEN, ErrorCode.NOT_FOUND):
+                raise
+            # Forks of the owner's sessions share the row, so the lookup above
+            # picked one of several roots; READ on any of them is enough.
+            if not await _can_read_another_root(
+                agent, access_user, permission_store, conversation_store
+            ):
+                raise
     return agent
+
+
+# ponytail: checks the first 50 roots using the agent; a caller who can read only a
+# later one is refused (forking that session still works).
+_SHARED_AGENT_ROOT_SCAN = 50
+
+
+async def _can_read_another_root(
+    agent: Any,
+    user_id: str | None,
+    permission_store: PermissionStore | None,
+    conversation_store: ConversationStore,
+) -> bool:
+    """Whether *user_id* has READ on a session other than ``agent.session_id`` using it."""
+    roots = await asyncio.to_thread(
+        conversation_store.list_session_roots_for_agent, agent.id, _SHARED_AGENT_ROOT_SCAN
+    )
+    for root in roots:
+        if root == agent.session_id:
+            continue
+        try:
+            await require_access(user_id, root, LEVEL_READ, permission_store, conversation_store)
+        except OmnigentError:
+            continue
+        return True
+    return False
 
 
 def _require_absolute_host_workspace(workspace: str | None) -> str:
@@ -287,7 +342,7 @@ async def _authorize_host_for_workspace(
     host_id: str,
     host_store: Any | None,
     host_registry: Any,
-) -> tuple[str | None, str | None]:
+) -> str | None:
     """
     Authorize host ownership and classify a wrong-replica landing.
 
@@ -302,16 +357,14 @@ async def _authorize_host_for_workspace(
     :param host_store: Persistent host registrations; ``None`` skips
         the ownership check (minimal test wirings).
     :param host_registry: Live host tunnels on this replica.
-    :returns: ``(host_name, extra_boundary)`` — the host's display name
-        for error messages, and the shared-host jail a non-owner is
-        confined to (``None`` for the owner, or a private host).
+    :returns: The host's display name for error messages, or ``None``.
     :raises OmnigentError: ``WRONG_REPLICA`` when the host is live but
         its tunnel is on another replica.
     """
     from omnigent.server.routes._host_launch import resolve_host_owner
 
     if host_store is None:
-        return None, None
+        return None
     host = await asyncio.to_thread(
         resolve_host_owner,
         user_id=user_id,
@@ -333,14 +386,7 @@ async def _authorize_host_for_workspace(
             f"host {host.name or host_id!r} is on another replica; retry",
             code=ErrorCode.WRONG_REPLICA,
         )
-    # Shared-host jail: a non-owner picking a workspace on a shared host is
-    # confined to its workroot (in addition to the agent's own boundary).
-    # Returned from here so BOTH create forms — registered-agent and
-    # bundle-upload — inherit it; computing it at one call site only would
-    # leave the other an escape hatch.
-    from omnigent.stores.host_store import workroot_jail
-
-    return host.name, workroot_jail(host, user_id)
+    return host.name
 
 
 async def _canonical_workspace_or_invalid_input(
@@ -400,12 +446,30 @@ async def validate_existing_host_workspace(
             code=ErrorCode.INTERNAL_ERROR,
         )
 
-    host_name, extra_boundary = await _authorize_host_for_workspace(
+    # Authorize host ownership FIRST (wrong-replica detection included) via the
+    # shared helper, then fetch the host record a second time for the workroot
+    # jail check.  The helper raises before we touch the host or read the agent
+    # bundle, so a non-owner gets 403/404 without a cross-user probe.
+    host_name = await _authorize_host_for_workspace(
         user_id=user_id,
         host_id=host_id,
         host_store=host_store,
         host_registry=host_registry,
     )
+    # Shared-host jail: a non-owner picking a workspace on a shared host is
+    # confined to its workroot (in addition to the agent's boundary).
+    extra_boundary: str | None = None
+    if host_store is not None:
+        from omnigent.server.routes._host_launch import resolve_host_owner
+        from omnigent.stores.host_store import workroot_jail
+
+        host = await asyncio.to_thread(
+            resolve_host_owner,
+            user_id=user_id,
+            host_id=host_id,
+            host_store=host_store,
+        )
+        extra_boundary = workroot_jail(host, user_id)
 
     # Read the agent's os_env.cwd — None when the spec has no os_env block
     # (headless agents). Headless agents have no filesystem access at all but
@@ -477,7 +541,7 @@ async def validate_uploaded_bundle_host_workspace(
             "host registry is not configured on this server",
             code=ErrorCode.INTERNAL_ERROR,
         )
-    host_name, extra_boundary = await _authorize_host_for_workspace(
+    host_name = await _authorize_host_for_workspace(
         user_id=user_id,
         host_id=host_id,
         host_store=host_store,
@@ -489,5 +553,4 @@ async def validate_uploaded_bundle_host_workspace(
         workspace=workspace,
         spec_cwd=spec_cwd,
         host_name=host_name,
-        extra_boundary=extra_boundary,
     )

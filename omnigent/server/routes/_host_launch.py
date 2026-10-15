@@ -23,8 +23,8 @@ Centralizing the checks here keeps the two call sites from drifting
 from __future__ import annotations
 
 import functools
-import importlib.util
 import logging
+import os
 from dataclasses import dataclass
 
 from fastapi import HTTPException
@@ -39,6 +39,69 @@ from omnigent.stores.host_store import Host, HostStore, caller_can_reach_host, h
 from omnigent.stores.permission_store import PermissionStore
 
 _logger = logging.getLogger(__name__)
+
+LAUNCH_TIMEOUT_ENV_VAR = "OMNIGENT_HOST_LAUNCH_TIMEOUT_S"
+
+# How long a launch waits for the host's result frame before the session is
+# failed. A healthy launch only spawns a runner subprocess and answers in
+# seconds, so this budget is slack for a busy machine — but a launch that does
+# real set-up first (creating a container sandbox, pulling an image, starting
+# the app the agent will test) legitimately needs longer, and going over the
+# budget fails a session that nothing was actually wrong with. Deployments with
+# that kind of set-up raise the bound via LAUNCH_TIMEOUT_ENV_VAR.
+_DEFAULT_LAUNCH_TIMEOUT_S = 30.0
+
+# Floor for the override: under a second no launch can answer, so a typo
+# ("0", "0.05") would fail every launch rather than widen the budget.
+_MIN_LAUNCH_TIMEOUT_S = 1.0
+
+# Ceiling for the override: a launch that never answers must still fail, or
+# the create request and its pending launch hang for the process lifetime.
+_MAX_LAUNCH_TIMEOUT_S = 3600.0
+
+
+@functools.cache
+def resolve_launch_timeout_s() -> float:
+    """Seconds a launch waits for the host's result (env override or default).
+
+    Read from :data:`LAUNCH_TIMEOUT_ENV_VAR`, which both launch routes share so
+    the two can't drift. A value that isn't a finite number between
+    :data:`_MIN_LAUNCH_TIMEOUT_S` and :data:`_MAX_LAUNCH_TIMEOUT_S` is ignored
+    with a warning rather than raised: this runs on the session-create path,
+    where rejecting a malformed operator setting would turn one typo into
+    every session failing to start.
+
+    Cached, so the warning is logged once and the budget is fixed for the
+    process lifetime; a change needs a server restart (tests call
+    ``resolve_launch_timeout_s.cache_clear()``).
+
+    :returns: The launch-result timeout in seconds.
+    """
+    raw = os.environ.get(LAUNCH_TIMEOUT_ENV_VAR)
+    if raw is None or not raw.strip():
+        return _DEFAULT_LAUNCH_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        _logger.warning(
+            "%s must be a number of seconds, got %r — using %gs",
+            LAUNCH_TIMEOUT_ENV_VAR,
+            raw,
+            _DEFAULT_LAUNCH_TIMEOUT_S,
+        )
+        return _DEFAULT_LAUNCH_TIMEOUT_S
+    # Also rejects the "nan" and "inf" that ``float()`` accepts.
+    if not _MIN_LAUNCH_TIMEOUT_S <= value <= _MAX_LAUNCH_TIMEOUT_S:
+        _logger.warning(
+            "%s must be between %gs and %gs, got %r — using %gs",
+            LAUNCH_TIMEOUT_ENV_VAR,
+            _MIN_LAUNCH_TIMEOUT_S,
+            _MAX_LAUNCH_TIMEOUT_S,
+            raw,
+            _DEFAULT_LAUNCH_TIMEOUT_S,
+        )
+        return _DEFAULT_LAUNCH_TIMEOUT_S
+    return value
 
 
 @dataclass
@@ -95,21 +158,26 @@ def resolve_host_owner(
     return host
 
 
-@functools.cache
-def _deployment_is_sharded() -> bool:
-    """Whether this deployment shards host traffic across replicas by host_id.
+# Set by ``create_app(host_sharded=...)``. Process-wide because
+# :func:`host_absent_error` runs deep in route helpers with no request to read
+# ``app.state`` from.
+_host_sharded = False
 
-    Only the Databricks managed deployment runs multiple replicas behind the
-    host_id-sharding router (Dicer); a single-process / OSS server has exactly
-    one replica, so an absent host is simply offline. The server can't see the
-    sharding layer directly (Dicer strips its routing header), so we detect the
-    managed deployment by the presence of the internal lakebox launcher module —
-    the same signal that gates ``databricks_features`` in ``server_info`` and
-    mirrors the client's own ``isDatabricksWorkspace()`` re-address gate. Cached:
-    ``find_spec`` is side-effect-free but the answer is fixed for the process
-    lifetime.
+
+def configure_host_sharding(enabled: bool) -> None:
+    """Record whether this deployment shards host traffic across replicas.
+
+    :param enabled: ``True`` when replicas sit behind a router that keys host
+        and runner tunnels by host_id, so a host absent from this replica's
+        registry may be live on another one.
     """
-    return importlib.util.find_spec("omnigent.onboarding.sandboxes.lakebox") is not None
+    global _host_sharded
+    _host_sharded = enabled
+
+
+def _deployment_is_sharded() -> bool:
+    """Return whether this deployment shards host traffic by host_id."""
+    return _host_sharded
 
 
 def host_absent_error(host: Host, *, sharded: bool | None = None) -> OmnigentError:
@@ -134,8 +202,9 @@ def host_absent_error(host: Host, *, sharded: bool | None = None) -> OmnigentErr
     So ``WRONG_REPLICA`` is emitted only when the deployment is actually sharded.
 
     :param host: The host's persistent record (owner-checked by the caller).
-    :param sharded: Whether this deployment shards by host_id. Defaults to
-        auto-detection (:func:`_deployment_is_sharded`); overridable for tests.
+    :param sharded: Whether this deployment shards by host_id. Defaults to the
+        deployment's setting (:func:`configure_host_sharding`); overridable for
+        tests.
     :returns: The ``OmnigentError`` to raise; the global handler maps its code
         to the HTTP status and the ``{"error": {"code": ...}}`` body the
         client's re-address matches on.
@@ -156,6 +225,7 @@ def resolve_host_launch(
     host_registry: HostRegistry,
     conversation_store: ConversationStore,
     permission_store: PermissionStore | None,
+    conversation: Conversation | None = None,
 ) -> HostLaunchTarget:
     """
     Resolve and authorize a host runner launch.
@@ -178,6 +248,8 @@ def resolve_host_launch(
         session-access check for sub-agent parent delegation).
     :param permission_store: Session permission store, or ``None`` to
         skip the session-owner check (auth disabled).
+    :param conversation: Optional authoritative row already loaded for the
+        target session. Its id must match ``session_id``.
     :returns: A :class:`HostLaunchTarget` with the validated host,
         connection, and conversation.
     :raises HTTPException: 404 if the host or session is missing (or the
@@ -198,7 +270,9 @@ def resolve_host_launch(
     if conn is None:
         raise host_absent_error(host)
 
-    conv = conversation_store.get_conversation(session_id)
+    if conversation is not None and conversation.id != session_id:
+        raise HTTPException(status_code=404, detail="session not found")
+    conv = conversation or conversation_store.get_conversation(session_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="session not found")
 
@@ -206,106 +280,16 @@ def resolve_host_launch(
     # session owner may bind one. A non-owner has no owner-level grant
     # and is rejected. 404 (not 403) avoids leaking the existence of
     # other users' sessions.
-    if permission_store is not None and not check_session_access(
-        user_id,
-        session_id,
-        LEVEL_OWNER,
-        permission_store,
-        conversation_store,
-    ):
-        raise HTTPException(status_code=404, detail="session not found")
+    if permission_store is not None:
+        allowed = check_session_access(
+            user_id,
+            session_id,
+            LEVEL_OWNER,
+            permission_store,
+            conversation_store,
+            conversation=conv,
+        )
+        if not allowed:
+            raise HTTPException(status_code=404, detail="session not found")
 
     return HostLaunchTarget(host=host, conn=conn, conv=conv)
-
-
-_EMPTY_LAUNCH_ENV: dict[str, dict[str, str] | None] = {"agent_env": None, "agent_secret_env": None}
-
-
-def launch_env_fields(
-    *,
-    agent_id: str | None,
-    user_id: str | None,
-    host_owner: str | None,
-    identity_established: bool = True,
-    agent_store: object | None = None,
-) -> dict[str, dict[str, str] | None]:
-    """The ``agent_env`` / ``agent_secret_env`` of a runner launch frame.
-
-    **Every site that builds a** :class:`~omnigent.host.frames.HostLaunchRunnerFrame`
-    **spreads this into it**, and ``tests/server/test_launch_env_every_path.py``
-    fails the build if one does not. The first version of the mechanism (#78)
-    collected the environment at one launch site of three: session create with
-    a host. ``POST /v1/hosts/{id}/runners`` (resume, switch host, fork) and the
-    relaunch that runs when a message arrives for a session whose runner is gone
-    sent nothing, and nothing in the suite noticed because the one test covered
-    the one site that worked.
-
-    **Sent only to the host owner's own runners.** A secret reference is
-    resolved on the host from the host's own store, so whatever it names is the
-    host OWNER's secret. On a host shared with other users (``--shared``), a
-    non-owner's session would otherwise receive the owner's credential and act
-    as the owner in whatever that credential opens: for Eva, the owner's
-    outreach account. So the environment goes out only when the acting user is
-    the host owner; otherwise nothing is sent and the reason is logged, and the
-    agent fails turn setup for want of a credential rather than running with
-    someone else's. A missing credential is an error; a wrong one is an
-    incident.
-
-    :param agent_id: The session's agent, e.g. ``conv.agent_id``. ``None``
-        (no resolvable agent) collects nothing.
-    :param user_id: The user the runner acts for, as established by the caller.
-        ``None`` only when auth is disabled (single-user server), which is
-        allowed: there is no other user whose credential could be sent.
-    :param host_owner: The host's owner (``Host.user_id`` or
-        ``HostConnection.owner``). ``None`` only when auth is disabled.
-    :param identity_established: ``False`` when the caller could not establish
-        who the runner acts for. The relaunch path passes it on a shared host,
-        where a session's owner is not knowable from the host connection; the
-        environment is then withheld.
-    :param agent_store: Store to resolve ``agent_id`` to a name. ``None`` uses
-        the runtime's store; a server whose runtime is not initialized
-        collects nothing. Any other store failure propagates.
-    :returns: ``{"agent_env": ..., "agent_secret_env": ...}``, each ``None``
-        when empty, ready to spread into the frame.
-    """
-    from omnigent.runtime.launch_env import collect
-
-    if agent_id is None:
-        return dict(_EMPTY_LAUNCH_ENV)
-    store = agent_store
-    if store is None:
-        from omnigent.runtime import get_agent_store
-
-        try:
-            store = get_agent_store()
-        except RuntimeError:
-            # "runtime not initialized": a minimal wiring with no runtime has
-            # no agents to launch with an environment. Deliberately narrow; a
-            # store that exists and fails is a real error and propagates.
-            return dict(_EMPTY_LAUNCH_ENV)
-    row = store.get(agent_id)  # type: ignore[attr-defined]
-    agent_name = getattr(row, "name", None) if row is not None else None
-    if agent_name is None:
-        return dict(_EMPTY_LAUNCH_ENV)
-
-    acting = user_id if identity_established else host_owner
-    launch = collect(agent_name, acting)
-    if launch.is_empty():
-        return dict(_EMPTY_LAUNCH_ENV)
-    # ``user_id is None`` is the auth-disabled single-user server: there is no
-    # other identity whose credential could be at stake, which is the same
-    # reason resolve_host_launch skips its ownership checks for it.
-    if not identity_established or (user_id is not None and user_id != host_owner):
-        _logger.warning(
-            "launch environment for agent %r withheld: the runner acts for %s on a host "
-            "owned by %r, and a secret reference resolves from the host owner's own store. "
-            "The agent will fail turn setup for want of its credential.",
-            agent_name,
-            repr(user_id) if identity_established else "a user this launch path cannot establish",
-            host_owner,
-        )
-        return dict(_EMPTY_LAUNCH_ENV)
-    return {
-        "agent_env": launch.env or None,
-        "agent_secret_env": launch.secret_refs or None,
-    }

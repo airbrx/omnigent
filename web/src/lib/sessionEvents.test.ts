@@ -26,7 +26,6 @@ import type {
   SessionResourceCreatedEvent,
   SessionResourceDeletedEvent,
   SessionSandboxStatusEvent,
-  SessionSkillsEvent,
   SessionStatusEvent,
   SessionTerminalActivityEvent,
   SessionTerminalPendingEvent,
@@ -917,6 +916,75 @@ describe("response.elicitation_request (FLAT envelope)", () => {
     const ev = out[0] as ElicitationRequest;
     expect(ev.codexPersistModes).toEqual(["session", "always"]);
   });
+
+  it("lifts agy permission action description and advertised persist pattern", () => {
+    const out = parse("response.elicitation_request", {
+      type: "response.elicitation_request",
+      elicitation_id: "elicit_agy",
+      params: {
+        mode: "form",
+        message: "Antigravity wants to run: pwd",
+        phase: "agy_permission",
+        policy_name: "agy_native_permission",
+        content_preview: "",
+        requestedSchema: {},
+        action_description: "Running pwd command",
+        always_allow_pattern: "pwd",
+      },
+    });
+
+    expect(out).toHaveLength(1);
+    const ev = out[0] as ElicitationRequest;
+    expect(ev.agyPermission).toEqual({
+      actionDescription: "Running pwd command",
+      alwaysAllowPattern: "pwd",
+    });
+  });
+
+  it("defaults agy permission extras to null when absent or malformed", () => {
+    const out = parse("response.elicitation_request", {
+      type: "response.elicitation_request",
+      elicitation_id: "elicit_agy_bare",
+      params: {
+        mode: "form",
+        message: "Antigravity wants to run: pwd",
+        phase: "agy_permission",
+        policy_name: "agy_native_permission",
+        content_preview: "",
+        requestedSchema: {},
+        // action_description absent; always_allow_pattern a non-string.
+        always_allow_pattern: 123,
+      },
+    });
+
+    expect(out).toHaveLength(1);
+    const ev = out[0] as ElicitationRequest;
+    expect(ev.agyPermission).toEqual({
+      actionDescription: null,
+      alwaysAllowPattern: null,
+    });
+  });
+
+  it("ignores agy permission extras outside the agy_permission phase", () => {
+    const out = parse("response.elicitation_request", {
+      type: "response.elicitation_request",
+      elicitation_id: "elicit_not_agy",
+      params: {
+        mode: "form",
+        message: "Codex wants to run date",
+        phase: "codex_command_approval",
+        policy_name: "codex_native_command_approval",
+        content_preview: "",
+        requestedSchema: {},
+        action_description: "Running pwd command",
+        always_allow_pattern: "pwd",
+      },
+    });
+
+    expect(out).toHaveLength(1);
+    const ev = out[0] as ElicitationRequest;
+    expect(ev.agyPermission).toBeNull();
+  });
 });
 
 describe("response.elicitation_resolved (FLAT envelope)", () => {
@@ -1711,36 +1779,6 @@ describe("session.terminal.activity (FLAT envelope)", () => {
         session_id: "conv_abc",
       }),
     ).toEqual([]);
-  });
-});
-
-describe("session.skills (FLAT envelope)", () => {
-  it("lifts conversation_id into the bare nudge", () => {
-    const out = parse("session.skills", {
-      type: "session.skills",
-      conversation_id: "conv_abc",
-    });
-    expect(out).toHaveLength(1);
-    const ev = out[0] as SessionSkillsEvent;
-    expect(ev.type).toBe("session_skills");
-    expect(ev.conversationId).toBe("conv_abc");
-  });
-
-  it("rejects missing conversation_id", () => {
-    // Without a conversation id the store handler can't target a
-    // refetch, so the frame must be dropped rather than lifted.
-    const out = parse("session.skills", {
-      type: "session.skills",
-    });
-    expect(out).toEqual([]);
-  });
-
-  it("rejects an empty conversation_id", () => {
-    const out = parse("session.skills", {
-      type: "session.skills",
-      conversation_id: "",
-    });
-    expect(out).toEqual([]);
   });
 });
 

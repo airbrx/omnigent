@@ -26,35 +26,17 @@ from omnigent.server.host_registry import HostRegistry
 from omnigent.server.routes._host_launch import HostLaunchTarget, resolve_host_launch
 from omnigent.server.routes.host_tunnel import create_host_tunnel_router
 from omnigent.server.routes.hosts import create_hosts_router
+from omnigent.server.routes.skills import create_skills_router
 from omnigent.stores.conversation_store.sqlalchemy_store import (
     SqlAlchemyConversationStore,
 )
 from omnigent.stores.host_store import HostStore
 from omnigent.stores.permission_store.sqlalchemy_store import SqlAlchemyPermissionStore
+from tests.server.helpers import websocket_scope as _websocket_scope
 
 pytestmark = pytest.mark.asyncio
 
 _HOST_ID = "33296f9b15e02671c34e013dd711407e"
-
-
-def _websocket_scope(path: str) -> dict[str, object]:
-    """Build an ASGI WebSocket scope.
-
-    :param path: WebSocket path.
-    :returns: Minimal ASGI WebSocket scope.
-    """
-    return {
-        "type": "websocket",
-        "asgi": {"version": "3.0"},
-        "scheme": "ws",
-        "path": path,
-        "raw_path": path.encode("ascii"),
-        "query_string": b"",
-        "headers": [],
-        "client": ("127.0.0.1", 50000),
-        "server": ("testserver", 80),
-        "subprotocols": [],
-    }
 
 
 def _make_hello(
@@ -110,6 +92,7 @@ def _build_host_api_app(
     """
     registry = HostRegistry()
     host_store = HostStore(db_uri)
+    registry.launch_authorizer = host_store.admit_launch
     conv_store = SqlAlchemyConversationStore(db_uri)
     app = FastAPI()
     app.include_router(
@@ -780,8 +763,10 @@ async def test_launch_runner_409_host_offline(
     assert resp.status_code == 409
 
 
+@pytest.mark.parametrize("cross_host", [False, True])
 async def test_launch_runner_400_already_bound(
     host_api_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+    cross_host: bool,
 ) -> None:
     """
     Verify launch returns 400 when the session already has a runner.
@@ -796,6 +781,8 @@ async def test_launch_runner_400_already_bound(
         agent_id=None,
         runner_id="runner_existing",
     )
+    if cross_host:
+        conv_store.set_host_id(conv.id, "3" * 32, workspace="/tmp/source")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -803,6 +790,9 @@ async def test_launch_runner_400_already_bound(
             json={"session_id": conv.id, "workspace": "/tmp"},
         )
     assert resp.status_code == 400
+    unchanged = conv_store.get_conversation(conv.id)
+    assert unchanged.runner_id == "runner_existing"
+    assert unchanged.host_id == ("3" * 32 if cross_host else None)
 
 
 async def test_launch_runner_404_unknown_host(
@@ -880,6 +870,16 @@ def multi_user_app(
     )
     app.include_router(
         create_hosts_router(
+            registry,
+            host_store,
+            conv_store,
+            auth_provider=auth,
+            permission_store=permission_store,
+        ),
+        prefix="/v1",
+    )
+    app.include_router(
+        create_skills_router(
             registry,
             host_store,
             conv_store,
@@ -967,6 +967,38 @@ async def test_get_host_403_wrong_owner(
         f"Expected 403 for wrong owner, got {resp.status_code}. "
         "Owner check on GET /v1/hosts/{{id}} is missing."
     )
+
+
+@pytest.mark.parametrize("user,status", [(None, 401), ("bob@test.com", 403)])
+async def test_host_skills_requires_owner(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+    user: str | None,
+    status: int,
+) -> None:
+    from fastapi.responses import JSONResponse
+
+    from omnigent.errors import OmnigentError
+
+    app, registry, host_store, _cs = multi_user_app
+
+    @app.exception_handler(OmnigentError)
+    async def handle_error(request: Request, exc: OmnigentError) -> JSONResponse:
+        return JSONResponse(status_code=exc.http_status, content={"detail": exc.message})
+
+    host_id = "294391bc835cde1130ef2a02dcd2b7b3"
+    host_store.upsert_on_connect(host_id, "alice-laptop", "alice@test.com")
+    _register_fake_host(registry, host_id, "alice@test.com")
+    conn = registry.get(host_id)
+    assert conn is not None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/v1/skills",
+            params={"host_id": host_id, "harness": "claude-native", "path": "~"},
+            headers={"x-test-user": user} if user else {},
+        )
+    assert response.status_code == status, response.text
+    assert conn.outbound_queue.empty()
+    assert conn.pending_skills == {}
 
 
 async def test_launch_runner_403_wrong_owner(
@@ -1364,6 +1396,7 @@ async def test_failed_connect_does_not_offline_another_users_host(
 
 async def test_runner_exited_report_surfaces_in_runner_status(
     db_uri: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """
     A ``host.runner_exited`` frame from the daemon reaches the runner
@@ -1399,6 +1432,7 @@ async def test_runner_exited_report_surfaces_in_runner_status(
         "runner process exited with code 1 (log on host: ~/x.log)\n"
         "--- runner log tail ---\nModuleNotFoundError: No module named 'claude_agent_sdk'"
     )
+    caplog.set_level("WARNING", logger="omnigent.server.routes.host_tunnel")
     _comm = await _connect_host(app, registry)
     await _comm.send_input(
         {
@@ -1426,13 +1460,21 @@ async def test_runner_exited_report_surfaces_in_runner_status(
     # the actual failure — is surfaced verbatim for the waiting client.
     assert body["error"] == daemon_error
 
+    # No callback wired, so the tunnel itself logs the session-less event.
+    events = [r for r in caplog.records if getattr(r, "event_name", None) == "runner_exited"]
+    assert len(events) == 1
+    assert getattr(events[0], "session_id", None) is None
+    assert events[0].attributes["host_id"] == _HOST_ID
+    assert events[0].attributes["runner_id"] == "runner_dead"
+
 
 async def test_runner_exited_invokes_callback_with_runner_and_error(
     db_uri: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """
     A ``host.runner_exited`` frame fires the ``on_runner_exited``
-    callback with ``(runner_id, error)``.
+    callback with ``(host_id, runner_id, error)``.
 
     This callback is how the server marks the crashed runner's
     session(s) failed and pushes the cause to the open view (the
@@ -1445,12 +1487,13 @@ async def test_runner_exited_invokes_callback_with_runner_and_error(
 
     registry = HostRegistry()
     host_store = HostStore(db_uri)
-    received: list[tuple[str, str]] = []
+    received: list[tuple[str, str, str]] = []
 
-    async def _record(runner_id: str, error: str) -> None:
-        received.append((runner_id, error))
+    async def _record(host_id: str, runner_id: str, error: str) -> None:
+        received.append((host_id, runner_id, error))
 
     app = FastAPI()
+    caplog.set_level("WARNING", logger="omnigent.server.routes.host_tunnel")
     app.include_router(
         create_host_tunnel_router(registry, host_store, on_runner_exited=_record),
         prefix="/v1",
@@ -1469,8 +1512,10 @@ async def test_runner_exited_invokes_callback_with_runner_and_error(
         while not received:
             await asyncio.sleep(0.01)
 
-    # The callback got the exact runner id and error string off the frame.
-    assert received == [("runner_x", "exited with code 1")]
+    # The callback got the reporting host plus the exact runner id and error.
+    assert received == [(_HOST_ID, "runner_x", "exited with code 1")]
+    # The callback owns the event; the tunnel must not log a session-less duplicate.
+    assert not [r for r in caplog.records if getattr(r, "event_name", None) == "runner_exited"]
 
 
 # --- shared / always-on hosts (visibility) ---------------------------------
@@ -1559,20 +1604,9 @@ async def test_shared_host_confines_non_owner_to_workroot(
     """On a shared host, a non-owner's filesystem access is jailed to workroot.
 
     A path outside workroot is rejected with 403 before the host is even
-    contacted; a path inside passes the jail and only then fails on reaching
-    the host, because the freshly-upserted host has no tunnel on this replica
-    (see ``host_absent_error``). The owner is never jailed.
-
-    That post-jail failure is 409 CONFLICT, not the 400 WRONG_REPLICA this
-    test originally asserted: since upstream v0.13, ``host_absent_error``
-    claims WRONG_REPLICA only on a *sharded* deployment, and this test app is
-    single-replica. The change is deliberate upstream — on one replica there
-    is no other replica to re-address to, so a 400 would drive an endless
-    client poll loop.
-
-    What matters here is only that the request got *past* the jail and went on
-    to contact the host; which status it then fails with is upstream's to
-    decide. The jail itself is what this test guards, and that is the 403s.
+    contacted; a path inside passes the jail (and then 400 WRONG_REPLICA
+    because the freshly-upserted host is live but has no tunnel on this
+    replica — see ``_host_absent_error``). The owner is never jailed.
     """
     app, _reg, host_store, _cs = multi_user_app
     host_store.upsert_on_connect(
@@ -1600,23 +1634,20 @@ async def test_shared_host_confines_non_owner_to_workroot(
         )
         assert browse_out.status_code == 403, browse_out.text
 
-        # Non-owner, INSIDE workroot -> passes the jail, then fails contacting
-        # the host: 409, because this test app is single-replica.
+        # Non-owner, INSIDE workroot -> passes the jail, then 409 (host offline —
+        # single-replica deployments return CONFLICT, not WRONG_REPLICA, for an
+        # absent host tunnel; see host_absent_error).
         inside = await client.post(
             "/v1/hosts/e796741f1db43f1a80d4c39e7f07c0a3/directories",
             headers={"x-test-user": "bob@test.com"},
             json={"path": "/srv/work/sub"},
         )
         assert inside.status_code == 409, inside.text
-        # Past the jail, not blocked by it — the 403s above are the jail.
-        assert "workroot" not in inside.text
 
-        # Owner is NOT jailed: /etc passes the (absent) jail, then the same
-        # host-absent failure.
+        # Owner is NOT jailed: /etc passes the (absent) jail, then 409 offline.
         owner_out = await client.post(
             "/v1/hosts/e796741f1db43f1a80d4c39e7f07c0a3/directories",
             headers={"x-test-user": "alice@test.com"},
             json={"path": "/etc/mine"},
         )
         assert owner_out.status_code == 409, owner_out.text
-        assert "workroot" not in owner_out.text
