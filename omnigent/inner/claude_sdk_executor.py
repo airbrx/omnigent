@@ -1596,6 +1596,8 @@ class ClaudeSDKExecutor(Executor):
         bundle_dir: pathlib.Path | None = None,
         agent_name: str | None = None,
         skills_filter: str | list[str] = "all",
+        strict_mcp_config: bool = False,
+        disallowed_tools: list[str] | None = None,
         api_key_helper: str | None = None,
     ) -> None:
         """Create a ClaudeSDKExecutor.
@@ -1652,6 +1654,19 @@ class ClaudeSDKExecutor(Executor):
                 ``<agent-name>:<skill-name>`` namespaced labels in
                 Claude's skill listing (instead of being labeled by
                 the bundle's tmp-dir basename).
+            disallowed_tools: Tool names the CLI must not expose at all,
+                e.g. ``["Skill"]``. Removing a tool from the surface is
+                not the same as denying it at call time: a TOOL_CALL
+                policy can only refuse what it is asked about, and a
+                measured production turn shows the CLI not asking about
+                the harness built-in ``ToolSearch``. ``None`` leaves the
+                surface untouched.
+            strict_mcp_config: When ``True``, the CLI uses ONLY the MCP
+                servers this executor passes and ignores every other MCP
+                configuration it would otherwise load — project
+                ``.mcp.json``, user/global settings, plugin-provided
+                servers. Off by default, which is the CLI's own default
+                and the behaviour every existing agent has today.
             skills_filter: Host-skill filter (``"all"`` / ``"none"`` /
                 ``list[str]``). Maps to the SDK's ``skills`` option:
                 ``"all"`` → enable every host-discovered skill,
@@ -1696,6 +1711,8 @@ class ClaudeSDKExecutor(Executor):
         self._bundle_dir = bundle_dir
         self._agent_name = agent_name
         self._skills_filter = skills_filter
+        self._strict_mcp_config = strict_mcp_config
+        self._disallowed_tools = disallowed_tools
         # Write the bundle's plugin manifest now (idempotent) so that
         # ``--plugin-dir <bundle>`` produces clean
         # ``<agent-name>:<skill-name>`` labels in Claude's skill
@@ -2417,6 +2434,26 @@ class ClaudeSDKExecutor(Executor):
         )
         _action = getattr(_verdict, "action", None)
         if _action in ("POLICY_ACTION_ALLOW", "POLICY_ACTION_UNSPECIFIED"):
+            # Log the permit as well as the refusals. Every other branch below
+            # records its outcome; this one returned silently, so a tool that
+            # policy ALLOWED was indistinguishable in the logs from a tool that
+            # never reached the gate at all.
+            #
+            # That cost real time. On a production Iris turn, `ToolSearch` ran
+            # while the server's own /policies/evaluate denies it on request.
+            # Deciding whether the gate had allowed it or never seen it was
+            # impossible from the logs — the two look identical — and the whole
+            # boundary turns on a value nothing recorded.
+            #
+            # INFO rather than DEBUG deliberately: a handful of lines per turn,
+            # and for a security boundary "what did it permit, and why" is worth
+            # exactly as much as "what did it refuse".
+            logger.info(
+                "TOOL_CALL policy allowed tool=%s action=%s reason=%s",
+                tool_name,
+                _action,
+                getattr(_verdict, "reason", None),
+            )
             # ALLOW / no-match — fall through (caller decides whether to also
             # run the human-consent elicitation gate).
             return None
@@ -2665,6 +2702,8 @@ class ClaudeSDKExecutor(Executor):
             "tools": base_tools,
             "system_prompt": system_prompt or None,
             "mcp_servers": mcp_servers if mcp_servers else {},
+            "strict_mcp_config": self._strict_mcp_config,
+            "disallowed_tools": list(self._disallowed_tools or []),
             "allowed_tools": allowed_tools,
             "permission_mode": self._permission_mode,
             "max_turns": cfg.extra.get("max_turns"),

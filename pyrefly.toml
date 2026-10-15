@@ -38,6 +38,10 @@ ignore-missing-imports = [
     "google.auth.*",
     "hvac",
     "hvac.*",
+    # Unpacked from the vendored archive by source_root() at call time, so the
+    # package does not exist on disk until omnigent.airbrx.iris.policy runs.
+    "iris",
+    "iris.*",
     "islo",
     "islo.*",
     "kubernetes",

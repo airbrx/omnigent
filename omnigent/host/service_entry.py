@@ -15,14 +15,31 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--server", help="Remote Omnigent server URL.")
     mode.add_argument("--local", action="store_true", help="Run a local Omnigent server.")
+    # airbrx: the supervised invocation must be able to express the same
+    # runtime as a hand-run `omnigent host` — otherwise a shared/always-on or
+    # self-upgrading host cannot be installed as a service at all.
+    parser.add_argument(
+        "--auto-upgrade", action="store_true", help="Keep the host in sync with the server build."
+    )
+    parser.add_argument(
+        "--shared", action="store_true", help="Open this host to any authenticated user."
+    )
+    parser.add_argument("--workroot", default=None, help="Jail dir for a shared host's guests.")
     args = parser.parse_args()
 
     from omnigent.cli import cli
 
     server = "" if args.local else args.server
+    host_args = ["host", "--server", server, "--non-interactive"]
+    if args.auto_upgrade:
+        host_args.append("--auto-upgrade")
+    if args.shared:
+        host_args.append("--shared")
+        if args.workroot:
+            host_args.extend(["--workroot", args.workroot])
     try:
         cli.main(
-            args=["host", "--server", server, "--non-interactive"],
+            args=host_args,
             prog_name="omnigent",
             standalone_mode=False,
         )

@@ -88,6 +88,9 @@ vi.mock("@/components/ui/toast", async (importOriginal) => ({
   showToast: vi.fn(),
 }));
 vi.mock("@/hooks/useHosts", () => ({
+  // airbrx: the landing screen calls useWakeHost() to offer waking an
+  // offline `wakeable` host, so a full module mock must export it.
+  useWakeHost: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useHosts: vi.fn(),
   useHostModelOptions: vi.fn(() => ({ data: [] })),
   useInstallHarness: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

@@ -326,6 +326,9 @@ def test_host_enable_subcommand_installs_user_service(
         server_url: str | None,
         *,
         environment: dict[str, str],
+        auto_upgrade: bool = False,
+        shared: bool = False,
+        workroot: str | None = None,
     ) -> HostService:
         captured.append((server_url, environment))
         return HostService(kind="systemd_user", path=service_path, label=service_path.name)
@@ -342,6 +345,75 @@ def test_host_enable_subcommand_installs_user_service(
     assert result.exit_code == 0, result.output
     assert captured == [(None, {"HOME": str(tmp_path)})]
     assert "Enabled the Omnigent host user service for local" in result.output
+
+
+def test_host_enable_forwards_airbrx_runtime_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``host enable`` bakes --auto-upgrade/--shared/--workroot into the unit.
+
+    airbrx: upstream's ``host enable`` supervises a plain host only. A shared,
+    always-on, self-upgrading box is the whole point of installing one as a
+    service here, so the runtime flags must survive the trip to the unit file
+    (and ``--workroot`` must arrive resolved, since the daemon outlives the cwd
+    it was enabled from).
+    """
+    from omnigent.host.service import HostService
+
+    captured: list[dict[str, object]] = []
+    service_path = tmp_path / "omnigent-host.service"
+    workroot = tmp_path / "work"
+    workroot.mkdir()
+
+    def _enable(
+        server_url: str | None,
+        *,
+        environment: dict[str, str],
+        auto_upgrade: bool = False,
+        shared: bool = False,
+        workroot: str | None = None,
+    ) -> HostService:
+        captured.append(
+            {
+                "server_url": server_url,
+                "auto_upgrade": auto_upgrade,
+                "shared": shared,
+                "workroot": workroot,
+            }
+        )
+        return HostService(kind="systemd_user", path=service_path, label=service_path.name)
+
+    monkeypatch.setattr("omnigent.cli._find_daemon_record", lambda target: None)
+    monkeypatch.setattr(
+        "omnigent.cli._build_host_daemon_env",
+        lambda *, server_url: {"HOME": str(tmp_path)},
+    )
+    monkeypatch.setattr("omnigent.host.service.enable_user_host_service", _enable)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "host",
+            "enable",
+            "--server",
+            "",
+            "--auto-upgrade",
+            "--shared",
+            "--workroot",
+            str(workroot),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == [
+        {
+            "server_url": None,
+            "auto_upgrade": True,
+            "shared": True,
+            "workroot": str(workroot.resolve()),
+        }
+    ]
 
 
 def test_host_disable_subcommand_removes_user_service(

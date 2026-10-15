@@ -13,7 +13,7 @@ Each declares its own ``[project].version``. The first three ``==``-pin
 their siblings in ``[project].dependencies``; the root ``omnigent``
 package also ``==``-pins ``omnigent-slack`` in the ``slack`` optional
 dependency extra — the lockstep contract that
-``.github/workflows/release-omnigent.yml`` verifies at tag time. This
+the upstream release-omnigent workflow verified at tag time. This
 script rewrites every one of those locations at once so they never
 drift.
 

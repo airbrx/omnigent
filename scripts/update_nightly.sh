@@ -2,7 +2,7 @@
 # Install or update the omnigent nightly build.
 #
 # Nightlies are datestamped prerelease tags (vX.Y.Z.devYYYYMMDD) cut from
-# the newest green commit on main by .github/workflows/nightly-release.yml
+# the newest green commit on main by the upstream nightly-release workflow
 # (about 04:30 UTC). This script resolves the newest nightly tag and
 # installs it with uv, which pins the whole install (omnigent,
 # omnigent-client, omnigent-ui-sdk) to that one tagged commit.

@@ -19,7 +19,7 @@ SIDECAR_TARGET_DIR = ROOT / ".tmp-codex-parity-target"
 # When set to an existing executable, use that prebuilt sidecar binary and skip
 # the (multi-minute, ~1100-crate) ``cargo build`` entirely. CI builds the
 # sidecar once in a dedicated job and points every consumer at the downloaded
-# artifact via this env var; see .github/workflows/e2e-ui.yml.
+# artifact via this env var; the upstream e2e-ui workflow set it.
 PREBUILT_SIDECAR_ENV = "CODEX_PARITY_SIDECAR_BIN"
 
 

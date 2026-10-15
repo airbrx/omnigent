@@ -344,6 +344,24 @@ def load_token(server_url: str, *, min_remaining_seconds: float = 0.0) -> str | 
     return token
 
 
+def token_expires_at(server_url: str) -> float | None:
+    """Return the stored token's expiry for a server, if any.
+
+    Unlike :func:`load_token`, this does NOT drop an already-expired
+    record — callers (e.g. a host reporting its login expiry to the
+    server) want the timestamp regardless of whether it's in the past.
+
+    :param server_url: The server URL.
+    :returns: Unix-epoch expiry, or ``None`` when no record / no expiry
+        is stored (e.g. Databricks pointer records hold none).
+    """
+    entry = _load_entry(server_url)
+    if entry is None:
+        return None
+    expires_at = entry.get("expires_at")
+    return expires_at if isinstance(expires_at, (int, float)) and expires_at else None
+
+
 # Servers already warned about an expired stored token, so a poll/retry
 # loop doesn't repeat the warning every few seconds.
 _warned_expired_servers: set[str] = set()
@@ -584,24 +602,6 @@ def _coerce_expires_in(raw: object) -> float:
     if not math.isfinite(value) or value <= 0:
         return default
     return value
-
-
-def token_expires_at(server_url: str) -> float | None:
-    """Return the stored token's expiry for a server, if any.
-
-    Unlike :func:`load_token`, this does NOT drop an already-expired
-    record — callers (e.g. a host reporting its login expiry to the
-    server) want the timestamp regardless of whether it's in the past.
-
-    :param server_url: The server URL.
-    :returns: Unix-epoch expiry, or ``None`` when no record / no expiry
-        is stored (e.g. Databricks pointer records hold none).
-    """
-    entry = _load_entry(server_url)
-    if entry is None:
-        return None
-    expires_at = entry.get("expires_at")
-    return expires_at if isinstance(expires_at, (int, float)) and expires_at else None
 
 
 def load_databricks_workspace_host(server_url: str) -> str | None:

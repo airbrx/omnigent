@@ -76,9 +76,9 @@ pnpm run format:check  # prettier --check .
 pnpm run type-check    # tsc -b
 ```
 
-`pnpm run type-check` runs in CI as part of the `Pre-commit checks`
-job (`.github/workflows/lint.yml`) and gates merge. Run it locally
-before committing any change under `web/`.
+`pnpm run type-check` no longer runs in CI — the lint workflow came with the
+upstream CI and has been removed — so run it locally before committing any
+change under `web/`.
 
 ## Test
 

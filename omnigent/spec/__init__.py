@@ -16,7 +16,14 @@ from omnigent.spec._omnigent_compat import (
     is_omnigent_yaml,
     load_omnigent_yaml,
 )
-from omnigent.spec.parser import expand_env_vars, parse, parse_default_policies, parse_server_llm
+from omnigent.spec.parser import (
+    ENV_EXPANSION_RUNNER,
+    declared_env_expansion,
+    expand_env_vars,
+    parse,
+    parse_default_policies,
+    parse_server_llm,
+)
 from omnigent.spec.tar_utils import ExtractionError, extract_safe
 from omnigent.spec.types import (
     DEFAULT_ASK_TIMEOUT,
@@ -163,6 +170,7 @@ def load(
     expand_env: bool = True,
     enforce_handler_allowlist: bool = False,
     prune_invalid_sub_agents: bool = False,
+    server_side: bool = False,
 ) -> AgentSpec:
     """
     Load an agent spec from a directory, tarball path, or raw
@@ -218,6 +226,14 @@ def load(
         (``omnigent run``,
         :func:`omnigent.server.bundles.validate_agent_bundle`) stay
         strict and surface real authoring mistakes to the author.
+    :param server_side: ``True`` when the caller is the server loading a
+        bundle for its own use (the agent cache: listing, session create,
+        harness resolution), as opposed to the runner that will open the
+        bundle's connections. A bundle declaring ``env_expansion: runner``
+        is then parsed with *expand_env* forced to ``False``, so the server
+        neither needs nor sees the variables its runner resolves. It never
+        turns expansion ON: ``expand_env=False`` stays ``False``. The runner
+        does not pass this, so it keeps expanding exactly as before.
     :returns: A validated :class:`AgentSpec`.
     :raises OmnigentError: If the spec fails validation, if a policy
         names an unregistered handler under
@@ -290,6 +306,9 @@ def load(
             prune_invalid_sub_agents=prune_invalid_sub_agents,
         )
 
+    if server_side and expand_env and declared_env_expansion(root) == ENV_EXPANSION_RUNNER:
+        # The bundle's ${VAR}s belong to the runner. See AgentSpec.env_expansion.
+        expand_env = False
     spec = parse(root, expand_env=expand_env)
     if prune_invalid_sub_agents:
         _prune_invalid_sub_agents(spec)

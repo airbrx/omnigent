@@ -496,24 +496,25 @@ user-scoped service (systemd `--user` on Linux, launchd LaunchAgent on macOS):
 
 ```bash
 omnigent login https://your-host           # make sure credentials are valid first
-omnigent host install --server https://your-host --auto-upgrade
-omnigent host uninstall                     # stop supervising and remove the unit
+omnigent host enable --server https://your-host --auto-upgrade
+omnigent host disable                       # stop supervising and remove the unit
 ```
 
 The service supervises the same `omnigent host` command and relaunches it a few
 seconds after a crash. It runs as **you** (never root) so it keeps your
 `~/.claude` / `~/.codex` credentials and the shell environment captured at
-install time.
+enable time.
 
 > [!IMPORTANT]
-> - Re-run `omnigent host install` after your login token expires — a headless
->   service can't do an interactive browser sign-in, so it will restart-loop
->   until credentials are valid again (visible in `journalctl --user` /
->   `~/Library/Logs/omnigent-host.log`).
+> - A permanent failure (expired credentials, bad config) exits `78`, which the
+>   supervisor treats as a clean stop — the service stays *enabled but stopped*
+>   rather than restart-looping. Re-run `omnigent login` and then
+>   `omnigent host enable` to bring it back (logs in `journalctl --user` /
+>   `~/Library/Logs/omnigent/host/service.log`).
 > - `omnigent host stop` only signals the process; the supervisor restarts it.
->   Use `omnigent host uninstall` to actually stop a supervised host.
+>   Use `omnigent host disable` to actually stop a supervised host.
 > - A shared install must name its jail explicitly:
->   `omnigent host install --server ... --shared --workroot <dir>`.
+>   `omnigent host enable --server ... --shared --workroot <dir>`.
 
 ### 5. Collaborate with your team
 

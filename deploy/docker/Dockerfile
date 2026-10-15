@@ -26,7 +26,7 @@
 # doesn't exec its args would block Modal's own runtime from running).
 #
 # Both images publish multi-arch (linux/amd64 + linux/arm64) — see
-# .github/workflows/oss-publish-images.yml — so they run natively on
+# the upstream image-publishing workflow — so they run natively on
 # arm64 hosts (Apple Silicon laptops, arm64 clusters) as well as amd64.
 # Nothing below is arch-specific: the python/node base images are
 # multi-arch and apt/pip/npm/COPY-from-node all resolve per-arch under

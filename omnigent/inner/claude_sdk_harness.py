@@ -215,6 +215,63 @@ def _resolve_retry_policy() -> RetryPolicy:
         return RetryPolicy()
 
 
+def _is_iris_agent(agent_name: str | None) -> bool:
+    """Is this harness running Iris (or a fork of her)?
+
+    Defers to ``airbrx.iris.package.is_iris`` rather than re-deriving the
+    name test, so the two cannot drift; that helper already gates every
+    Iris tool dispatch. Imported lazily and failing open to ``False``,
+    because this harness must start for every other agent even if the
+    airbrx package is absent from the install.
+    """
+    if not agent_name:
+        return False
+    try:
+        from types import SimpleNamespace
+
+        from omnigent.airbrx.iris.package import is_iris
+    except ImportError:
+        return False
+    return is_iris(SimpleNamespace(name=agent_name))
+
+
+def _is_eva_agent(agent_name: str | None) -> bool:
+    """Is this harness running Eva (or a fork of her)?
+
+    Same shape and the same reasons as :func:`_is_iris_agent`: defers to
+    ``airbrx.eva.package.is_eva`` so the name test lives in one place, imports
+    lazily, and fails open to ``False`` so the harness still starts for every
+    other agent when the airbrx package is absent.
+    """
+    if not agent_name:
+        return False
+    try:
+        from types import SimpleNamespace
+
+        from omnigent.airbrx.eva.package import is_eva
+    except ImportError:
+        return False
+    return is_eva(SimpleNamespace(name=agent_name))
+
+
+def _is_tally_agent(agent_name: str | None) -> bool:
+    """Is this harness running Tally (or a fork of her)?
+
+    Same shape and the same reasons as :func:`_is_eva_agent`: defers to
+    ``airbrx.tally.package.is_tally``, imports lazily, and fails open to
+    ``False`` so the harness still starts when the airbrx package is absent.
+    """
+    if not agent_name:
+        return False
+    try:
+        from types import SimpleNamespace
+
+        from omnigent.airbrx.tally.package import is_tally
+    except ImportError:
+        return False
+    return is_tally(SimpleNamespace(name=agent_name))
+
+
 def _resolve_skills_filter() -> str | list[str]:
     """
     Resolve the inner-executor ``skills_filter`` from env config.
@@ -296,6 +353,76 @@ def _build_claude_sdk_executor() -> Executor:
         bundle_dir=bundle_dir,
         agent_name=agent_name,
         skills_filter=_resolve_skills_filter(),
+        # Iris's contract is four read-only tools and no ambient ones. Without
+        # this the CLI also loads the operator's own MCP configuration, and a
+        # verified fixture turn carried 154 tools: Iris's four plus 150 from
+        # personal connectors, including Gmail send_message and trash_message,
+        # Calendar delete_event and Drive trash_file — on a session whose
+        # tool-boundary guardrail had failed to load. `skills: none` already
+        # closes the equivalent hole for host skills; nothing closed it for MCP.
+        #
+        # Scoped to Iris deliberately. Every other agent keeps today's
+        # behaviour, because an agent the operator built around their own
+        # connectors has a legitimate claim to them and Iris does not.
+        #
+        # Eva has the same contract (only the outreach tools, "no tool this
+        # app does not expose") and the same hole. Measured on her bridge
+        # host's runner logs: runs on 2026-09-23 and 24 listed 12 of the
+        # operator's claude.ai connector servers (Gmail, Slack, Drive, Ramp,
+        # Linear among them) and up to 422 of their tools beside her own.
+        #
+        # Tally has the same contract again (four read-only portal tools and
+        # nothing ambient), so she is added by name the same way.
+        strict_mcp_config=(
+            _is_iris_agent(agent_name) or _is_eva_agent(agent_name) or _is_tally_agent(agent_name)
+        ),
+        # Iris declares `skills: none`, and her three bundled skills reach her
+        # as INSTRUCTIONS, not as something to invoke: `bundle_root()` folds
+        # every SKILL.md body into AGENTS.md (1728 -> 5780 characters). Her own
+        # policy denies `load_skill`, and `tests/test_host.py` has asserted that
+        # refusal since it shipped. So the `Skill` tool is redundant for her.
+        #
+        # It is also, as far as one measured turn shows, ungated. On
+        # production session 35340ac1 (host 605f4d3d, so #30's ALLOW logging
+        # was live) `ToolSearch` ran at 09:23:31 and the turn made no
+        # `/policies/evaluate` call for it - its only two bracket the turn,
+        # where the LLM-request and LLM-response phases sit. Invocation
+        # implies that POST: `_can_use_tool_gate` -> `_evaluate_tool_call_policy`
+        # has no branch that skips it for a non-`mcp__omnigent__` tool once an
+        # evaluator is wired, and one was, because those two calls happened.
+        # So the callback was not invoked, and the `load_skill` refusal it
+        # would have carried could not fire.
+        #
+        # Do NOT re-derive the opposite from `CanUseToolShadowedWarning`. That
+        # warning is computed only from `allowed_tools` entries that allow a
+        # whole tool; it lists what IS shadowed and implies nothing about
+        # anything else. Its own text says settings-file allow rules "can also
+        # shadow the callback but are not visible here". A tool's absence from
+        # it is not evidence the callback runs for that tool. Two of us read it
+        # that way and were wrong.
+        #
+        # Even so, removing `Skill` is defence in depth first: it holds whether
+        # or not the gate is consulted, which is why it is worth doing.
+        #
+        # `ToolSearch` is deliberately left: she uses it to find her own tools,
+        # it returns references and executes nothing. Skill loading is
+        # execution surface, which is the whole difference.
+        #
+        # Eva gets the same. She declares `skills: none`, her bundle ships no
+        # skills at all (config.yaml and AGENTS.md only), and her
+        # tool_boundary already denies `Skill` and allows `ToolSearch` as
+        # discovery. So this takes away nothing she uses and closes the same
+        # possibly-ungated path.
+        #
+        # Tally the same: `skills: none`, no bundled skills, and her
+        # tool_boundary allows only her four reads and `ToolSearch`.
+        disallowed_tools=(
+            ["Skill"]
+            if _is_iris_agent(agent_name)
+            or _is_eva_agent(agent_name)
+            or _is_tally_agent(agent_name)
+            else None
+        ),
         api_key_helper=os.environ.get(_ENV_API_KEY_HELPER) or None,
     )
 

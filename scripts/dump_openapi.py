@@ -336,6 +336,7 @@ def _build_app_with_stub_stores() -> Any:
 
     from omnigent.runtime.agent_cache import AgentCache
     from omnigent.server.app import create_app
+    from omnigent.stores.agent_avatar_store import AgentAvatarStore
     from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
     from omnigent.stores.artifact_store.local import LocalArtifactStore
     from omnigent.stores.comment_store.sqlalchemy_store import SqlAlchemyCommentStore
@@ -367,6 +368,7 @@ def _build_app_with_stub_stores() -> Any:
         host_store=HostStore(db_uri),
         policy_store=SqlAlchemyPolicyStore(db_uri),
         project_store=SqlAlchemyProjectStore(db_uri),
+        agent_avatar_store=AgentAvatarStore(db_uri, artifact_store),
     )
 
 

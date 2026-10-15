@@ -1,19 +1,16 @@
 name: Security Scan
 
-# The single deterministic security scan for a PR. Runs ONCE per PR and produces
-# the `Security Scan` check; the per-workflow gate jobs (security-gate.yml) don't
-# re-scan, they poll THIS check and mirror its result, so the work happens once
-# while still gating every CI workflow.
+# The single deterministic security scan for a PR. Runs ONCE per PR and reports
+# the `Security Scan` check. Nothing polls or mirrors that check, so a finding
+# fails this job alone and blocks no other workflow.
 #
 # It only STATICALLY analyses the diff/head (semgrep, grep, diff-read) with NO
 # secrets on fork PRs, so it never executes untrusted code. The scanner is always
 # checked out from `main` and the scanned code sits in a separate `pr/` dir, so a
 # PR can't edit its own scan.
 #
-# Blocking: any detector that finds something fails this check; the per-workflow
-# pollers mirror the failure and skip the dependent CI jobs (no PR-code checkout
-# / uv sync / test). Detectors run fail-fast -- the first finding fails the job,
-# so a clean PR must pass every one.
+# Blocking: any detector that finds something fails this check. Detectors run
+# fail-fast -- the first finding fails the job, so a clean PR must pass every one.
 #
 # Trust tiers (should-scan.sh): trusted (OWNER/MEMBER/COLLABORATOR, or an author
 # in the MAINTAINERS list -- covers maintainers with private org membership) and
@@ -92,10 +89,38 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          gh pr diff "$PR" --repo "$REPO" > "$GITHUB_WORKSPACE/pr.diff"
-          gh pr diff "$PR" --repo "$REPO" --name-only > "$GITHUB_WORKSPACE/changed.txt"
-          echo "Changed files:"; cat "$GITHUB_WORKSPACE/changed.txt"
+          # `gh pr diff` goes through the API, which returns HTTP 406 above 300
+          # changed files. Every upstream-sync PR exceeds that, and because the
+          # Security Gate waits on this job, one 406 blocked the ENTIRE test
+          # matrix -- pytest, lint and web-tests all reported "skipping".
+          #
+          # Diff locally instead: no cap, and it scans every changed file rather
+          # than erroring out on the ones that need scanning most. This does NOT
+          # weaken the trust model -- the scanner scripts still come from the
+          # `main` checkout above, and fetching and diffing blobs never executes
+          # PR code. Do NOT add a checkout of the PR head here.
+          set -euo pipefail
+          # The scanner checkout is shallow and drops its credentials, so fetch
+          # over an explicit authenticated URL and deepen first: merge-base has
+          # to resolve across a sync PR that can be hundreds of commits deep.
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          git fetch --no-tags --quiet --unshallow "$REMOTE" || \
+            git fetch --no-tags --quiet "$REMOTE"
+          git fetch --no-tags --quiet "$REMOTE" \
+            "+refs/pull/${PR}/head:refs/remotes/pr/${PR}" "${BASE_SHA}"
+          # Three-dot semantics, matching what `gh pr diff` returned: changes the
+          # PR introduces, never changes the base branch made underneath it.
+          # Fail loud rather than scanning an empty diff.
+          if ! MERGE_BASE="$(git merge-base "${BASE_SHA}" "refs/remotes/pr/${PR}")"; then
+            echo "::error::could not resolve a merge base for PR ${PR}; refusing to scan an empty diff"
+            exit 1
+          fi
+          git diff "${MERGE_BASE}" "refs/remotes/pr/${PR}" > "$GITHUB_WORKSPACE/pr.diff"
+          git diff --name-only "${MERGE_BASE}" "refs/remotes/pr/${PR}" \
+            > "$GITHUB_WORKSPACE/changed.txt"
+          echo "Changed files: $(wc -l < "$GITHUB_WORKSPACE/changed.txt")"
 
       - name: Secret scan (added lines)
         if: ${{ steps.gate.outputs.scan == 'true' }}

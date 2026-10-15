@@ -1,0 +1,11 @@
+[
+  {
+    "tenant_id": "fixture-iris",
+    "name": "Synthetic fixture — no live data",
+    "host_id": "00000000000000000000000000000000",
+    "workspace": "/CHANGE/ME/iris-local/workspaces/fixture",
+    "users": ["you@example.com"],
+    "pat_ref": "",
+    "fixture": true
+  }
+]

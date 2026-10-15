@@ -2,7 +2,7 @@
 
 A single committed baseline of the whole app shell at ``/`` -- the open left
 sidebar plus the ``NewChatLandingScreen`` ("What should we build?") hero and
-composer. The gate lives in ``.github/workflows/ui-snapshot.yml``, which renders
+composer. The upstream gate workflow, now removed, rendered
 inside a *digest-pinned Playwright image* so the committed baseline and the PR
 comparison come from the exact same renderer (screenshots differ across
 rendering environments; no diff threshold reconciles two engines, so CI is the

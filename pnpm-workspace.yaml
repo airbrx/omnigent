@@ -1,7 +1,6 @@
 packages:
   - 'web'
   - 'web/electron'
-  - '.github/ci-deps'
   - 'editors/vscode'
   - 'deploy/cloudflare'
   - 'sdks/web-extension'

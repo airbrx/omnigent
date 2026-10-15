@@ -1,0 +1,696 @@
+/* Tally's workspace, in the airbrx design system (airbrx-branding skill v1.0).
+   Orange is the only accent and is identical in both themes; dark mode flips
+   the neutrals only. Radii stay on the 12/16/20 scale. */
+:root {
+  --accent: #fd6c1d;
+  --accent-light: #ff8c42;
+  --accent-dark: #e65a0d;
+  --accent-tint: rgba(253, 108, 29, 0.08);
+  --accent-tint2: rgba(253, 108, 29, 0.14);
+  --ink: #1a1a1a;
+  --body: #505050;
+  --muted: #8a8a8a;
+  --surface: #f5f5f5;
+  --bg: #ffffff;
+  --page: #f0efed;
+  --border: #e8e8e8;
+  --border-strong: #d4d4d4;
+  --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.06), 0 0 1px rgba(0, 0, 0, 0.08);
+  --card-shadow-hover:
+    0 8px 24px rgba(0, 0, 0, 0.1), 0 0 1px rgba(0, 0, 0, 0.08);
+  --radius-sm: 12px;
+  --radius: 16px;
+  --radius-lg: 20px;
+  --urgent: #dc2626;
+  --urgent-tint: rgba(220, 38, 38, 0.07);
+  --warn: #d97706;
+  --warn-tint: rgba(217, 119, 6, 0.08);
+  --ok: #16a34a;
+  --ok-tint: rgba(22, 163, 74, 0.07);
+  --info: #2563eb;
+  --info-tint: rgba(37, 99, 235, 0.07);
+  --font: "Inter", system-ui, -apple-system, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+:root[data-theme="dark"] {
+  --bg: #1a1a1a;
+  --page: #121212;
+  --surface: #242424;
+  --ink: #e0e0e0;
+  --body: #a0a0a0;
+  --muted: #7a7a7a;
+  --border: #333333;
+  --border-strong: #444444;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+html {
+  height: 100%;
+}
+body {
+  font-family: var(--font);
+  background: var(--page);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+[hidden] {
+  display: none !important;
+}
+a {
+  color: var(--accent-dark);
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 11px;
+}
+
+/* Top bar: brand, the tabs, refresh */
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  padding: 10px 20px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand > img {
+  height: 20px;
+  display: block;
+}
+.agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+.agent img {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+.eyebrow,
+.section-title,
+.kpi .label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+#tabs,
+.views {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+/* Tabs wrap rather than scroll: a tab behind an invisible sideways scroll is
+   a tab nobody finds. On a narrow frame the actions drop to their own line. */
+#tabs {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+#tabs button,
+.actions {
+  white-space: nowrap;
+}
+#tabs button,
+.views button {
+  background: transparent;
+  color: var(--body);
+  font-weight: 500;
+  padding: 7px 12px;
+}
+#tabs button:hover,
+.views button:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+#tabs button.active,
+.views button.active {
+  background: var(--accent-tint);
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+.views b {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-left: 4px;
+}
+.views button.active b {
+  color: var(--accent-dark);
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+.footnote {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 4px;
+}
+.outlink {
+  font-weight: 600;
+  text-decoration: none;
+  margin-left: 4px;
+}
+.outlink:hover {
+  text-decoration: underline;
+}
+
+/* Workspace: the open tab on the left, Tally's chat docked on the right */
+.workspace {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px 20px 20px;
+}
+body.collapsed .workspace {
+  grid-template-columns: minmax(0, 1fr) 44px;
+}
+.home {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  overflow-y: auto;
+}
+.frames {
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+}
+.frames iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+.dock-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  background: var(--bg);
+  color: var(--body);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+.dock-rail img {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+.dock-rail span {
+  writing-mode: vertical-rl;
+  font-size: 12px;
+}
+.dock-rail:hover {
+  color: var(--accent-dark);
+  border-color: var(--accent);
+}
+button {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 8px 16px;
+  border-radius: 12px;
+  border: none;
+  transition: background 0.15s;
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+.primary {
+  background: var(--accent);
+  color: #fff;
+}
+.primary:hover:not(:disabled) {
+  background: var(--accent-dark);
+}
+.secondary {
+  background: var(--bg);
+  color: var(--ink);
+  border: 1.5px solid var(--border-strong);
+  font-weight: 500;
+}
+.secondary:hover:not(:disabled) {
+  background: var(--surface);
+}
+.chip {
+  background: var(--bg);
+  color: var(--ink);
+  border: 1.5px solid var(--border-strong);
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.chip:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+/* KPIs */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+.kpi {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+  padding: 16px 20px;
+  position: relative;
+  overflow: hidden;
+}
+.kpi::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: var(--accent);
+}
+.kpi .value {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--accent);
+  line-height: 1.1;
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.kpi .note {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.notice {
+  margin: 12px 20px 0;
+  background: var(--accent-tint);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 12px 12px 0;
+  padding: 12px 16px;
+  color: var(--ink);
+  font-size: 13px;
+}
+.notice.error {
+  background: var(--urgent-tint);
+  border-left-color: var(--urgent);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--card-shadow);
+  padding: 20px 22px;
+}
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.section-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--body);
+  vertical-align: top;
+}
+tr.row {
+  cursor: pointer;
+}
+tr.row:hover td {
+  background: var(--surface);
+}
+tr.row.selected td {
+  background: var(--accent-tint);
+}
+td strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.empty {
+  color: var(--muted);
+  padding: 16px 4px;
+  font-size: 13px;
+}
+
+/* Badges */
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--body);
+  white-space: nowrap;
+}
+.badge.accent {
+  background: var(--accent-tint);
+  color: var(--accent-dark);
+}
+.badge.ok {
+  background: var(--ok-tint);
+  color: var(--ok);
+}
+.badge.warn {
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+.badge.urgent {
+  background: var(--urgent-tint);
+  color: var(--urgent);
+}
+.badge.info {
+  background: var(--info-tint);
+  color: var(--info);
+}
+
+/* Detail panels: key facts as a definition list */
+.detail h2 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.detail .sub {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.detail dl {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+  margin: 12px 0;
+}
+.detail dt {
+  color: var(--muted);
+}
+.detail dd {
+  color: var(--ink);
+}
+.asks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.rules {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.rules li {
+  display: grid;
+  grid-template-columns: 3px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  font-size: 12px;
+}
+.rules li::before {
+  content: "";
+  width: 3px;
+  border-radius: 2px;
+  align-self: stretch;
+  background: var(--border-strong);
+}
+.rules li.block::before {
+  background: var(--urgent);
+}
+.rules li.warn::before {
+  background: var(--warn);
+}
+
+/* Chat */
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.chat-head .section-title {
+  margin-bottom: 0;
+  flex: 1;
+}
+.context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+button.link {
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+button.link:hover {
+  color: var(--ink);
+}
+.messages {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 160px;
+  margin-bottom: 12px;
+}
+/* Direct children only: an answer's own list items are not chat bubbles. */
+.messages > li {
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.messages li.user {
+  background: var(--accent-tint);
+  color: var(--ink);
+  align-self: flex-end;
+  max-width: 90%;
+}
+.messages li.tally {
+  background: var(--surface);
+  color: var(--ink);
+  /* Her text is rendered into paragraphs and lists, with <br> for breaks. */
+  white-space: normal;
+}
+.messages li.tally > * + * {
+  margin-top: 6px;
+}
+.messages li.tally ul,
+.messages li.tally ol {
+  padding-left: 20px;
+}
+.messages li.tally ul {
+  list-style: disc;
+}
+.messages li.tally ol {
+  list-style: decimal;
+}
+.messages li.tally li + li {
+  margin-top: 2px;
+}
+.messages li.tally code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 4px;
+}
+.kpi.unread .value {
+  color: var(--muted);
+}
+.messages li.system {
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 4px;
+}
+.messages li.error {
+  background: var(--urgent-tint);
+  color: var(--urgent);
+}
+textarea {
+  width: 100%;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.composer-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+@media (max-width: 1100px) {
+  .workspace {
+    grid-template-columns: minmax(0, 1fr) 320px;
+  }
+}
+@media (max-width: 760px) {
+  /* One column: the open tab, then the chat below it. */
+  body {
+    height: auto;
+    overflow: visible;
+  }
+  .topbar {
+    gap: 10px;
+    padding: 10px 16px;
+  }
+  /* Room for Omnigent's sidebar toggle, which floats over the top left. */
+  .brand {
+    margin-left: 44px;
+    min-height: 40px;
+  }
+  .actions {
+    flex-wrap: wrap;
+    white-space: normal;
+    margin-left: 0;
+  }
+  .workspace,
+  body.collapsed .workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    padding: 12px 16px 16px;
+  }
+  .frames {
+    height: 70vh;
+  }
+  .dock-rail {
+    flex-direction: row;
+    justify-content: center;
+  }
+  .dock-rail span {
+    writing-mode: horizontal-tb;
+  }
+  .kpis {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.messages li.progress {
+  font-style: italic;
+}
+.messages li.progress::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+  animation: tally-pulse 1.2s ease-in-out infinite;
+}
+@keyframes tally-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}

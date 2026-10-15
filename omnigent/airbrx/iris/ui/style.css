@@ -1,0 +1,265 @@
+/* Iris's workspace: only what is hers. The airbrx tokens, the topbar, tabs,
+   dock, rail, chat and card styles come from kernel/brand.css (D3). No token
+   is overridden here, so the theme follows the host. */
+
+.host-line {
+  padding: 8px 24px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.host-line p {
+  margin: 0;
+}
+.host-line #host-status {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--body);
+}
+.host-line #host-status::before {
+  content: "\25CF";
+  font-size: 10px;
+  color: var(--muted);
+}
+.host-line #host-status[data-state="ok"]::before {
+  color: var(--ok);
+}
+.host-line #host-status[data-state="refused"]::before {
+  color: var(--urgent);
+}
+.host-line .collecting {
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+.host-line ul {
+  padding-left: 18px;
+}
+
+/* The host seam (STANDALONE_VIEWER.md section 5): neutral, never the error
+   colour, because a viewer with no agent is working as intended. */
+/* The viewer's header holds more (identity, week, badge): wrap, never overflow. */
+.topbar .actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 6px;
+  min-width: 0;
+}
+.actions .agent-state {
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--muted);
+}
+#week {
+  font: inherit;
+  font-size: 12px;
+  color: var(--body);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 4px 8px;
+  max-width: 280px;
+}
+#composer textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.page-head {
+  margin-bottom: 16px;
+}
+.page-head h1 {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.as-of {
+  margin-top: 2px;
+}
+
+.card + .card,
+.kpis + .card {
+  margin-top: 16px;
+}
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.empty-state p {
+  margin: 8px 0;
+}
+
+.coverage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.coverage .day {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--accent-tint2);
+  color: var(--ink);
+}
+.coverage .day.missing {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--surface),
+    var(--surface) 4px,
+    var(--border) 4px,
+    var(--border) 8px
+  );
+  color: var(--muted);
+}
+
+.finding,
+.evidence {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.finding:first-of-type,
+.evidence:first-of-type {
+  border-top: 0;
+}
+.finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.finding p,
+.evidence p {
+  margin-top: 4px;
+}
+.evidence.highlight {
+  background: var(--accent-tint);
+  border-radius: var(--radius-sm);
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.evidence-links button.link {
+  margin-right: 6px;
+}
+.review textarea {
+  margin-top: 8px;
+}
+.review summary,
+details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--body);
+  margin-top: 8px;
+}
+
+.rule-block {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.rule-block h3 {
+  font-size: 13px;
+}
+
+.not-applied {
+  font-weight: 600;
+}
+.proposal dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin-bottom: 12px;
+}
+.proposal dt {
+  color: var(--muted);
+}
+.problems {
+  padding-left: 18px;
+  margin: 8px 0;
+}
+.problems.error {
+  color: var(--urgent);
+}
+pre.diff,
+pre.json {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  overflow-x: auto;
+  white-space: pre;
+  margin-top: 8px;
+}
+
+.refused {
+  color: var(--warn);
+}
+.comparison td:first-child {
+  color: var(--muted);
+}
+.downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.table-wrap {
+  overflow-x: auto;
+}
+.note {
+  margin-top: 16px;
+  color: var(--body);
+}
+.chat-head #native-chat {
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+.finding code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .host-line {
+    padding: 8px 16px 0;
+  }
+}
+
+/* A phone: the Accounts table stacks each tenant's columns, so none is cut
+   off at the card's edge. Each cell is named by its data-label. */
+@media (max-width: 560px) {
+  table.accounts,
+  table.accounts tbody,
+  table.accounts tr,
+  table.accounts td {
+    display: block;
+    width: auto;
+  }
+  table.accounts thead {
+    display: none;
+  }
+  table.accounts tr {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  table.accounts td {
+    border-bottom: 0;
+    padding: 3px 0;
+  }
+  table.accounts td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+  }
+}

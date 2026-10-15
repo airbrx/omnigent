@@ -1,0 +1,77 @@
+spec_version: 1
+name: tally
+
+# Tally is chief of staff for the Airbrx agent and dashboard control plane: the
+# third hosted agent on omnigent.airbrx.ai, beside Iris and Eva.
+#
+# v1 is READ-ONLY, by Abram's decision. She reads four things from the Airbrx
+# portal sidecar and writes nothing anywhere. She holds no credential of her
+# own beyond the one read token below.
+#
+# Every tool is a REMOTE MCP tool served by the portal sidecar on the
+# coordinator, so there is no vendored archive, no digest and no local tool.
+# The binding's token_ref names the bearer token; nothing in this file is a
+# credential.
+
+# Only the runner expands this bundle's ${VAR}s. Without this line the
+# coordinator would refuse to register her for an unset TALLY_PORTAL_MCP_TOKEN,
+# which must never be in the coordinator's own environment.
+env_expansion: runner
+
+# Brand voice: direct, data-forward, anti-hype. The line a person reads next to
+# her name in the drawer.
+description: >-
+  Chief of staff for the Airbrx agent and dashboard control plane. Reports
+  agents, dashboards, costs, coverage, open decisions and blockers from the
+  portal, says what is measured, what is estimated and what is unavailable,
+  and changes nothing.
+
+# Same executor shape as Eva: Omnigent's own executor over the claude-sdk
+# harness, no model pinned. The harness gives her --strict-mcp-config and
+# drops the Skill tool by name (omnigent/inner/claude_sdk_harness.py).
+executor:
+  type: omnigent
+  context_window: 200000
+  config:
+    harness: claude-sdk
+    smart_routing_harness: auto
+
+skills: none
+async: false
+
+# No spawning. One agent, one read-only job.
+spawn: false
+
+tools:
+  builtins: []
+  timeout: 120
+  retry:
+    max_retries: 0
+
+  # The Airbrx portal sidecar's Streamable HTTP MCP endpoint, on the
+  # coordinator at http://127.0.0.1:4318/mcp. The path is exactly /mcp, no
+  # trailing slash; the portal answers POST JSON-RPC there and 405 to a GET.
+  #
+  # An ALLOW LIST of exactly four reads. Everything absent is unavailable to
+  # Tally even if the portal advertises it.
+  portal:
+    type: mcp
+    url: ${TALLY_PORTAL_MCP_URL}
+    headers:
+      Authorization: Bearer ${TALLY_PORTAL_MCP_TOKEN}
+    tools:
+      - get_analytics_overview
+      - get_agent_policy
+      - get_sprint_board
+      - get_health
+
+# Withheld: every write. Saving a policy, publishing a config revision, and
+# changing routes, dashboards, Superset or gateway rules each need a separately
+# approved tool boundary. policy.py names the ones worth naming.
+
+guardrails:
+  policies:
+    tally-tool-boundary:
+      type: function
+      on: [tool_call]
+      function: omnigent.airbrx.tally.policy.tool_boundary

@@ -66,6 +66,11 @@ crdb-stop:
 crdb-test: crdb-up
     ./scripts/test_crdb_matrix.sh
 
+# Standalone Iris viewer: saved runs, dev sign-in, no agent (http://127.0.0.1:6790/iris).
+[group('dev')]
+iris-dev *args:
+    ./scripts/iris/dev.sh {{args}}
+
 # Destructive: stops CRDB and deletes all four persistent development volumes.
 [group('dev')]
 crdb-reset:

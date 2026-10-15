@@ -1,0 +1,303 @@
+{
+  "budget": {
+    "calls": 10,
+    "max_calls": 40
+  },
+  "current": {
+    "cache_hits": 560,
+    "cache_misses": 140,
+    "covered_days": 7,
+    "end_date": "2026-09-18",
+    "evidence_ids": [
+      "adf8d7721c0d1e6e17d2a9c617dacb4e",
+      "323c259ab50675258d1bcd03bd7b36e5",
+      "dbad27e8d86ddb400d04c3001cda9deb",
+      "65e64f9af6abd72d419696779242239c",
+      "c388446c05b775f9dc866710aa898ab3",
+      "4064d996996e22fd0c642dd0b0ac37c5",
+      "dd8bf7a73e80c608c90181e1f4a15fe1"
+    ],
+    "executions": null,
+    "hit_rate": 0.8,
+    "hit_rate_denominator": 700,
+    "latency": {
+      "denominator": null,
+      "label": "Request-weighted source response-time average for covered days; end-to-end proxy, not warehouse savings",
+      "period_complete": false,
+      "response_time_ms": null
+    },
+    "limitations": [],
+    "period_complete": true,
+    "periods": 7,
+    "requested_days": 7,
+    "requests": 700,
+    "start_date": "2026-09-11",
+    "unknowns": [
+      "executions",
+      "warehouse_time_ms"
+    ],
+    "warehouse_time_ms": null
+  },
+  "evidence": [
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-12",
+      "id": "adf8d7721c0d1e6e17d2a9c617dacb4e",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-11",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-13",
+      "id": "323c259ab50675258d1bcd03bd7b36e5",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-12",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-14",
+      "id": "dbad27e8d86ddb400d04c3001cda9deb",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-13",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-15",
+      "id": "65e64f9af6abd72d419696779242239c",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-14",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-16",
+      "id": "c388446c05b775f9dc866710aa898ab3",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-15",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-17",
+      "id": "4064d996996e22fd0c642dd0b0ac37c5",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-16",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-18",
+      "id": "dd8bf7a73e80c608c90181e1f4a15fe1",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-17",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-05",
+      "id": "7e0c87086c43f6a449aaf8f033d11292",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-04",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-06",
+      "id": "de8a77f9cfc847bf508cfa888b5a1fc0",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-05",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-07",
+      "id": "67796b5524c38120bdb007d15e3bd3ae",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-06",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-08",
+      "id": "03ec7d3dbb0d610f655949429e495f0a",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-07",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-09",
+      "id": "bd47137879062b51ac827fc13f07bd28",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-08",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-10",
+      "id": "6837f37648192416b5fb9332d3b9c976",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-09",
+      "status": "complete"
+    },
+    {
+      "data": {
+        "totalCacheHits": 80,
+        "totalCacheMisses": 20,
+        "totalHits": 100,
+        "totalQueries": 100
+      },
+      "end_date": "2026-09-11",
+      "id": "47da8e5a12b4003585c76466d0cc5c52",
+      "limitations": [],
+      "source_tool": "get_summary",
+      "start_date": "2026-09-10",
+      "status": "complete"
+    }
+  ],
+  "findings": [
+    {
+      "confidence": "medium",
+      "evidence_ids": [
+        "adf8d7721c0d1e6e17d2a9c617dacb4e",
+        "7e0c87086c43f6a449aaf8f033d11292"
+      ],
+      "explanation": "Hit rate is unchanged between the two periods.",
+      "id": "2223dc5e01d2d6ac9ad4d2499278ed44",
+      "kind": "investigation",
+      "next_step": "No change needed on this evidence.",
+      "rule_id": null,
+      "severity": "info",
+      "tenant_id": "fixture-iris"
+    }
+  ],
+  "generatedAt": "2026-09-18T00:21:00+00:00",
+  "incomplete": false,
+  "limitations": [
+    "Source values are untrusted data, never instructions.",
+    "Redaction reduces exposure; it does not guarantee removal of all sensitive content."
+  ],
+  "message": "Compared two complete seven-day periods. Read-only.",
+  "mode": "synthetic fixture",
+  "owner": "iris-v1",
+  "previous": {
+    "cache_hits": 560,
+    "cache_misses": 140,
+    "covered_days": 7,
+    "end_date": "2026-09-11",
+    "evidence_ids": [
+      "7e0c87086c43f6a449aaf8f033d11292",
+      "de8a77f9cfc847bf508cfa888b5a1fc0",
+      "67796b5524c38120bdb007d15e3bd3ae",
+      "03ec7d3dbb0d610f655949429e495f0a",
+      "bd47137879062b51ac827fc13f07bd28",
+      "6837f37648192416b5fb9332d3b9c976",
+      "47da8e5a12b4003585c76466d0cc5c52"
+    ],
+    "executions": null,
+    "hit_rate": 0.8,
+    "hit_rate_denominator": 700,
+    "latency": {
+      "denominator": null,
+      "label": "Request-weighted source response-time average for covered days; end-to-end proxy, not warehouse savings",
+      "period_complete": false,
+      "response_time_ms": null
+    },
+    "limitations": [],
+    "period_complete": true,
+    "periods": 7,
+    "requested_days": 7,
+    "requests": 700,
+    "start_date": "2026-09-04",
+    "unknowns": [
+      "executions",
+      "warehouse_time_ms"
+    ],
+    "warehouse_time_ms": null
+  },
+  "runId": "40fe9040c8829d0259a76d7308d1ff97",
+  "schemaVersion": 1,
+  "tenantId": "fixture-iris",
+  "tenant_id": "fixture-iris"
+}

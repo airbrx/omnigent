@@ -1,0 +1,26 @@
+{
+  "baseline_hash": "19b67762646873661262c4bebfe811ee19b67762646873661262c4bebfe811ee",
+  "diff": "--- baseline\n+++ candidate\n@@ -13,7 +13,7 @@\n         \"cache\": {\n-          \"ttlSeconds\": 60\n+          \"ttlSeconds\": 120\n         },",
+  "preview": {
+    "diff": {
+      "summary": {
+        "destructive": false
+      }
+    },
+    "fixture": true,
+    "validation": {
+      "errors": [],
+      "valid": true,
+      "warnings": []
+    },
+    "warning": null,
+    "written": false
+  },
+  "rule_id": "report-cache",
+  "validation": {
+    "errors": [],
+    "fixture": true,
+    "valid": true,
+    "warnings": []
+  }
+}

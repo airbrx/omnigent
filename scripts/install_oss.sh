@@ -28,7 +28,13 @@ VERSION=
 # Comma-separated optional-dependency extras to install with the package
 # (e.g. "databricks"), accumulated from one or more --extra flags. Empty =>
 # the base install with no extras.
-EXTRAS=
+#
+# Defaults from OMNIGENT_INSTALL_EXTRAS, the same way REPO_URL does below, so a
+# host that needs an extra keeps it across an unattended re-install. A host
+# running with --auto-upgrade re-installs itself by piping this script from its
+# server with no arguments at all; without an environment default, every
+# upgrade would silently drop the extra the host was provisioned with.
+EXTRAS="${OMNIGENT_INSTALL_EXTRAS:-}"
 # Set by --repo to install from a git checkout instead (development; builds
 # the web UI from source). Empty => install the published wheel from PyPI.
 # Defaults from OMNIGENT_INSTALL_REPO so a server can serve this installer

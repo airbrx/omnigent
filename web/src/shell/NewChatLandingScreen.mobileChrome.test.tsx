@@ -56,6 +56,10 @@ vi.mock("@/lib/identity", () => ({
   resolveIdentity: vi.fn(async () => null),
 }));
 vi.mock("@/hooks/useHosts", () => ({
+  // airbrx: NewChatLandingScreen renders the wake affordance for offline
+  // `wakeable` hosts, so this mock must export useWakeHost or the component
+  // throws on render.
+  useWakeHost: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useHosts: vi.fn(),
   useHostModelOptions: vi.fn(() => ({ data: [] })),
   useInstallHarness: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
