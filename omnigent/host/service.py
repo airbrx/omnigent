@@ -1,4 +1,31 @@
-"""Install the Omnigent host as a per-user operating-system service."""
+"""Install the Omnigent host as a user-scoped, self-restarting service.
+
+The host process (``omnigent host``) already self-heals two failure modes:
+tunnel drops (its reconnect loop) and version skew (``--auto-upgrade`` re-execs
+in place). The third — the process itself dying — needs a supervisor, because a
+dead process cannot restart itself. This module installs that supervisor.
+
+It is deliberately **user-scoped**, never root/system: the host resolves ``$HOME``
+for ``~/.claude`` / ``~/.codex`` / ``~/.omnigent`` credentials, so a system unit
+would resolve the wrong home and silently break every agent launch.
+
+    ┌────────────┐  install   ┌──────────────────────┐
+    │ omnigent   │──────────▶ │ user unit (per OS):   │
+    │ host       │            │  systemd --user  (L)  │
+    │ install    │            │  launchd Agent   (M)  │
+    └────────────┘            └───────────┬──────────┘
+                                          │ Restart=always / KeepAlive
+                                          ▼
+        crash ──▶ supervisor relaunches ``omnigent host`` in <RestartSec>
+        clean stop / uninstall ──▶ stays down
+
+Scope (v1, minimal): supervise a *remote* (``--server``) host; capture the
+allowlisted daemon env so the service connects with the same environment the
+manual host used. NOT handled here: a typed permanent-failure exit code
+(a permanently-broken host restart-loops — rare, log-visible, recoverable),
+unit-aware ``host stop``/``status``, multi-target units, and local-mode server
+ownership. Those are deferred by design.
+"""
 
 from __future__ import annotations
 
@@ -65,26 +92,17 @@ def _service_for_current_platform() -> HostService:
 def _service_command(
     server_url: str | None,
     *,
-    auto_upgrade: bool = False,
     shared: bool = False,
     workroot: str | None = None,
 ) -> list[str]:
-    """Build the persistent service entry-point command.
-
-    :param server_url: Remote server URL, or ``None`` for local mode.
-    :param auto_upgrade: Bake ``--auto-upgrade`` into the supervised host.
-    :param shared: Bake ``--shared`` in (requires ``workroot``).
-    :param workroot: Jail dir for a shared host's non-owner sessions.
-    """
+    """Build the persistent service entry-point command."""
     mode = ["--server", server_url] if server_url else ["--local"]
-    extra: list[str] = []
-    if auto_upgrade:
-        extra.append("--auto-upgrade")
+    cmd = [sys.executable, "-m", "omnigent.host.service_entry", *mode]
     if shared:
-        extra.append("--shared")
+        cmd.append("--shared")
         if workroot:
-            extra.extend(["--workroot", workroot])
-    return [sys.executable, "-m", "omnigent.host.service_entry", *mode, *extra]
+            cmd.extend(["--workroot", workroot])
+    return cmd
 
 
 def _clean_environment(environment: Mapping[str, str]) -> dict[str, str]:
@@ -265,6 +283,51 @@ def _enable_systemd(service: HostService, content: bytes) -> None:
         raise
 
 
+def _current_user() -> str:
+    """Login name for ``loginctl`` linger commands."""
+    import getpass
+
+    return getpass.getuser()
+
+
+def _linger_marker_path() -> Path:
+    """Marker recording that *we* enabled linger (so uninstall can undo it)."""
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return config_home / "systemd" / "user" / ".omnigent-host-linger-set"
+
+
+def _linger_already_on() -> bool:
+    """Whether linger is already enabled for this user (idempotency guard)."""
+    try:
+        result = subprocess.run(
+            ["loginctl", "show-user", _current_user(), "--property=Linger"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return False
+    return "Linger=yes" in (result.stdout or "")
+
+
+def _enable_linger_if_needed() -> bool:
+    """Enable ``loginctl`` linger so the service survives logout/reboot.
+
+    :returns: ``True`` if linger was newly enabled, ``False`` otherwise.
+    """
+    if _linger_already_on():
+        return False
+    user = _current_user()
+    try:
+        subprocess.run(["loginctl", "enable-linger", user], check=True, capture_output=True)
+        _linger_marker_path().write_text("1\n")
+        return True
+    except (subprocess.CalledProcessError, OSError):
+        # Non-fatal: the unit is installed and runs while logged in; linger
+        # only affects survival across logout.
+        return False
+
+
 def _record_service(service: HostService) -> None:
     """Add the service to the uninstall ledger."""
     from omnigent.install_ledger import LaunchAgentEntry, record_launch_agent
@@ -301,19 +364,18 @@ def enable_user_host_service(
     server_url: str | None,
     *,
     environment: Mapping[str, str],
-    auto_upgrade: bool = False,
     shared: bool = False,
     workroot: str | None = None,
+    enable_linger: bool = True,
 ) -> HostService:
     """Install, enable, and start the current user's host service.
 
-    :param server_url: Remote server URL, or ``None`` for local mode.
-    :param environment: Allowlisted env baked into the unit.
-    :param auto_upgrade: Supervise the host with ``--auto-upgrade``.
-    :param shared: Supervise the host with ``--shared``.
-    :param workroot: Jail dir for a shared host. REQUIRED when ``shared`` — a
-        reboot-surviving daemon must not default to a surprising cwd.
-    :raises HostServiceError: When ``shared`` is set without a ``workroot``.
+    :param server_url: Remote Omnigent server URL. Pass ``None`` for local mode.
+    :param environment: Allowlisted env to embed in the service definition.
+    :param shared: Pass ``--shared`` to open the host to any authed user.
+    :param workroot: Jail directory for a shared host. Required when ``shared``.
+    :param enable_linger: Linux only — run ``loginctl enable-linger`` so the
+        service survives logout/reboot.
     """
     if shared and not workroot:
         raise HostServiceError(
@@ -322,9 +384,7 @@ def enable_user_host_service(
             "directory). Re-run with --shared --workroot <dir>."
         )
     service = _service_for_current_platform()
-    command = _service_command(
-        server_url, auto_upgrade=auto_upgrade, shared=shared, workroot=workroot
-    )
+    command = _service_command(server_url, shared=shared, workroot=workroot)
     clean_environment = _clean_environment(environment)
     if service.kind == "launchd":
         content = _launchd_payload(
@@ -336,6 +396,8 @@ def enable_user_host_service(
     else:
         content = _systemd_unit(command=command, environment=clean_environment)
         _enable_systemd(service, content)
+        if enable_linger:
+            _enable_linger_if_needed()
     _record_service(service)
     return service
 
@@ -360,6 +422,10 @@ def disable_user_host_service() -> HostService:
             _run_best_effort(disable_args)
         service.path.unlink(missing_ok=True)
         _run_checked(["systemctl", "--user", "daemon-reload"])
+        marker = _linger_marker_path()
+        if marker.exists():
+            _run_best_effort(["loginctl", "disable-linger", _current_user()])
+            marker.unlink(missing_ok=True)
     _forget_service(service)
     if still_running:
         raise HostServiceError(
